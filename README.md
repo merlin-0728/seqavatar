@@ -31,6 +31,11 @@ SeqAvatar is a human avatar method based on sequential motion context. Details a
 <p align="left"> 
 📍 If there are any bugs in our code, please feel free to raise your issues.
 
+> ⭐️ **Update:**
+- [2025/10/11] Results, including optimized models and rendered images, are now available at [this link](https://1drv.ms/f/c/6924774bc56042e2/Ep0EkzdGt2JMga2layYYJLMBendJy4EijvbIHVZ6WY_eWw?e=lDaCQD).
+
+
+
 ## ⚙️ Setup
 ### 1. Recommended Environment
 ```bash
@@ -161,6 +166,10 @@ Training and evaluation on ZJU-MoCap:
 # set data_path as <path/to/ZJU-MoCap/>
 bash scripts/exps_zjumocap.sh
 ```
+
+## 📝 Results
+Results (including optimized models and rendered images) of the current version can be downloaded from [this link](https://1drv.ms/f/c/6924774bc56042e2/Ep0EkzdGt2JMga2layYYJLMBendJy4EijvbIHVZ6WY_eWw?e=lDaCQD).
+
 
 ---
 ## 📚 Citation
