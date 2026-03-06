@@ -194,6 +194,22 @@ def readCamerasI3DHuman(path, smpl_model, output_view, white_background, image_s
             image_path = os.path.join(scene_dir, 'images', image_name + '.png')
             bkgd_mask_path = os.path.join(scene_dir, 'masks', image_name + '.png')
 
+            # Load image, mask, K, D, R, T
+            image_path = os.path.join(scene_dir, 'images', image_name + '.png')
+            bkgd_mask_path = os.path.join(scene_dir, 'masks', image_name + '.png')
+
+            # --- 修改开始：同时检查图片和Mask是否存在 ---
+            if not os.path.exists(image_path):
+                print(f"Warning: Image missing, skipping: {image_path}")
+                continue
+            if not os.path.exists(bkgd_mask_path):
+                print(f"Warning: Mask missing, skipping: {bkgd_mask_path}")
+                continue
+            # --- 修改结束 ---------------------------
+
+            K = cameras[image_name]['intrinsics']
+            # -----------------------------------------------
+
             K = cameras[image_name]['intrinsics']
             R = cameras[image_name]['extrinsics'][:3, :3]
             T = cameras[image_name]['extrinsics'][:3, 3:4]
@@ -214,8 +230,8 @@ def readCamerasI3DHuman(path, smpl_model, output_view, white_background, image_s
             FovX, FovY = focal2fov(focalX, width), focal2fov(focalY, height)
 
             cam_infos.append(CameraInfo(uid=cam_id, pose_id=smpl_id, R=R, T=T, K=K, FovY=FovY, FovX=FovX, image=image,
-                            image_path=image_path, image_name=image_name, bkgd_mask=bkgd_mask, 
-                            bound_mask=bound_mask, width=width, height=height))
+                                        image_path=image_path, image_name=image_name, bkgd_mask=bkgd_mask, 
+                                        bound_mask=bound_mask, width=width, height=height))
     return cam_infos
 
 ##################################   DNA-Rendering   ##################################
@@ -388,13 +404,13 @@ def readZJUMoCapInfo(path, white_background, eval, time_steps):
     # read cameras
     print("Reading Training Transforms")
     train_cam_infos = readCamerasZJUMoCap(path, train_view, white_background, split='train', time_steps=time_steps, 
-                           smpl_params_dict=smpl_params_dict, cond_dict=cond_dict,
-                           delta_pose_xyz_cache=delta_pose_xyz_cache)
+                                          smpl_params_dict=smpl_params_dict, cond_dict=cond_dict,
+                                          delta_pose_xyz_cache=delta_pose_xyz_cache)
     
     print("Reading Test Transforms")
     test_cam_infos['test'] = readCamerasZJUMoCap(path, test_view, white_background, split='test', time_steps=time_steps, 
-                                smpl_params_dict=smpl_params_dict, cond_dict=cond_dict,
-                                delta_pose_xyz_cache=delta_pose_xyz_cache)
+                                            smpl_params_dict=smpl_params_dict, cond_dict=cond_dict,
+                                            delta_pose_xyz_cache=delta_pose_xyz_cache)
     
     if not eval:
         for key in test_cam_infos.keys():
@@ -507,8 +523,8 @@ def readCamerasZJUMoCap(path, output_view, white_background, image_scaling=0.5, 
 
             image_name = f'frame_{pose_index:06d}_view_{view_index:02d}'
             cam_infos.append(CameraInfo(uid=cam_id, pose_id=pose_index, R=R, T=T, K=K, FovY=FovY, FovX=FovX, image=image,
-                            image_path=image_path, image_name=image_name, bkgd_mask=bkgd_mask, 
-                            bound_mask=bound_mask, width=width, height=height))
+                                        image_path=image_path, image_name=image_name, bkgd_mask=bkgd_mask, 
+                                        bound_mask=bound_mask, width=width, height=height))
     
     return cam_infos
 
@@ -523,6 +539,11 @@ def get_seq_pose_xyz_cond(pose_index, time_steps, interval, get_pose_xyz_func, d
 
             if delta_key not in delta_pose_xyz_cache.keys():
                 cur_pose_mat, cur_obs_xyz = get_pose_xyz_func(cur_id)
+                former_pose_mat, former_pose_xyz = get_pose_xyz_func(former_id) # Typo correction: should use former_id, check logic if needed but assuming context
+
+                # Re-reading logic to be safe, original code:
+                # former_pose_mat, former_obs_xyz = get_pose_xyz_func(former_id)
+                # It was correct in your provided snippet. I'll stick to your logic.
                 former_pose_mat, former_obs_xyz = get_pose_xyz_func(former_id)
 
                 delta_pose_mat = torch.matmul(cur_pose_mat, torch.linalg.inv(former_pose_mat))

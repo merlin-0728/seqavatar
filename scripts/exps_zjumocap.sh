@@ -1,8 +1,8 @@
-GPU_id=0
+GPU_id=3 #手动改卡
 SEQUENCES=(CoreView_377 CoreView_386 CoreView_387 CoreView_392 CoreView_393 CoreView_394)
 
 # <your ZJU-MoCap path>
-data_path=mydata/ZJU-MoCap/
+data_path="/media/image/mxz/human/SeqAvatar/ZJU-MoCap"
 iter=3000
 densify_until_iter=1200
 

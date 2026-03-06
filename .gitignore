@@ -9,3 +9,33 @@ screenshots
 smpl_model/models/*.pkl
 mydata
 vis
+# =====================
+# logs
+*.log
+
+# checkpoints / models
+*.pth
+*.pt
+*.ckpt
+*.pkl
+*.npz
+
+# datasets
+DNA-Rendering/
+I3D-Human/
+ZJU-MoCap/
+
+# python cache
+__pycache__/
+*.pyc
+
+# build
+*.egg-info
+build/
+dist/
+
+# large compressed files
+*.zip
+*.tar
+*.tar.gz
+

@@ -1,10 +1,10 @@
-GPU_id=0
+GPU_id=3
 SEQUENCES=(0007_04 0019_10 0044_11 0051_09 0206_04 0813_05)
 
 # <your DNA-Rendering path>
-data_path=mydata/DNA-Rendering_processed/
+data_path=/media/image/mxz/human/SeqAvatar/DNA-Rendering
 iter=25000
-densify_until_iter=1800
+densify_until_iter=1500
 
 seq_len=8
 seq_xyz_knn=8

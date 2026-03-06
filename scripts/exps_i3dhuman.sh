@@ -1,8 +1,8 @@
-GPU_id=0
+GPU_id=1
 SEQUENCES=(ID1_1 ID1_2 ID2_1 ID3_1)
 
 # <your I3D-Human path>
-data_path=mydata/I3D-Human/
+data_path="/media/image/mxz/human/SeqAvatar/I3D-Human/"
 iter=15000
 densify_until_iter=1800
 

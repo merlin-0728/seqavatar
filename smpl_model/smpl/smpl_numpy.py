@@ -22,7 +22,8 @@ class SMPL():
 
         with open(model_paths[sex], 'rb') as f:
             smpl_model = pickle.load(f, encoding='latin1')
-        self.J_regressor = np.array(smpl_model['J_regressor'].todense()) # (24, 6890)
+        #self.J_regressor = np.array(smpl_model['J_regressor'].todense()) # (24, 6890)
+        self.J_regressor = np.array(smpl_model['J_regressor'])
         self.weights = smpl_model['weights'] # (6890, 24)
         self.posedirs = smpl_model['posedirs'] # (6890, 3, 207)
         self.v_template = smpl_model['v_template'] # (6890, 3)
