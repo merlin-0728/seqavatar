@@ -1,6 +1,9 @@
 GPU_id=3
 SEQUENCES=(0007_04 0019_10 0044_11 0051_09 0206_04 0813_05)
 
+# --- WANDB 新增：定义项目名称 ---
+export WANDB_PROJECT="SeqAvatar_DNA_Rendering"
+
 # <your DNA-Rendering path>
 data_path=/media/image/mxz/human/SeqAvatar/DNA-Rendering
 iter=25000
@@ -21,6 +24,9 @@ for SEQUENCE in ${SEQUENCES[@]}; do
     dataset_path=$data_path/$SEQUENCE/
     model_path=output/$exp_name/
     mkdir -p "$model_path/logs"
+
+    # --- WANDB 新增：为当前的 Sequence 运行动态命名 ---
+    export WANDB_NAME="train_${SEQUENCE}"
 
     # Train
     echo "Training on GPU $GPU_id for sequence $SEQUENCE"

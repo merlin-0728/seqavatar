@@ -1,5 +1,5 @@
-GPU_id=3 #手动改卡
-SEQUENCES=(CoreView_377 CoreView_386 CoreView_387 CoreView_392 CoreView_393 CoreView_394)
+GPU_id=2 #手动改卡
+SEQUENCES=(CoreView_377)
 
 # <your ZJU-MoCap path>
 data_path="/media/image/mxz/human/SeqAvatar/ZJU-MoCap"

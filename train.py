@@ -27,6 +27,10 @@ from arguments import ModelParams, PipelineParams, OptimizationParams
 import shutil
 from torchvision.ops import masks_to_boxes
 import time
+
+# --- WANDB 新增：引入库 ---
+import wandb
+
 torch.backends.cudnn.enabled = False
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -139,6 +143,22 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             mask_loss_for_log = 0.4 * alpha_loss.item() + 0.6 * mask_loss_for_log
             ssim_loss_for_log = 0.4 * ssim_loss.item() + 0.6 * ssim_loss_for_log
             lpips_loss_for_log = 0.4 * lpips_loss.item() + 0.6 * lpips_loss_for_log
+            
+            # --- WANDB 新增：记录每一轮训练的指标 ---
+            if iteration % 10 == 0:  # 为了不拖慢速度，和 tqdm 进度条同频，每 10 次记录一次
+                wandb.log({
+                    "Train/Total_Loss": loss.item(),
+                    "Train/L1_Loss": Ll1.item(),
+                    "Train/Alpha_Loss": alpha_loss.item(),
+                    "Train/SSIM_Loss": ssim_loss.item(),
+                    "Train/LPIPS_Loss": lpips_loss.item(),
+                    "Train/AIAP_XYZ_Loss": loss_aiap_xyz.item(),
+                    "Train/AIAP_COV_Loss": loss_aiap_cov.item(),
+                    "Train/Num_Points": gaussians._xyz.shape[0],
+                    "iteration": iteration
+                })
+            # ----------------------------------------
+            
             if iteration % 10 == 0:
                 progress_bar.set_postfix({"#pts": gaussians._xyz.shape[0], "Ll1 Loss": f"{Ll1_loss_for_log:.{3}f}", "mask Loss": f"{mask_loss_for_log:.{2}f}",
                                           "ssim": f"{ssim_loss_for_log:.{2}f}", "lpips": f"{lpips_loss_for_log:.{2}f}"})
@@ -271,6 +291,16 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr', psnr_test, iteration)
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - ssim', ssim_test, iteration)
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - lpips', lpips_test, iteration)
+                    
+                # --- WANDB 新增：记录测试集的验证指标 ---
+                wandb.log({
+                    f"Eval_{config['name']}/L1_Loss": l1_test,
+                    f"Eval_{config['name']}/PSNR": psnr_test,
+                    f"Eval_{config['name']}/SSIM": ssim_test,
+                    f"Eval_{config['name']}/LPIPS": lpips_test,
+                    "iteration": iteration
+                })
+                # ----------------------------------------
 
         # Store data (serialize)
         if iteration in saving_iterations:
@@ -313,7 +343,16 @@ if __name__ == "__main__":
 
     # network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
+
+    # --- WANDB 新增：初始化项目并自动保存所有超参数 ---
+    wandb.init(config=vars(args))
+    # --------------------------------------------------
+
     training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
 
     # All done
     print("\nTraining complete.")
+
+    # --- WANDB 新增：结束同步并安全退出 ---
+    wandb.finish()
+    # ------------------------------------
