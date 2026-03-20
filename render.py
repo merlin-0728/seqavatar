@@ -26,14 +26,18 @@ from gaussian_renderer import GaussianModel
 from utils.image_utils import psnr
 from utils.loss_utils import ssim
 import lpips
+
+# --- [WANDB 新增] 引入库 ---
+import wandb
+
 loss_fn_vgg = lpips.LPIPS(net='vgg').to(torch.device('cuda', torch.cuda.current_device()))
 
 def render_set(model_path, name, iteration, views, gaussians, pipeline, background):
-    render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
-    gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
-
-    makedirs(render_path, exist_ok=True)
-    makedirs(gts_path, exist_ok=True)
+    # 【修改点 1】注释掉本地创建文件夹的逻辑，不再占用本地硬盘
+    # render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
+    # gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
+    # makedirs(render_path, exist_ok=True)
+    # makedirs(gts_path, exist_ok=True)
 
     # Load data (deserialize)
     with open(model_path + '/smpl_rot/' + f'iteration_{iteration}/' + 'smpl_rot.pickle', 'rb') as handle:
@@ -68,6 +72,10 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
     print("Elapsed time: ", elapsed_time, " FPS: ", len(views)/elapsed_time) 
 
     psnrs, ssims, lpipss = 0.0, 0.0, 0.0
+    
+    # --- [WANDB 新增] 用于收集上传图片的列表 ---
+    wandb_renders = []
+    wandb_gts = []
 
     for id in range(len(views)):
         rendering = rgbs[id]
@@ -75,8 +83,13 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
         rendering = torch.clamp(rendering, 0.0, 1.0)
         gt = torch.clamp(gt, 0.0, 1.0)
 
-        torchvision.utils.save_image(rendering, os.path.join(render_path, views[id].image_name + ".png"))
-        torchvision.utils.save_image(gt, os.path.join(gts_path, views[id].image_name + ".png"))
+        # 【修改点 2】注释掉本地保存图片的逻辑
+        # torchvision.utils.save_image(rendering, os.path.join(render_path, views[id].image_name + ".png"))
+        # torchvision.utils.save_image(gt, os.path.join(gts_path, views[id].image_name + ".png"))
+
+        # --- [WANDB 新增] 将张量打包为 wandb.Image 对象，附带文件名作为标注 ---
+        wandb_renders.append(wandb.Image(rendering, caption=f"Render_{views[id].image_name}"))
+        wandb_gts.append(wandb.Image(gt, caption=f"GT_{views[id].image_name}"))
 
         # metrics
         psnrs += psnr(rendering, gt).mean().double()
@@ -89,6 +102,16 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
 
     # evalution metrics
     print("\n[ITER {}] Evaluating {} #{}: PSNR {} SSIM {} LPIPS {}".format(iteration, name, len(views), psnrs, ssims, lpipss))
+
+    # --- [WANDB 新增] 一次性将所有图片和当前视角的指标上传到 WandB ---
+    wandb.log({
+        f"Eval_{name}/Rendered_Images": wandb_renders,
+        f"Eval_{name}/Ground_Truth": wandb_gts,
+        f"Eval_{name}/Avg_PSNR": psnrs,
+        f"Eval_{name}/Avg_SSIM": ssims,
+        f"Eval_{name}/Avg_LPIPS": lpipss,
+        "iteration": iteration
+    })
 
 def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool):
     with torch.no_grad():
@@ -119,4 +142,17 @@ if __name__ == "__main__":
     # Initialize system state (RNG)
     safe_state(args.quiet)
 
+    # --- [WANDB 新增] 初始化渲染阶段的看板 ---
+    # 我们用 job_type="eval" 来区分它和训练任务，并用文件夹名作为实验名
+    exp_name = os.path.basename(args.model_path.rstrip('/'))
+    wandb.init(
+        project="SeqAvatar", 
+        name=f"Eval_{exp_name}", 
+        job_type="eval",
+        config=vars(args)
+    )
+
     render_sets(model.extract(args), args.iteration, pipeline.extract(args), args.skip_train, args.skip_test)
+
+    # --- [WANDB 新增] 结束并同步数据 ---
+    wandb.finish()

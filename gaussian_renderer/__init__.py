@@ -11,6 +11,7 @@
 
 import torch
 import math
+import torch.nn.functional as F
 from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
 from scene.gaussian_model import GaussianModel
 from utils.sh_utils import eval_sh
@@ -52,6 +53,8 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     means3D = pc.get_xyz[None]
     pose_id = viewpoint_camera.pose_id
     smpl_params = pc.smpl_params_dict[pose_id]
+    
+    # ---------------- 人体形变前向传播 ----------------
     if not pc.motion_offset_flag:
         means3D, transforms, _ = pc.coarse_deform_c2source(means3D, smpl_params)
     else:
@@ -68,7 +71,6 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         # non rigid
         if pc.non_rigid_flag:
             if d_nonrigid is None:
-                
                 pose_conds = pc.cond_dict[pose_id]['pose_conds']
                 seq_pose_conds = pc.cond_dict[pose_id]['seq_pose_conds']
                 seq_xyz_conds = pc.cond_dict[pose_id]['seq_xyz_conds']
@@ -83,7 +85,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             
             means3D = means3D + d_xyz
 
-        # rigid
+        # rigid 
         if transforms is None:
             means3D, transforms, translation = pc.coarse_deform_c2source(means3D, smpl_params, 
                                 lbs_weights=lbs_weights, correct_Rs=correct_Rs, return_transl=return_smpl_rot)
@@ -91,31 +93,34 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             means3D = torch.matmul(transforms, means3D[..., None]).squeeze(-1) + translation
 
     means3D = means3D.squeeze()
+    transforms = transforms.squeeze()
+
+    # ---------------- 处理法线的旋转与归一化 ----------------
+    base_normals = pc.get_normal  
+    deformed_normals = torch.bmm(transforms, base_normals.unsqueeze(-1)).squeeze(-1)
+    deformed_normals = F.normalize(deformed_normals, p=2, dim=-1)
+
     means2D = screenspace_points
     opacity = pc.get_opacity
 
-    # If precomputed 3d covariance is provided, use it. If not, then it will be computed from
-    # scaling / rotation by the rasterizer.
     scales = None
     rotations = None
     cov3D_precomp = None
 
     if pc.non_rigid_flag:
         if pipe.compute_cov3D_python:
-            cov3D_precomp = pc.get_covariance(scaling_modifier, transforms.squeeze(), \
+            cov3D_precomp = pc.get_covariance(scaling_modifier, transforms, \
                                               d_rotation=d_rotation[0], d_scaling=d_scaling[0])
         else:
             scales = pc.get_scaling + d_scaling[0]
             rotations = pc.get_rotation + d_rotation[0]
     else:
         if pipe.compute_cov3D_python:
-            cov3D_precomp = pc.get_covariance(scaling_modifier, transforms.squeeze())
+            cov3D_precomp = pc.get_covariance(scaling_modifier, transforms)
         else:
             scales = pc.get_scaling
             rotations = pc.get_rotation
 
-    # If precomputed colors are provided, use them. Otherwise, if it is desired to precompute colors
-    # from SHs in Python, do it. If not, then SH -> RGB conversion will be done by rasterizer.
     shs = None
     colors_precomp = None
     if override_color is None:
@@ -130,16 +135,30 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     else:
         colors_precomp = override_color
 
-    # Rasterize visible Gaussians to image, obtain their radii (on screen). 
-    rendered_image, radii, _, alpha = rasterizer(
+    # Rasterize visible Gaussians to image
+    # [3DHGS 修改] 修复了关键字，增加了 cov3D_precomp_small
+    raster_out = rasterizer(
         means3D = means3D,
         means2D = means2D,
         shs = shs,
         colors_precomp = colors_precomp,
-        opacities = opacity,
+        opacities = opacity, 
         scales = scales,
         rotations = rotations,
-        cov3D_precomp = cov3D_precomp)
+        normal = deformed_normals, # 必须是单数 normal
+        cov3D_precomp = cov3D_precomp,
+        cov3D_precomp_small = None)
+
+    # 兼容处理返回值：如果 3DHGS 没有返回 alpha，自动补齐
+    if len(raster_out) == 2:
+        rendered_image, radii = raster_out
+        alpha = torch.ones_like(rendered_image[0:1, ...]) # 生成一个虚拟的 alpha
+    elif len(raster_out) == 4:
+        rendered_image, radii, _, alpha = raster_out
+    else:
+        # 万一有其他魔改返回结构
+        rendered_image, radii = raster_out[0], raster_out[1]
+        alpha = torch.ones_like(rendered_image[0:1, ...])
 
     return {"render": rendered_image,
             "render_alpha": alpha,
@@ -150,4 +169,5 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             "transforms": transforms,
             "translation": translation,
             "deformed_means3D": means3D,
-            "deformed_cov3D": cov3D_precomp}
+            "deformed_cov3D": cov3D_precomp,
+            "deformed_normals": deformed_normals}

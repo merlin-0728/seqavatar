@@ -184,6 +184,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
                     gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
                 
+                # [3DHGS]: 这里的重置逻辑我们已经在 gaussian_model 里用 torch.min 适配了双通道
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
 
@@ -310,7 +311,8 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                 pickle.dump(smpl_rot, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
         if tb_writer:
-            tb_writer.add_histogram("scene/opacity_histogram", scene.gaussians.get_opacity, iteration)
+            # [3DHGS 修改]: 这里因为 get_opacity 返回的是 (N, 2)，而直方图绘制只能接受 1D 数组，所以加了一个 .view(-1) 将其打平。
+            tb_writer.add_histogram("scene/opacity_histogram", scene.gaussians.get_opacity.view(-1), iteration)
             tb_writer.add_scalar('total_points', scene.gaussians.get_xyz.shape[0], iteration)
 
 if __name__ == "__main__":

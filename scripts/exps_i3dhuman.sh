@@ -1,4 +1,4 @@
-GPU_id=1
+GPU_id=2
 SEQUENCES=(ID1_1 ID1_2 ID2_1 ID3_1)
 
 # <your I3D-Human path>
