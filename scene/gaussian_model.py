@@ -69,7 +69,7 @@ class GaussianModel:
         self.spatial_lr_scale = 0
         self.setup_functions()
         self.device=torch.device('cuda', torch.cuda.current_device())
-        # load SMPL model
+        
         if smpl_type == 'smpl':
             neutral_smpl_path = os.path.join('smpl_model/models', f'SMPL_{actor_gender.upper()}.pkl')
         elif smpl_type == 'smplx':
@@ -82,7 +82,6 @@ class GaussianModel:
         self.smpl_params_dict = None
         self.cond_dict = None
 
-        # load knn module
         self.knn = KNN(k=1, transpose_mode=True)
         self.seq_xyz_knn = args.seq_xyz_knn
         self.custom_knn_near = KNN(k=self.seq_xyz_knn, transpose_mode=True)
@@ -94,15 +93,12 @@ class GaussianModel:
         self.nonrigid_deltaxyzconds_flag = args.nonrigid_deltaxyzconds_flag
 
         if self.motion_offset_flag:
-            # load pose correction module
             total_bones = self.SMPL_NEUTRAL['weights'].shape[-1]
             self.pose_decoder = BodyPoseRefiner(total_bones=total_bones, embedding_size=3*(total_bones-1), mlp_width=128, mlp_depth=2).to(self.device)
 
-            # load lbs weight module
             self.pos_embed_fn, pos_embed_ch = get_embedder(10, 3)
             self.lweight_offset_decoder = LBSOffsetDecoder(total_bones).to(self.device)
 
-            # non-rigid deformer
             if self.non_rigid_flag:
                 self.non_rigid_deformer = NonrigidDeformer(pos_input_dim=pos_embed_ch,
                         use_pose_cond=self.nonrigid_poseconds_flag, use_seq_pose_cond=self.nonrigid_deltaposeconds_flag, use_seq_xyz_cond=self.nonrigid_deltaxyzconds_flag, 
@@ -178,14 +174,9 @@ class GaussianModel:
     def get_covariance(self, scaling_modifier = 1, transform=None, d_rotation=None, d_scaling=None):
         if d_rotation is not None:
             scaling = self.get_scaling + d_scaling
-            # rotation = self._rotation + d_rotation
-
             q1 = d_rotation
-            # q1[0] = 1. # [1,0,0,0] represents identity rotation
-            # d_rotation = d_rotation[1:]
             q2 = self._rotation
             rotation = quaternion_multiply(q1, q2)
-
         else:
             scaling = self.get_scaling
             rotation = self._rotation
@@ -197,16 +188,61 @@ class GaussianModel:
 
     def create_from_pcd(self, pcd : BasicPointCloud, spatial_lr_scale : float):
         self.spatial_lr_scale = spatial_lr_scale
-        fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
-        fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
+        
+        # ========================================================
+        # 🚀 [VGGT 终极融合态注入] 包含所有安全机制
+        # ========================================================
+        vggt_init_path = "/media/image/mxz/human/SeqAvatar/DNA-Rendering/0007_04/OUTPUT_PT/vggt_canonical_init_0402.pt"
+        if os.path.exists(vggt_init_path):
+            print(f"\n🌟 [SeqAvatar Hack] 正在加载 VGGT 高精度服饰初始点云: {vggt_init_path}")
+            vggt_data = torch.load(vggt_init_path, map_location="cuda")
+            
+            raw_points = vggt_data['xyz'].float().cuda()
+            raw_weights = vggt_data.get('weights', None)
+            if raw_weights is not None:
+                raw_weights = raw_weights.float().cuda()
+            
+            # --- 步骤 1：物理切除离群点 ---
+            distances = torch.norm(raw_points, dim=-1)
+            valid_mask = distances < 1.2
+            filtered_points = raw_points[valid_mask]
+            filtered_weights = raw_weights[valid_mask] if raw_weights is not None else None
+            print(f"✅ 空间滤波：清除了 {raw_points.shape[0] - filtered_points.shape[0]} 个致命游离噪点。")
+
+            # --- 步骤 2：强制限制显存 (防 34GB 爆炸) 与维度对齐 ---
+            MAX_POINTS = 60000
+            if filtered_points.shape[0] > MAX_POINTS:
+                print(f"⚠️ 点数过大 ({filtered_points.shape[0]}), 正在同步压缩至安全水位 {MAX_POINTS}点...")
+                indices = torch.randperm(filtered_points.shape[0])[:MAX_POINTS]
+                fused_point_cloud = filtered_points[indices]
+                fused_weights = filtered_weights[indices] if filtered_weights is not None else None
+            else:
+                fused_point_cloud = filtered_points
+                fused_weights = filtered_weights
+
+            # --- 步骤 3：强制注入自定义权重 ---
+            if fused_weights is not None:
+                self.lbs_weights = fused_weights
+                print(f"✅ 权重绑定成功：已注入 {self.lbs_weights.shape[0]} 个 LBS 先验。")
+
+            fused_color = RGB2SH(torch.ones((fused_point_cloud.shape[0], 3)).float().cuda() * 0.5)
+        else:
+            print("\n⚠️ 未找到 VGGT 先验，退回默认初始化...")
+            fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
+            fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
+        # ========================================================
+
         features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
         features[:, :3, 0 ] = fused_color
         features[:, 3:, 1:] = 0.0
 
-        print("Number of points at initialisation : ", fused_point_cloud.shape[0])
-
-        dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)
-        scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3)
+        # ========================================================
+        # 🛡️ 终极防 NaN / Inf 补丁
+        # ========================================================
+        dist2 = torch.clamp(distCUDA2(fused_point_cloud), min=1e-7, max=1.0)
+        scales = torch.clamp(torch.log(torch.sqrt(dist2)), min=-10.0, max=-4.0)[...,None].repeat(1, 3) # 放宽高斯球体积的限制
+        scales = torch.nan_to_num(scales, nan=-5.0, posinf=-4.0, neginf=-10.0)
+        
         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
         rots[:, 0] = 1
 
@@ -262,7 +298,6 @@ class GaussianModel:
         self.mlp_scheduler = torch.optim.lr_scheduler.ExponentialLR(self.mlp_optimizer, gamma=gamma)
 
     def update_learning_rate(self, iteration):
-        ''' Learning rate scheduling per step '''
         for param_group in self.optimizer.param_groups:
             if param_group["name"] == "xyz":
                 lr = self.xyz_scheduler_args(iteration)
@@ -271,7 +306,6 @@ class GaussianModel:
 
     def construct_list_of_attributes(self):
         l = ['x', 'y', 'z', 'nx', 'ny', 'nz']
-        # All channels except the 3 DC
         for i in range(self._features_dc.shape[1]*self._features_dc.shape[2]):
             l.append('f_dc_{}'.format(i))
         for i in range(self._features_rest.shape[1]*self._features_rest.shape[2]):
@@ -333,11 +367,9 @@ class GaussianModel:
 
         extra_f_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("f_rest_")]
         extra_f_names = sorted(extra_f_names, key = lambda x: int(x.split('_')[-1]))
-        assert len(extra_f_names)==3*(self.max_sh_degree + 1) ** 2 - 3
         features_extra = np.zeros((xyz.shape[0], len(extra_f_names)))
         for idx, attr_name in enumerate(extra_f_names):
             features_extra[:, idx] = np.asarray(plydata.elements[0][attr_name])
-        # Reshape (P,F*SH_coeffs) to (P, F, SH_coeffs except DC)
         features_extra = features_extra.reshape((features_extra.shape[0], 3, (self.max_sh_degree + 1) ** 2 - 1))
 
         scale_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("scale_")]
@@ -385,8 +417,12 @@ class GaussianModel:
     def _prune_optimizer(self, mask):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
+<<<<<<< Updated upstream
             # 3DHGS: Include 'normal' in pruning
             if group["name"] in ['xyz', 'f_dc', 'f_rest', 'opacity', 'scaling', 'rotation', 'normal']:
+=======
+            if group["name"] in ['xyz', 'f_dc', 'f_rest', 'opacity', 'scaling', 'rotation']:
+>>>>>>> Stashed changes
                 stored_state = self.optimizer.state.get(group['params'][0], None)
                 if stored_state is not None:
                     stored_state["exp_avg"] = stored_state["exp_avg"][mask]
@@ -422,8 +458,12 @@ class GaussianModel:
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
+<<<<<<< Updated upstream
             # 3DHGS: Include 'normal' in concate
             if group["name"] in ['xyz', 'f_dc', 'f_rest', 'opacity', 'scaling', 'rotation', 'normal']:
+=======
+            if group["name"] in ['xyz', 'f_dc', 'f_rest', 'opacity', 'scaling', 'rotation']:
+>>>>>>> Stashed changes
                 extension_tensor = tensors_dict[group["name"]]
                 stored_state = self.optimizer.state.get(group['params'][0], None)
                 if stored_state is not None:
@@ -466,7 +506,6 @@ class GaussianModel:
 
     def densify_and_split(self, grads, grad_threshold, scene_extent, N=2):
         n_init_points = self.get_xyz.shape[0]
-        # Extract points that satisfy the gradient condition
         padded_grad = torch.zeros((n_init_points), device="cuda")
         padded_grad[:grads.shape[0]] = grads.squeeze()
         selected_pts_mask = torch.where(padded_grad >= grad_threshold, True, False)
@@ -491,7 +530,6 @@ class GaussianModel:
         self.prune_points(prune_filter)
 
     def densify_and_clone(self, grads, grad_threshold, scene_extent):
-        # Extract points that satisfy the gradient condition
         selected_pts_mask = torch.where(torch.norm(grads, dim=-1) >= grad_threshold, True, False)
         selected_pts_mask = torch.logical_and(selected_pts_mask,
                                               torch.max(self.get_scaling, dim=1).values <= self.percent_dense*scene_extent)
@@ -527,14 +565,13 @@ class GaussianModel:
 
     def get_canon2Tpose_transform(self, cannon_pose_params):
         self.A2T_pose_tranform, _, _, _ = get_transform_params_torch(self.SMPL_NEUTRAL, cannon_pose_params)
-        # pose dir
         vertices_num = self.canon_vertices.shape[1]
         posedirs = self.SMPL_NEUTRAL['posedirs'].cuda().float()
         pose_ = cannon_pose_params['poses']
         ident = torch.eye(3).cuda().float()
         batch_size = pose_.shape[0]
         rot_mats = batch_rodrigues(pose_.view(-1, 3)).view([batch_size, -1, 3, 3])
-        pose_feature = (rot_mats[:, 1:, :, :] - ident).view([batch_size, -1])#.cuda()
+        pose_feature = (rot_mats[:, 1:, :, :] - ident).view([batch_size, -1])
         
         self.canon_pose_offsets = torch.matmul(pose_feature.unsqueeze(1), posedirs.view(vertices_num*3, -1).transpose(1,0).unsqueeze(0)).view(batch_size, -1, 3)
 
@@ -542,37 +579,34 @@ class GaussianModel:
         bs = query_pts.shape[0]
         joints_num = self.SMPL_NEUTRAL['weights'].shape[-1]
         vertices_num = self.canon_vertices.shape[1]
-        # Find nearest smpl vertex        
+        
         _, vert_ids = self.knn(self.canon_vertices, query_pts)
         if lbs_weights is None:
-            bweights = self.SMPL_NEUTRAL['weights'][vert_ids].view(*vert_ids.shape[:2], joints_num)#.cuda() # [bs, points_num, joints_num]
+            bweights = self.SMPL_NEUTRAL['weights'][vert_ids].view(*vert_ids.shape[:2], joints_num)
         else:
             bweights = self.SMPL_NEUTRAL['weights'][vert_ids].view(*vert_ids.shape[:2], joints_num)
             bweights = torch.log(bweights + 1e-9) + lbs_weights
             bweights = F.softmax(bweights, dim=-1)
 
-        ### From A Pose (canonical space) To T Pose
         A2T_pose_RT = torch.matmul(bweights, self.A2T_pose_tranform.reshape(bs, joints_num, -1))
         A2T_pose_RT = torch.reshape(A2T_pose_RT, (bs, -1, 4, 4))
         query_pts = query_pts - A2T_pose_RT[..., :3, 3]
         A2T_pose_R_inv = torch.inverse(A2T_pose_RT[..., :3, :3].float())
         query_pts = torch.matmul(A2T_pose_R_inv, query_pts[..., None]).squeeze(-1)
 
-        # transforms from A Pose (canonical space) To T Pose
         transforms = A2T_pose_R_inv
         translation = None
 
-        canon_pose_offsets = torch.gather(self.canon_pose_offsets, 1, vert_ids.expand(-1, -1, 3)) # [bs, N_rays*N_samples, 3]
+        canon_pose_offsets = torch.gather(self.canon_pose_offsets, 1, vert_ids.expand(-1, -1, 3)) 
         query_pts = query_pts - canon_pose_offsets
 
-        # From mean shape to normal shape
-        shapedirs = self.SMPL_NEUTRAL['shapedirs'][..., :params['shapes'].shape[-1]]#.cuda()
+        shapedirs = self.SMPL_NEUTRAL['shapedirs'][..., :params['shapes'].shape[-1]]
         shapedirs = shapedirs.unsqueeze(0).expand(bs, *shapedirs.shape)
         shape_offset = torch.matmul(shapedirs, torch.reshape(params['shapes'].cuda(), (bs, 1, -1, 1))).squeeze(-1)
-        shape_offset = torch.gather(shape_offset, 1, vert_ids.expand(-1, -1, 3)) # [bs, N_rays*N_samples, 3]
+        shape_offset = torch.gather(shape_offset, 1, vert_ids.expand(-1, -1, 3)) 
         query_pts = query_pts + shape_offset
 
-        posedirs = self.SMPL_NEUTRAL['posedirs']#.cuda().float()
+        posedirs = self.SMPL_NEUTRAL['posedirs']
         ident = torch.eye(3).cuda().float()
         rot_mats = params['rot_mats']
 
@@ -581,12 +615,11 @@ class GaussianModel:
             rot_mats_no_root = torch.matmul(rot_mats_no_root, correct_Rs)
             rot_mats = torch.cat([rot_mats[:, 0:1], rot_mats_no_root], dim=1)
 
-        tgt_pose_feature = (rot_mats[:, 1:, :, :] - ident).view([bs, -1])#.cuda()
+        tgt_pose_feature = (rot_mats[:, 1:, :, :] - ident).view([bs, -1])
         tgt_pose_offsets = torch.matmul(tgt_pose_feature.unsqueeze(1), posedirs.view(vertices_num*3, -1).transpose(1,0).unsqueeze(0)).view(bs, -1, 3)
-        tgt_pose_offsets = torch.gather(tgt_pose_offsets, 1, vert_ids.expand(-1, -1, 3)) # [bs, N_rays*N_samples, 3]
+        tgt_pose_offsets = torch.gather(tgt_pose_offsets, 1, vert_ids.expand(-1, -1, 3)) 
         query_pts = query_pts + tgt_pose_offsets
 
-        # T Pose to target Pose (observation space)
         cnt2tgt_rigid_RT, global_R, global_Th, joints = get_transform_params_torch(self.SMPL_NEUTRAL, params, rot_mats=rot_mats)
         cnt2tgt_rigid_RT = torch.matmul(bweights, cnt2tgt_rigid_RT.reshape(bs, joints_num, -1))
         cnt2tgt_rigid_RT = torch.reshape(cnt2tgt_rigid_RT, (bs, -1, 4, 4))
@@ -594,12 +627,10 @@ class GaussianModel:
         smpl_tgt_pts = smpl_tgt_pts + cnt2tgt_rigid_RT[..., :3, 3]
         transforms = torch.matmul(cnt2tgt_rigid_RT[..., :3, :3], transforms)
 
-        # transform points from the smpl space to the world space
         global_R_inv = torch.inverse(global_R)
         world_pts = torch.matmul(smpl_tgt_pts, global_R_inv) + global_Th.view(bs, 1, -1)
         transforms = torch.matmul(global_R.view(bs, 1, 3, 3), transforms)
 
-        # all transl
         if return_transl: 
             translation = -A2T_pose_RT[..., :3, 3]
             translation = torch.matmul(A2T_pose_R_inv, translation[..., None]).squeeze(-1)

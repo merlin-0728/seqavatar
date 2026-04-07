@@ -14,6 +14,7 @@ from scene import Scene
 import os
 import time
 import pickle
+import datetime # [新增] 用于获取当前年月日
 from tqdm import tqdm
 from os import makedirs
 from gaussian_renderer import render
@@ -27,17 +28,33 @@ from utils.image_utils import psnr
 from utils.loss_utils import ssim
 import lpips
 
+<<<<<<< Updated upstream
 # --- [WANDB 新增] 引入库 ---
+=======
+# --- [WANDB 引入] ---
+>>>>>>> Stashed changes
 import wandb
 
 loss_fn_vgg = lpips.LPIPS(net='vgg').to(torch.device('cuda', torch.cuda.current_device()))
 
 def render_set(model_path, name, iteration, views, gaussians, pipeline, background):
+<<<<<<< Updated upstream
     # 【修改点 1】注释掉本地创建文件夹的逻辑，不再占用本地硬盘
     # render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
     # gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
     # makedirs(render_path, exist_ok=True)
     # makedirs(gts_path, exist_ok=True)
+=======
+    # [修改点 1 & 2] 获取当前年月日时分秒，恢复并修改本地创建文件夹逻辑
+    current_time = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    render_folder_name = f"renders_{current_time}"
+    
+    render_path = os.path.join(model_path, name, "ours_{}".format(iteration), render_folder_name)
+    gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
+    
+    makedirs(render_path, exist_ok=True)
+    makedirs(gts_path, exist_ok=True)
+>>>>>>> Stashed changes
 
     # Load data (deserialize)
     with open(model_path + '/smpl_rot/' + f'iteration_{iteration}/' + 'smpl_rot.pickle', 'rb') as handle:
@@ -77,12 +94,15 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
     wandb_renders = []
     wandb_gts = []
 
+    # [修改点 3] 移除了 wandb_renders 和 wandb_gts 列表的初始化
+
     for id in range(len(views)):
         rendering = rgbs[id]
         gt = rgbs_gt[id]
         rendering = torch.clamp(rendering, 0.0, 1.0)
         gt = torch.clamp(gt, 0.0, 1.0)
 
+<<<<<<< Updated upstream
         # 【修改点 2】注释掉本地保存图片的逻辑
         # torchvision.utils.save_image(rendering, os.path.join(render_path, views[id].image_name + ".png"))
         # torchvision.utils.save_image(gt, os.path.join(gts_path, views[id].image_name + ".png"))
@@ -90,6 +110,11 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
         # --- [WANDB 新增] 将张量打包为 wandb.Image 对象，附带文件名作为标注 ---
         wandb_renders.append(wandb.Image(rendering, caption=f"Render_{views[id].image_name}"))
         wandb_gts.append(wandb.Image(gt, caption=f"GT_{views[id].image_name}"))
+=======
+        # [修改点 2] 恢复本地保存图片的逻辑
+        torchvision.utils.save_image(rendering, os.path.join(render_path, views[id].image_name + ".png"))
+        torchvision.utils.save_image(gt, os.path.join(gts_path, views[id].image_name + ".png"))
+>>>>>>> Stashed changes
 
         # metrics
         psnrs += psnr(rendering, gt).mean().double()
@@ -103,10 +128,15 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
     # evalution metrics
     print("\n[ITER {}] Evaluating {} #{}: PSNR {} SSIM {} LPIPS {}".format(iteration, name, len(views), psnrs, ssims, lpipss))
 
+<<<<<<< Updated upstream
     # --- [WANDB 新增] 一次性将所有图片和当前视角的指标上传到 WandB ---
     wandb.log({
         f"Eval_{name}/Rendered_Images": wandb_renders,
         f"Eval_{name}/Ground_Truth": wandb_gts,
+=======
+    # [修改点 3] 移除了图像上传逻辑，仅保留客观指标的 WandB 同步
+    wandb.log({
+>>>>>>> Stashed changes
         f"Eval_{name}/Avg_PSNR": psnrs,
         f"Eval_{name}/Avg_SSIM": ssims,
         f"Eval_{name}/Avg_LPIPS": lpipss,
@@ -125,6 +155,10 @@ def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParam
 
         if not skip_test:
             for key in scene.getTestCameras().keys():
+                # [修改点 4] 过滤掉 circle 视角的渲染任务
+                if "circle" in key.lower():
+                    print(f"\nSkipping {key} rendering as requested...")
+                    continue
                 render_set(dataset.model_path, key, scene.loaded_iter, scene.getTestCameras()[key], gaussians, pipeline, background)
 
 if __name__ == "__main__":
@@ -142,8 +176,12 @@ if __name__ == "__main__":
     # Initialize system state (RNG)
     safe_state(args.quiet)
 
+<<<<<<< Updated upstream
     # --- [WANDB 新增] 初始化渲染阶段的看板 ---
     # 我们用 job_type="eval" 来区分它和训练任务，并用文件夹名作为实验名
+=======
+    # --- [WANDB] 初始化渲染阶段的看板 ---
+>>>>>>> Stashed changes
     exp_name = os.path.basename(args.model_path.rstrip('/'))
     wandb.init(
         project="SeqAvatar", 
@@ -154,5 +192,9 @@ if __name__ == "__main__":
 
     render_sets(model.extract(args), args.iteration, pipeline.extract(args), args.skip_train, args.skip_test)
 
+<<<<<<< Updated upstream
     # --- [WANDB 新增] 结束并同步数据 ---
+=======
+    # --- [WANDB] 结束并同步数据 ---
+>>>>>>> Stashed changes
     wandb.finish()

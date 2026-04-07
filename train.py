@@ -84,51 +84,75 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         gaussians.update_learning_rate(iteration)
 
-        # Every 1000 its we increase the levels of SH up to a maximum degree
         if iteration % 1000 == 0:
             gaussians.oneupSHdegree()
         
-        # Start timer
         start_time = time.time()
 
-        # Pick a random Camera
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
 
-        # Render
         if (iteration - 1) == debug_from:
             pipe.debug = True
         render_pkg = render(viewpoint_cam, gaussians, pipe, background)
         image, alpha, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["render_alpha"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
-        # Loss
         gt_image = viewpoint_cam.original_image.cuda()
         bkgd_mask = viewpoint_cam.bkgd_mask.cuda()
         bound_mask = viewpoint_cam.bound_mask.cuda()
-        # crop the object region
+        
         x1, y1, x2, y2 = masks_to_boxes(bound_mask).int().squeeze(0)
         img_pred_rect = image[:, y1:y2+1, x1:x2+1].unsqueeze(0)
         img_gt_rect = gt_image[:, y1:y2+1, x1:x2+1].unsqueeze(0)
         bound_mask = bound_mask[0] == 1
         Ll1 = l1_loss_masked(image, gt_image, bound_mask)
         alpha_loss = l2_loss_masked(alpha, bkgd_mask, bound_mask)
-        # ssim loss
+        
         ssim_loss = ssim(img_pred_rect, img_gt_rect)
-        # lipis loss
         lpips_loss = loss_fn_vgg(img_pred_rect, img_gt_rect).squeeze()
 
         loss = opt.l1_loss_w * Ll1 + 0.1 * alpha_loss + opt.ssim_loss_w * (1.0 - ssim_loss) + opt.lpips_loss_w * lpips_loss
 
-        # iospos ioscov loss
         loss_aiap_xyz, loss_aiap_cov = full_aiap_loss(scene.gaussians.get_xyz, render_pkg["deformed_means3D"], scene.gaussians.get_covariance(), render_pkg["deformed_cov3D"])
         loss = loss + opt.iospos_w * loss_aiap_xyz + opt.ioscov_w * loss_aiap_cov
         
+        # ==========================================
+        # 🛡️ 【防爆盾 A】：检查 Loss 本身
+        # ==========================================
+        if torch.isnan(loss) or torch.isinf(loss):
+            print(f"\n⚠️ 警告: 第 {iteration} 步的 Loss 出现 NaN/Inf！已跳过该步梯度更新以保护 CUDA 算子。")
+            gaussians.optimizer.zero_grad(set_to_none=True)
+            if gaussians.mlp_optimizer:
+                gaussians.mlp_optimizer.zero_grad()
+            continue
+            
         loss.backward()
 
-        # end time
+        # ==========================================
+        # 🛡️ 【防爆盾 B】：终极物理级梯度清洗 (Gradient Scrubber)
+        # ==========================================
+        # 1. 强制清洗基础高斯参数的异常梯度 (NaN/Inf 全部置 0)
+        for param_group in gaussians.optimizer.param_groups:
+            for p in param_group['params']:
+                if p.grad is not None:
+                    torch.nan_to_num_(p.grad, nan=0.0, posinf=0.0, neginf=0.0)
+        
+        # 2. 强制清洗 MLP 网络的异常梯度 (这是 CUBLAS 崩溃的直接源头)
+        if gaussians.mlp_optimizer is not None:
+            for param_group in gaussians.mlp_optimizer.param_groups:
+                for p in param_group['params']:
+                    if p.grad is not None:
+                        torch.nan_to_num_(p.grad, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # 3. 再加上全局梯度裁剪，防止更新步子太大
+        torch.nn.utils.clip_grad_norm_(gaussians.optimizer.param_groups[0]['params'], max_norm=1.0)
+        if gaussians.mlp_optimizer is not None:
+            for param_group in gaussians.mlp_optimizer.param_groups:
+                torch.nn.utils.clip_grad_norm_(param_group['params'], max_norm=1.0)
+        # ==========================================
+
         end_time = time.time()
-        # Calculate elapsed time
         elapsed_time += (end_time - start_time)
 
         if (iteration in testing_iterations):
@@ -137,15 +161,13 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         iter_end.record()
 
         with torch.no_grad():
-            # Progress bar
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
             Ll1_loss_for_log = 0.4 * Ll1.item() + 0.6 * Ll1_loss_for_log
             mask_loss_for_log = 0.4 * alpha_loss.item() + 0.6 * mask_loss_for_log
             ssim_loss_for_log = 0.4 * ssim_loss.item() + 0.6 * ssim_loss_for_log
             lpips_loss_for_log = 0.4 * lpips_loss.item() + 0.6 * lpips_loss_for_log
             
-            # --- WANDB 新增：记录每一轮训练的指标 ---
-            if iteration % 10 == 0:  # 为了不拖慢速度，和 tqdm 进度条同频，每 10 次记录一次
+            if iteration % 10 == 0: 
                 wandb.log({
                     "Train/Total_Loss": loss.item(),
                     "Train/L1_Loss": Ll1.item(),
@@ -157,7 +179,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     "Train/Num_Points": gaussians._xyz.shape[0],
                     "iteration": iteration
                 })
-            # ----------------------------------------
             
             if iteration % 10 == 0:
                 progress_bar.set_postfix({"#pts": gaussians._xyz.shape[0], "Ll1 Loss": f"{Ll1_loss_for_log:.{3}f}", "mask Loss": f"{mask_loss_for_log:.{2}f}",
@@ -172,17 +193,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
 
-            # Start timer
             start_time = time.time()
-            # Densification
             if iteration < opt.densify_until_iter:
-                # Keep track of max radii in image-space for pruning
                 gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
                 gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
 
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0 and len(gaussians.get_xyz) < 120000:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
-                    gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
+                    gaussians.densify_and_prune(opt.densify_grad_threshold, 0.001, scene.cameras_extent, size_threshold)
                 
                 # [3DHGS]: 这里的重置逻辑我们已经在 gaussian_model 里用 torch.min 适配了双通道
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
@@ -197,9 +215,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 gaussians.mlp_optimizer.zero_grad()
                 gaussians.mlp_scheduler.step()
 
-            # end time
             end_time = time.time()
-            # Calculate elapsed time
             elapsed_time += (end_time - start_time)
 
             if (iteration in checkpoint_iterations):
@@ -210,14 +226,11 @@ def prepare_output_and_logger(args):
     if not args.model_path:
         args.model_path = os.path.join("./output/", args.exp_name)
 
-        
-    # Set up output folder
     print("Output folder: {}".format(args.model_path))
     os.makedirs(args.model_path, exist_ok = True)
     with open(os.path.join(args.model_path, "cfg_args"), 'w') as cfg_log_f:
         cfg_log_f.write(str(Namespace(**vars(args))))
 
-    # Create Tensorboard writer
     tb_writer = None
     if TENSORBOARD_FOUND:
         tb_writer = SummaryWriter(args.model_path)
@@ -231,7 +244,6 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
         tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)
         tb_writer.add_scalar('iter_time', elapsed, iteration)
 
-    # Report test and samples of training set
     if iteration in testing_iterations:
         smpl_rot = {}
         validation_configs = [{'name': 'train', 'cameras' : scene.getTrainCameras()}]
@@ -293,7 +305,6 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - ssim', ssim_test, iteration)
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - lpips', lpips_test, iteration)
                     
-                # --- WANDB 新增：记录测试集的验证指标 ---
                 wandb.log({
                     f"Eval_{config['name']}/L1_Loss": l1_test,
                     f"Eval_{config['name']}/PSNR": psnr_test,
@@ -301,9 +312,7 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                     f"Eval_{config['name']}/LPIPS": lpips_test,
                     "iteration": iteration
                 })
-                # ----------------------------------------
 
-        # Store data (serialize)
         if iteration in saving_iterations:
             save_path = os.path.join(scene.model_path, 'smpl_rot', f'iteration_{iteration}')
             os.makedirs(save_path, exist_ok=True)
@@ -316,7 +325,6 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
             tb_writer.add_scalar('total_points', scene.gaussians.get_xyz.shape[0], iteration)
 
 if __name__ == "__main__":
-    # Set up command line argument parser
     seed = 0
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
@@ -340,21 +348,11 @@ if __name__ == "__main__":
     args.save_iterations.append(args.iterations)
     
     print("Optimizing " + args.model_path)
-    # Initialize system state (RNG)
     safe_state(args.quiet)
-
-    # network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
 
-    # --- WANDB 新增：初始化项目并自动保存所有超参数 ---
     wandb.init(config=vars(args))
-    # --------------------------------------------------
-
     training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
 
-    # All done
     print("\nTraining complete.")
-
-    # --- WANDB 新增：结束同步并安全退出 ---
     wandb.finish()
-    # ------------------------------------
