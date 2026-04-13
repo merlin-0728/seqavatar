@@ -1,9 +1,5 @@
 GPU_id=2
-<<<<<<< Updated upstream
-SEQUENCES=(0007_04 0019_10 0044_11 0051_09 0206_04 0813_05)
-=======
 SEQUENCES=(0007_04)
->>>>>>> Stashed changes
 
 # --- WANDB 新增：定义项目名称 ---
 export WANDB_PROJECT="SeqAvatar_DNA_Rendering"

@@ -60,8 +60,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
     viewpoint_stack = None
     ema_loss_for_log, Ll1_loss_for_log, mask_loss_for_log, ssim_loss_for_log, lpips_loss_for_log = 0.0, 0.0, 0.0, 0.0, 0.0
-    progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training")
+    total_train_iters = opt.iterations - first_iter
+    progress_bar = tqdm(total=total_train_iters, desc="Training")
     first_iter += 1
+    progress_steps = 0
+    last_logged_percent = -1
 
     elapsed_time = 0
     for iteration in range(first_iter, opt.iterations + 1):  
@@ -180,11 +183,17 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     "iteration": iteration
                 })
             
-            if iteration % 10 == 0:
+            completed_iters = iteration - first_iter + 1
+            curr_percent = int(100 * completed_iters / total_train_iters)
+            if curr_percent > last_logged_percent:
                 progress_bar.set_postfix({"#pts": gaussians._xyz.shape[0], "Ll1 Loss": f"{Ll1_loss_for_log:.{3}f}", "mask Loss": f"{mask_loss_for_log:.{2}f}",
                                           "ssim": f"{ssim_loss_for_log:.{2}f}", "lpips": f"{lpips_loss_for_log:.{2}f}"})
-                progress_bar.update(10)
+                progress_bar.update(completed_iters - progress_steps)
+                progress_steps = completed_iters
+                last_logged_percent = curr_percent
             if iteration == opt.iterations:
+                if progress_steps < total_train_iters:
+                    progress_bar.update(total_train_iters - progress_steps)
                 progress_bar.close()
 
             training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background), saving_iterations)

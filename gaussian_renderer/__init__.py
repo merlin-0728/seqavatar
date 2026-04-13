@@ -102,6 +102,9 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
 
     means2D = screenspace_points
     opacity = pc.get_opacity
+    # Compatibility: the current rasterizer expects single-channel opacity.
+    if opacity.ndim == 2 and opacity.shape[1] > 1:
+        opacity = opacity.max(dim=1, keepdim=True).values
 
     scales = None
     rotations = None
@@ -135,8 +138,8 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     else:
         colors_precomp = override_color
 
-    # Rasterize visible Gaussians to image
-    # [3DHGS 修改] 修复了关键字，增加了 cov3D_precomp_small
+    # Rasterize visible Gaussians to image.
+    # The installed diff_gaussian_rasterization API does not accept normal/cov3D_precomp_small kwargs.
     raster_out = rasterizer(
         means3D = means3D,
         means2D = means2D,
@@ -145,9 +148,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         opacities = opacity, 
         scales = scales,
         rotations = rotations,
-        normal = deformed_normals, # 必须是单数 normal
-        cov3D_precomp = cov3D_precomp,
-        cov3D_precomp_small = None)
+        cov3D_precomp = cov3D_precomp)
 
     # 兼容处理返回值：如果 3DHGS 没有返回 alpha，自动补齐
     if len(raster_out) == 2:

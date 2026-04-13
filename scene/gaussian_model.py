@@ -192,7 +192,7 @@ class GaussianModel:
         # ========================================================
         # 🚀 [VGGT 终极融合态注入] 包含所有安全机制
         # ========================================================
-        vggt_init_path = "/media/image/mxz/human/SeqAvatar/DNA-Rendering/0007_04/OUTPUT_PT/vggt_canonical_init_0402.pt"
+        vggt_init_path = "/media/image/mxz/human/SeqAvatar/DNA-Rendering/0007_04/OUTPUT_PT/vggt_canonical_init_xxx.pt"
         if os.path.exists(vggt_init_path):
             print(f"\n🌟 [SeqAvatar Hack] 正在加载 VGGT 高精度服饰初始点云: {vggt_init_path}")
             vggt_data = torch.load(vggt_init_path, map_location="cuda")
@@ -417,12 +417,8 @@ class GaussianModel:
     def _prune_optimizer(self, mask):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
-<<<<<<< Updated upstream
             # 3DHGS: Include 'normal' in pruning
             if group["name"] in ['xyz', 'f_dc', 'f_rest', 'opacity', 'scaling', 'rotation', 'normal']:
-=======
-            if group["name"] in ['xyz', 'f_dc', 'f_rest', 'opacity', 'scaling', 'rotation']:
->>>>>>> Stashed changes
                 stored_state = self.optimizer.state.get(group['params'][0], None)
                 if stored_state is not None:
                     stored_state["exp_avg"] = stored_state["exp_avg"][mask]
@@ -458,12 +454,8 @@ class GaussianModel:
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
-<<<<<<< Updated upstream
-            # 3DHGS: Include 'normal' in concate
+            # 3DHGS: Include 'normal' in concatenate
             if group["name"] in ['xyz', 'f_dc', 'f_rest', 'opacity', 'scaling', 'rotation', 'normal']:
-=======
-            if group["name"] in ['xyz', 'f_dc', 'f_rest', 'opacity', 'scaling', 'rotation']:
->>>>>>> Stashed changes
                 extension_tensor = tensors_dict[group["name"]]
                 stored_state = self.optimizer.state.get(group['params'][0], None)
                 if stored_state is not None:
