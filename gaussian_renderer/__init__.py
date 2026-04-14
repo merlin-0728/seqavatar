@@ -51,11 +51,13 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
     means3D = pc.get_xyz[None]
+    canonical_means3D = means3D.clone()
     pose_id = viewpoint_camera.pose_id
     smpl_params = pc.smpl_params_dict[pose_id]
     
     # ---------------- 人体形变前向传播 ----------------
     if not pc.motion_offset_flag:
+        canonical_means3D = means3D.clone()
         means3D, transforms, _ = pc.coarse_deform_c2source(means3D, smpl_params)
     else:
         # pose offset
@@ -77,13 +79,27 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
 
                 _, vert_ids = pc.custom_knn_near(pc.canon_vertices, means3D)
                 query_pts_delta_conds = seq_xyz_conds[vert_ids, :,:,:].permute(0, 1, 3, 2, 4, 5).contiguous()
+                point_labels = None
+                point_vgfeat = None
+                if pc.point_labels.numel() == means3D.shape[1]:
+                    point_labels = pc.point_labels.unsqueeze(0).expand(means3D.shape[0], -1)
+                if pc.point_vgfeat.ndim == 2 and pc.point_vgfeat.shape[0] == means3D.shape[1]:
+                    point_vgfeat = pc.point_vgfeat.unsqueeze(0).expand(means3D.shape[0], -1, -1)
 
-                d_xyz, d_rotation, d_scaling = pc.non_rigid_deformer(pos_embd, pose_conds, seq_pose_conds, query_pts_delta_conds)            
+                d_xyz, d_rotation, d_scaling = pc.non_rigid_deformer(
+                    pos_embd,
+                    pose_conds,
+                    seq_pose_conds,
+                    query_pts_delta_conds,
+                    point_labels=point_labels,
+                    vg_feat=point_vgfeat,
+                )
                 d_nonrigid = (d_xyz, d_rotation, d_scaling)
             else:
                 d_xyz, d_rotation, d_scaling = d_nonrigid
             
             means3D = means3D + d_xyz
+            canonical_means3D = means3D.clone()
 
         # rigid 
         if transforms is None:
@@ -167,6 +183,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             "visibility_filter" : radii > 0,
             "radii": radii,
             "d_nonrigid": d_nonrigid,
+            "canonical_means3D": canonical_means3D.squeeze(),
             "transforms": transforms,
             "translation": translation,
             "deformed_means3D": means3D,

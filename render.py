@@ -15,7 +15,9 @@ import os
 import time
 import pickle
 from tqdm import tqdm
+from os import makedirs
 from gaussian_renderer import render
+import torchvision
 from utils.general_utils import safe_state
 from argparse import ArgumentParser
 from arguments import ModelParams, PipelineParams, get_combined_args
@@ -30,7 +32,10 @@ import wandb
 loss_fn_vgg = lpips.LPIPS(net='vgg').to(torch.device('cuda', torch.cuda.current_device()))
 
 def render_set(model_path, name, iteration, views, gaussians, pipeline, background):
-    # Keep evaluation lightweight: compute metrics without saving/uploading per-view images.
+    render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
+    gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
+    makedirs(render_path, exist_ok=True)
+    makedirs(gts_path, exist_ok=True)
 
     # Load data (deserialize)
     with open(model_path + '/smpl_rot/' + f'iteration_{iteration}/' + 'smpl_rot.pickle', 'rb') as handle:
@@ -71,6 +76,9 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
         gt = rgbs_gt[id]
         rendering = torch.clamp(rendering, 0.0, 1.0)
         gt = torch.clamp(gt, 0.0, 1.0)
+
+        torchvision.utils.save_image(rendering, os.path.join(render_path, views[id].image_name + ".png"))
+        torchvision.utils.save_image(gt, os.path.join(gts_path, views[id].image_name + ".png"))
 
         # metrics
         psnrs += psnr(rendering, gt).mean().double()

@@ -69,6 +69,14 @@ class ModelParams(ParamGroup):
         self.seq_len = 8
         self.max_time_step = 6
         self.minimal_time_step = 2
+        self.vggt_init_path = ""
+        self.vggt_init_filenames = "vggt_canonical_init.pt,vggt_canonical_init_0402.pt,vggt_canonical_init_0404_5.5w.pt,vggt_canonical_init_0404_5w.pt"
+        self.vggt_max_points = 60000
+        self.vggt_jitter_std = 0.0
+        self.vggt_feat_dim = 1
+        self.use_label_embedding = True
+        self.label_embedding_dim = 8
+        self.use_dual_source_branch = False
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
@@ -105,6 +113,7 @@ class OptimizationParams(ParamGroup):
         self.densify_from_iter = 400 #500
         self.densify_until_iter = 1500 #15_000
         self.densify_grad_threshold = 0.0002
+        self.prune_opacity_threshold = 0.001
         self.mlp_lr_ratio = 0.1
 
         self.lpips_loss_w = 0.1
@@ -112,6 +121,8 @@ class OptimizationParams(ParamGroup):
         self.ssim_loss_w = 0.1
         self.iospos_w = 1.0
         self.ioscov_w = 100.0
+        self.lambda_vggt = 0.2
+        self.phase1_vggt_iters = 0
         super().__init__(parser, "Optimization Parameters")
 
 def get_combined_args(parser : ArgumentParser):

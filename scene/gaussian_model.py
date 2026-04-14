@@ -60,6 +60,9 @@ class GaussianModel:
         self._rotation = torch.empty(0)
         self._opacity = torch.empty(0)
         self._normal = torch.empty(0) # 3DHGS: Added normal parameter
+        self._point_labels = torch.empty(0, dtype=torch.long)
+        self._point_vgfeat = torch.empty(0)
+        self._vggt_target = torch.empty(0)
         self.max_radii2D = torch.empty(0)
         self.xyz_gradient_accum = torch.empty(0)
         self.denom = torch.empty(0)
@@ -91,6 +94,21 @@ class GaussianModel:
         self.nonrigid_poseconds_flag = args.nonrigid_poseconds_flag
         self.nonrigid_deltaposeconds_flag = args.nonrigid_deltaposeconds_flag
         self.nonrigid_deltaxyzconds_flag = args.nonrigid_deltaxyzconds_flag
+        self.source_path = getattr(args, "source_path", "")
+        self.vggt_init_path = getattr(args, "vggt_init_path", "")
+        self.vggt_init_filenames = getattr(
+            args,
+            "vggt_init_filenames",
+            "vggt_canonical_init.pt,vggt_canonical_init_0402.pt",
+        )
+        self.vggt_max_points = getattr(args, "vggt_max_points", 60000)
+        self.vggt_jitter_std = getattr(args, "vggt_jitter_std", 0.0)
+        self.vggt_feat_dim = getattr(args, "vggt_feat_dim", 1)
+        self.use_label_embedding = getattr(args, "use_label_embedding", True)
+        self.label_embedding_dim = getattr(args, "label_embedding_dim", 8)
+        self.use_dual_source_branch = getattr(args, "use_dual_source_branch", False)
+        self.has_vggt_points = False
+        self.lbs_weights = None
 
         if self.motion_offset_flag:
             total_bones = self.SMPL_NEUTRAL['weights'].shape[-1]
@@ -102,7 +120,9 @@ class GaussianModel:
             if self.non_rigid_flag:
                 self.non_rigid_deformer = NonrigidDeformer(pos_input_dim=pos_embed_ch,
                         use_pose_cond=self.nonrigid_poseconds_flag, use_seq_pose_cond=self.nonrigid_deltaposeconds_flag, use_seq_xyz_cond=self.nonrigid_deltaxyzconds_flag, 
-                        seq_len=args.seq_len, seq_xyz_knn=self.seq_xyz_knn, time_step_num=args.time_step_num, smpl_type=smpl_type).to(self.device)
+                        seq_len=args.seq_len, seq_xyz_knn=self.seq_xyz_knn, time_step_num=args.time_step_num, smpl_type=smpl_type,
+                        use_label_cond=int(self.use_label_embedding), label_emb_dim=self.label_embedding_dim,
+                        vg_feat_dim=self.vggt_feat_dim, use_dual_source_branch=int(self.use_dual_source_branch)).to(self.device)
                             
     def capture(self):
         return (
@@ -121,24 +141,85 @@ class GaussianModel:
             self.spatial_lr_scale,
             self.pose_decoder,
             self.lweight_offset_decoder,
+            self._point_labels,
+            self._point_vgfeat,
+            self._vggt_target,
+            self.has_vggt_points,
+            self.lbs_weights,
         )
     
     def restore(self, model_args, training_args):
-        (self.active_sh_degree, 
-        self._xyz, 
-        self._features_dc, 
-        self._features_rest,
-        self._scaling, 
-        self._rotation, 
-        self._opacity,
-        self._normal, # 3DHGS
-        self.max_radii2D, 
-        xyz_gradient_accum, 
-        denom,
-        opt_dict, 
-        self.spatial_lr_scale,
-        self.pose_decoder,
-        self.lweight_offset_decoder) = model_args
+        if len(model_args) >= 20:
+            (
+                self.active_sh_degree,
+                self._xyz,
+                self._features_dc,
+                self._features_rest,
+                self._scaling,
+                self._rotation,
+                self._opacity,
+                self._normal,
+                self.max_radii2D,
+                xyz_gradient_accum,
+                denom,
+                opt_dict,
+                self.spatial_lr_scale,
+                self.pose_decoder,
+                self.lweight_offset_decoder,
+                self._point_labels,
+                self._point_vgfeat,
+                self._vggt_target,
+                self.has_vggt_points,
+                self.lbs_weights,
+            ) = model_args
+        elif len(model_args) == 19:
+            (
+                self.active_sh_degree,
+                self._xyz,
+                self._features_dc,
+                self._features_rest,
+                self._scaling,
+                self._rotation,
+                self._opacity,
+                self._normal,
+                self.max_radii2D,
+                xyz_gradient_accum,
+                denom,
+                opt_dict,
+                self.spatial_lr_scale,
+                self.pose_decoder,
+                self.lweight_offset_decoder,
+                self._point_labels,
+                self._point_vgfeat,
+                self._vggt_target,
+                self.has_vggt_points,
+            ) = model_args
+            self.lbs_weights = None
+        else:
+            (
+                self.active_sh_degree,
+                self._xyz,
+                self._features_dc,
+                self._features_rest,
+                self._scaling,
+                self._rotation,
+                self._opacity,
+                self._normal,
+                self.max_radii2D,
+                xyz_gradient_accum,
+                denom,
+                opt_dict,
+                self.spatial_lr_scale,
+                self.pose_decoder,
+                self.lweight_offset_decoder,
+            ) = model_args
+            self._point_labels = torch.zeros((self._xyz.shape[0],), dtype=torch.long, device=self._xyz.device)
+            self._point_vgfeat = torch.zeros(
+                (self._xyz.shape[0], self.vggt_feat_dim), dtype=self._xyz.dtype, device=self._xyz.device
+            )
+            self._vggt_target = self._xyz.detach().clone()
+            self.has_vggt_points = False
+            self.lbs_weights = None
         self.training_setup(training_args)
         self.xyz_gradient_accum = xyz_gradient_accum
         self.denom = denom
@@ -155,6 +236,20 @@ class GaussianModel:
     @property
     def get_xyz(self):
         return self._xyz
+
+    @property
+    def point_labels(self):
+        return self._point_labels
+
+    @property
+    def point_vgfeat(self):
+        return self._point_vgfeat
+
+    @property
+    def vggt_mask(self):
+        if self._point_labels.numel() == 0:
+            return None
+        return self._point_labels == 1
     
     @property
     def get_features(self):
@@ -186,51 +281,154 @@ class GaussianModel:
         if self.active_sh_degree < self.max_sh_degree:
             self.active_sh_degree += 1
 
+    def _resolve_vggt_init_path(self):
+        candidates = []
+        if self.vggt_init_path:
+            candidates.append(self.vggt_init_path)
+        if self.source_path:
+            base_dir = os.path.join(self.source_path, "OUTPUT_PT")
+            for name in self.vggt_init_filenames.split(","):
+                name = name.strip()
+                if name:
+                    candidates.append(os.path.join(base_dir, name))
+
+        seen = set()
+        for path in candidates:
+            if path in seen:
+                continue
+            seen.add(path)
+            if os.path.exists(path):
+                return path
+        return None
+
     def create_from_pcd(self, pcd : BasicPointCloud, spatial_lr_scale : float):
         self.spatial_lr_scale = spatial_lr_scale
-        
-        # ========================================================
-        # 🚀 [VGGT 终极融合态注入] 包含所有安全机制
-        # ========================================================
-        vggt_init_path = "/media/image/mxz/human/SeqAvatar/DNA-Rendering/0007_04/OUTPUT_PT/vggt_canonical_init_xxx.pt"
-        if os.path.exists(vggt_init_path):
-            print(f"\n🌟 [SeqAvatar Hack] 正在加载 VGGT 高精度服饰初始点云: {vggt_init_path}")
-            vggt_data = torch.load(vggt_init_path, map_location="cuda")
-            
-            raw_points = vggt_data['xyz'].float().cuda()
-            raw_weights = vggt_data.get('weights', None)
-            if raw_weights is not None:
-                raw_weights = raw_weights.float().cuda()
-            
-            # --- 步骤 1：物理切除离群点 ---
-            distances = torch.norm(raw_points, dim=-1)
-            valid_mask = distances < 1.2
-            filtered_points = raw_points[valid_mask]
-            filtered_weights = raw_weights[valid_mask] if raw_weights is not None else None
-            print(f"✅ 空间滤波：清除了 {raw_points.shape[0] - filtered_points.shape[0]} 个致命游离噪点。")
+        smpl_points = torch.tensor(np.asarray(pcd.points)).float().cuda()
+        smpl_colors_rgb = torch.tensor(np.asarray(pcd.colors)).float().cuda()
+        if smpl_colors_rgb.numel() == 0:
+            smpl_colors_rgb = torch.ones((smpl_points.shape[0], 3), device="cuda") * 0.5
+        smpl_colors_sh = RGB2SH(smpl_colors_rgb)
 
-            # --- 步骤 2：强制限制显存 (防 34GB 爆炸) 与维度对齐 ---
-            MAX_POINTS = 60000
-            if filtered_points.shape[0] > MAX_POINTS:
-                print(f"⚠️ 点数过大 ({filtered_points.shape[0]}), 正在同步压缩至安全水位 {MAX_POINTS}点...")
-                indices = torch.randperm(filtered_points.shape[0])[:MAX_POINTS]
-                fused_point_cloud = filtered_points[indices]
-                fused_weights = filtered_weights[indices] if filtered_weights is not None else None
-            else:
-                fused_point_cloud = filtered_points
-                fused_weights = filtered_weights
-
-            # --- 步骤 3：强制注入自定义权重 ---
-            if fused_weights is not None:
-                self.lbs_weights = fused_weights
-                print(f"✅ 权重绑定成功：已注入 {self.lbs_weights.shape[0]} 个 LBS 先验。")
-
-            fused_color = RGB2SH(torch.ones((fused_point_cloud.shape[0], 3)).float().cuda() * 0.5)
+        smpl_vertex_weights = self.SMPL_NEUTRAL["weights"].float()
+        if smpl_vertex_weights.shape[0] != smpl_points.shape[0]:
+            _, smpl_vert_ids = self.knn(self.canon_vertices, smpl_points.unsqueeze(0))
+            smpl_weights = smpl_vertex_weights[smpl_vert_ids].view(smpl_points.shape[0], -1)
         else:
-            print("\n⚠️ 未找到 VGGT 先验，退回默认初始化...")
-            fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
-            fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
-        # ========================================================
+            smpl_weights = smpl_vertex_weights.clone()
+
+        labels_smpl = torch.zeros((smpl_points.shape[0],), dtype=torch.long, device="cuda")
+        vg_feat_smpl = torch.zeros((smpl_points.shape[0], self.vggt_feat_dim), dtype=torch.float, device="cuda")
+
+        fused_point_cloud = smpl_points
+        fused_weights = smpl_weights
+        fused_color = smpl_colors_sh
+        fused_labels = labels_smpl
+        fused_vgfeat = vg_feat_smpl
+        self.has_vggt_points = False
+
+        vggt_init_path = self._resolve_vggt_init_path()
+        if vggt_init_path:
+            print(f"\n🌟 [SeqAvatar] 加载 VGGT 初始化并与 SMPL 联合初始化: {vggt_init_path}")
+            vggt_data = torch.load(vggt_init_path, map_location="cpu")
+
+            if "xyz_vggt" in vggt_data:
+                raw_vggt_points = vggt_data["xyz_vggt"].float()
+                raw_vggt_weights = vggt_data.get("weights_vggt", None)
+            else:
+                raw_vggt_points = vggt_data.get("xyz", torch.empty(0, 3)).float()
+                raw_vggt_weights = vggt_data.get("weights", None)
+
+            if raw_vggt_points.numel() > 0:
+                raw_vggt_points = raw_vggt_points.cuda()
+                if raw_vggt_weights is not None:
+                    raw_vggt_weights = raw_vggt_weights.float().cuda()
+
+                # Basic outlier removal in canonical space
+                distances = torch.norm(raw_vggt_points, dim=-1)
+                valid_mask = distances < 1.2
+                vggt_points = raw_vggt_points[valid_mask]
+                if raw_vggt_weights is not None:
+                    vggt_weights = raw_vggt_weights[valid_mask]
+                else:
+                    _, vggt_vert_ids = self.knn(self.canon_vertices, vggt_points.unsqueeze(0))
+                    vggt_weights = smpl_vertex_weights[vggt_vert_ids].view(vggt_points.shape[0], -1)
+
+                if self.vggt_jitter_std > 0:
+                    vggt_points = vggt_points + torch.randn_like(vggt_points) * self.vggt_jitter_std
+
+                if "vg_feat_vggt" in vggt_data:
+                    vggt_feat = vggt_data["vg_feat_vggt"].float().cuda()
+                    vggt_feat = vggt_feat[valid_mask]
+                elif "vg_feat" in vggt_data and vggt_data["vg_feat"].shape[0] == raw_vggt_points.shape[0]:
+                    vggt_feat = vggt_data["vg_feat"].float().cuda()[valid_mask]
+                else:
+                    vggt_feat = torch.ones((vggt_points.shape[0], self.vggt_feat_dim), dtype=torch.float, device="cuda")
+
+                if vggt_feat.ndim == 1:
+                    vggt_feat = vggt_feat[:, None]
+                if vggt_feat.shape[-1] != self.vggt_feat_dim:
+                    if vggt_feat.shape[-1] > self.vggt_feat_dim:
+                        vggt_feat = vggt_feat[:, : self.vggt_feat_dim]
+                    else:
+                        pad = torch.zeros(
+                            (vggt_feat.shape[0], self.vggt_feat_dim - vggt_feat.shape[-1]),
+                            device=vggt_feat.device,
+                            dtype=vggt_feat.dtype,
+                        )
+                        vggt_feat = torch.cat([vggt_feat, pad], dim=-1)
+
+                vggt_mean_rgb = smpl_colors_rgb.mean(dim=0, keepdim=True)
+                vggt_colors_rgb = vggt_mean_rgb.expand(vggt_points.shape[0], -1).contiguous()
+                vggt_colors_sh = RGB2SH(vggt_colors_rgb)
+                labels_vggt = torch.ones((vggt_points.shape[0],), dtype=torch.long, device="cuda")
+
+                fused_point_cloud = torch.cat([smpl_points, vggt_points], dim=0)
+                fused_weights = torch.cat([smpl_weights, vggt_weights], dim=0)
+                fused_color = torch.cat([smpl_colors_sh, vggt_colors_sh], dim=0)
+                fused_labels = torch.cat([labels_smpl, labels_vggt], dim=0)
+                fused_vgfeat = torch.cat([vg_feat_smpl, vggt_feat], dim=0)
+
+                if fused_point_cloud.shape[0] > self.vggt_max_points:
+                    print(
+                        f"⚠️ 联合点云过大 ({fused_point_cloud.shape[0]}), 统一降采样到 {self.vggt_max_points}."
+                    )
+                    smpl_idx = torch.where(fused_labels == 0)[0]
+                    vggt_idx = torch.where(fused_labels == 1)[0]
+                    if smpl_idx.numel() >= self.vggt_max_points:
+                        keep_smpl = smpl_idx[
+                            torch.randperm(smpl_idx.numel(), device=fused_point_cloud.device)[: self.vggt_max_points]
+                        ]
+                        keep = keep_smpl
+                    else:
+                        remain = self.vggt_max_points - smpl_idx.numel()
+                        if vggt_idx.numel() > remain:
+                            keep_vggt = vggt_idx[
+                                torch.randperm(vggt_idx.numel(), device=fused_point_cloud.device)[:remain]
+                            ]
+                        else:
+                            keep_vggt = vggt_idx
+                        keep = torch.cat([smpl_idx, keep_vggt], dim=0)
+                        keep = keep[torch.randperm(keep.numel(), device=keep.device)]
+                    fused_point_cloud = fused_point_cloud[keep]
+                    fused_weights = fused_weights[keep]
+                    fused_color = fused_color[keep]
+                    fused_labels = fused_labels[keep]
+                    fused_vgfeat = fused_vgfeat[keep]
+
+                self.has_vggt_points = bool((fused_labels == 1).any().item())
+                print(
+                    f"✅ 联合初始化完成: total={fused_point_cloud.shape[0]}, "
+                    f"smpl={(fused_labels == 0).sum().item()}, vggt={(fused_labels == 1).sum().item()}"
+                )
+            else:
+                print("⚠️ VGGT 文件存在但无有效点，退回 SMPL 初始化。")
+        else:
+            print("\n⚠️ 未找到 VGGT 先验，使用 SMPL 初始化。")
+
+        self.lbs_weights = fused_weights
+        self._point_labels = fused_labels
+        self._point_vgfeat = fused_vgfeat
+        self._vggt_target = fused_point_cloud.detach().clone()
 
         features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
         features[:, :3, 0 ] = fused_color
@@ -396,6 +594,11 @@ class GaussianModel:
         self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device="cuda").requires_grad_(True))
         self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True))
         self._normal = nn.Parameter(torch.tensor(normals, dtype=torch.float, device="cuda").requires_grad_(True))
+        self._point_labels = torch.zeros((self._xyz.shape[0],), dtype=torch.long, device="cuda")
+        self._point_vgfeat = torch.zeros((self._xyz.shape[0], self.vggt_feat_dim), dtype=torch.float, device="cuda")
+        self._vggt_target = self._xyz.detach().clone()
+        self.has_vggt_points = False
+        self.lbs_weights = None
 
         self.active_sh_degree = self.max_sh_degree
 
@@ -450,6 +653,16 @@ class GaussianModel:
 
         self.denom = self.denom[valid_points_mask]
         self.max_radii2D = self.max_radii2D[valid_points_mask]
+        if self._point_labels.numel() == valid_points_mask.shape[0]:
+            self._point_labels = self._point_labels[valid_points_mask]
+        if self._point_vgfeat.ndim == 2 and self._point_vgfeat.shape[0] == valid_points_mask.shape[0]:
+            self._point_vgfeat = self._point_vgfeat[valid_points_mask]
+        if self._vggt_target.numel() > 0 and self._vggt_target.shape[0] == valid_points_mask.shape[0]:
+            self._vggt_target = self._vggt_target[valid_points_mask]
+        if self.lbs_weights is not None and self.lbs_weights.shape[0] == valid_points_mask.shape[0]:
+            self.lbs_weights = self.lbs_weights[valid_points_mask]
+        if self._point_labels.numel() > 0:
+            self.has_vggt_points = bool((self._point_labels == 1).any().item())
 
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
@@ -474,7 +687,20 @@ class GaussianModel:
 
         return optimizable_tensors
 
-    def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_normal):
+    def densification_postfix(
+        self,
+        new_xyz,
+        new_features_dc,
+        new_features_rest,
+        new_opacities,
+        new_scaling,
+        new_rotation,
+        new_normal,
+        new_point_labels=None,
+        new_point_vgfeat=None,
+        new_vggt_target=None,
+        new_lbs_weights=None,
+    ):
         d = {"xyz": new_xyz,
         "f_dc": new_features_dc,
         "f_rest": new_features_rest,
@@ -495,6 +721,16 @@ class GaussianModel:
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+        if new_point_labels is not None and self._point_labels.numel() > 0:
+            self._point_labels = torch.cat((self._point_labels, new_point_labels), dim=0)
+        if new_point_vgfeat is not None and self._point_vgfeat.ndim == 2:
+            self._point_vgfeat = torch.cat((self._point_vgfeat, new_point_vgfeat), dim=0)
+        if new_vggt_target is not None and self._vggt_target.numel() > 0:
+            self._vggt_target = torch.cat((self._vggt_target, new_vggt_target), dim=0)
+        if new_lbs_weights is not None and self.lbs_weights is not None:
+            self.lbs_weights = torch.cat((self.lbs_weights, new_lbs_weights), dim=0)
+        if self._point_labels.numel() > 0:
+            self.has_vggt_points = bool((self._point_labels == 1).any().item())
 
     def densify_and_split(self, grads, grad_threshold, scene_extent, N=2):
         n_init_points = self.get_xyz.shape[0]
@@ -515,8 +751,24 @@ class GaussianModel:
         new_features_dc = self._features_dc[selected_pts_mask].repeat(N,1,1)
         new_features_rest = self._features_rest[selected_pts_mask].repeat(N,1,1)
         new_opacity = self._opacity[selected_pts_mask].repeat(N,1)
+        new_point_labels = self._point_labels[selected_pts_mask].repeat(N) if self._point_labels.numel() > 0 else None
+        new_point_vgfeat = self._point_vgfeat[selected_pts_mask].repeat(N, 1) if self._point_vgfeat.ndim == 2 else None
+        new_vggt_target = self._vggt_target[selected_pts_mask].repeat(N, 1) if self._vggt_target.numel() > 0 else None
+        new_lbs_weights = self.lbs_weights[selected_pts_mask].repeat(N, 1) if self.lbs_weights is not None else None
 
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation, new_normal)
+        self.densification_postfix(
+            new_xyz,
+            new_features_dc,
+            new_features_rest,
+            new_opacity,
+            new_scaling,
+            new_rotation,
+            new_normal,
+            new_point_labels=new_point_labels,
+            new_point_vgfeat=new_point_vgfeat,
+            new_vggt_target=new_vggt_target,
+            new_lbs_weights=new_lbs_weights,
+        )
 
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
         self.prune_points(prune_filter)
@@ -532,8 +784,24 @@ class GaussianModel:
         new_scaling = self._scaling[selected_pts_mask]
         new_rotation = self._rotation[selected_pts_mask]
         new_normal = self._normal[selected_pts_mask] # 3DHGS
+        new_point_labels = self._point_labels[selected_pts_mask] if self._point_labels.numel() > 0 else None
+        new_point_vgfeat = self._point_vgfeat[selected_pts_mask] if self._point_vgfeat.ndim == 2 else None
+        new_vggt_target = self._vggt_target[selected_pts_mask] if self._vggt_target.numel() > 0 else None
+        new_lbs_weights = self.lbs_weights[selected_pts_mask] if self.lbs_weights is not None else None
 
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_normal)
+        self.densification_postfix(
+            new_xyz,
+            new_features_dc,
+            new_features_rest,
+            new_opacities,
+            new_scaling,
+            new_rotation,
+            new_normal,
+            new_point_labels=new_point_labels,
+            new_point_vgfeat=new_point_vgfeat,
+            new_vggt_target=new_vggt_target,
+            new_lbs_weights=new_lbs_weights,
+        )
 
     def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size):
         grads = self.xyz_gradient_accum / self.denom
@@ -573,11 +841,14 @@ class GaussianModel:
         vertices_num = self.canon_vertices.shape[1]
         
         _, vert_ids = self.knn(self.canon_vertices, query_pts)
-        if lbs_weights is None:
-            bweights = self.SMPL_NEUTRAL['weights'][vert_ids].view(*vert_ids.shape[:2], joints_num)
+        if self.lbs_weights is not None and self.lbs_weights.shape[0] == query_pts.shape[1]:
+            base_bweights = self.lbs_weights.unsqueeze(0).expand(bs, -1, -1)
         else:
-            bweights = self.SMPL_NEUTRAL['weights'][vert_ids].view(*vert_ids.shape[:2], joints_num)
-            bweights = torch.log(bweights + 1e-9) + lbs_weights
+            base_bweights = self.SMPL_NEUTRAL['weights'][vert_ids].view(*vert_ids.shape[:2], joints_num)
+        if lbs_weights is None:
+            bweights = base_bweights
+        else:
+            bweights = torch.log(base_bweights + 1e-9) + lbs_weights
             bweights = F.softmax(bweights, dim=-1)
 
         A2T_pose_RT = torch.matmul(bweights, self.A2T_pose_tranform.reshape(bs, joints_num, -1))

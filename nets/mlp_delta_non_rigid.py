@@ -4,12 +4,18 @@ import torch.nn as nn
 class NonrigidDeformer(nn.Module):
     def __init__(self, D=3, W=512, use_pose_cond=0, use_seq_pose_cond=0, use_seq_xyz_cond=0, 
                  pos_input_dim=63, pose_cond_dim=32, seq_pose_cond_dim=32, seq_xyz_cond_dim=96,
-                 seq_len=6, seq_xyz_knn=1, time_step_num=1, smpl_type='smpl'):
+                 seq_len=6, seq_xyz_knn=1, time_step_num=1, smpl_type='smpl',
+                 use_label_cond=1, label_emb_dim=8, vg_feat_dim=1,
+                 use_dual_source_branch=0, source_branch_width=128):
         super(NonrigidDeformer, self).__init__()
 
         self.use_pose_cond = use_pose_cond
         self.use_seq_pose_cond = use_seq_pose_cond
         self.use_seq_xyz_cond = use_seq_xyz_cond
+        self.use_label_cond = use_label_cond
+        self.vg_feat_dim = vg_feat_dim
+        self.use_dual_source_branch = use_dual_source_branch
+        self._phase1_active = None
 
         self.input_ch = pos_input_dim
         self.pose_cond_dim, self.seq_pose_cond_dim, self.seq_xyz_cond_dim = 0, 0, 0
@@ -26,9 +32,22 @@ class NonrigidDeformer(nn.Module):
             self.SeqXYZEncoder = SeqXYZEncoder(pos_emb_dim=pos_input_dim, hidden_dim1=96, hidden_dim2=256, output_dim=seq_xyz_cond_dim, 
                                         time_step_num=time_step_num, seq_len=seq_len, seq_xyz_knn=seq_xyz_knn)
             self.input_ch += seq_xyz_cond_dim
+
+        if self.use_label_cond:
+            self.label_embedding = nn.Embedding(2, label_emb_dim)
+            self.input_ch += label_emb_dim
+
+        if self.vg_feat_dim > 0:
+            self.input_ch += vg_feat_dim
+
+        if self.use_dual_source_branch:
+            self.smpl_branch = nn.Sequential(nn.Linear(self.input_ch, source_branch_width), nn.ReLU())
+            self.vggt_branch = nn.Sequential(nn.Linear(self.input_ch, source_branch_width), nn.ReLU())
+            in_dim = source_branch_width
+        else:
+            in_dim = self.input_ch
         
         layers = []
-        in_dim = self.input_ch
         for _ in range(D):
             layers.append(nn.Linear(in_dim, W))
             layers.append(nn.ReLU())
@@ -39,7 +58,34 @@ class NonrigidDeformer(nn.Module):
         self.gaussian_rotation = nn.Linear(W, 4)
         self.gaussian_scaling = nn.Linear(W, 3)
 
-    def forward(self, x_emb, pose_conds=None, seq_pose_conds=None, seq_xyz_conds=None):
+    def set_phase(self, phase1_active):
+        """Phase-1: freeze SMPL branch, keep VGGT branch trainable."""
+        if self._phase1_active == phase1_active:
+            return
+
+        if self.use_pose_cond:
+            for param in self.PoseEncoder.parameters():
+                param.requires_grad = not phase1_active
+        if self.use_seq_pose_cond:
+            for param in self.SeqPoseEncoder.parameters():
+                param.requires_grad = not phase1_active
+
+        if self.use_dual_source_branch:
+            for param in self.smpl_branch.parameters():
+                param.requires_grad = not phase1_active
+            for param in self.vggt_branch.parameters():
+                param.requires_grad = True
+        self._phase1_active = phase1_active
+
+    def forward(
+        self,
+        x_emb,
+        pose_conds=None,
+        seq_pose_conds=None,
+        seq_xyz_conds=None,
+        point_labels=None,
+        vg_feat=None,
+    ):
         feats = []
         feats.append(x_emb)
 
@@ -59,8 +105,36 @@ class NonrigidDeformer(nn.Module):
         if self.use_seq_xyz_cond: 
             seq_xyz_feats = self.SeqXYZEncoder(seq_xyz_conds, x_emb)
             feats.append(seq_xyz_feats)
-        
-        h = self.mlp(torch.cat(feats, dim=-1))
+
+        if self.use_label_cond:
+            if point_labels is None:
+                point_labels = torch.zeros(
+                    x_emb.shape[0], x_emb.shape[1], dtype=torch.long, device=x_emb.device
+                )
+            label_feats = self.label_embedding(point_labels.long().clamp(min=0, max=1))
+            feats.append(label_feats)
+
+        if self.vg_feat_dim > 0:
+            if vg_feat is None:
+                vg_feat = torch.zeros(
+                    x_emb.shape[0], x_emb.shape[1], self.vg_feat_dim, dtype=x_emb.dtype, device=x_emb.device
+                )
+            feats.append(vg_feat.float())
+
+        input_feat = torch.cat(feats, dim=-1)
+        if self.use_dual_source_branch:
+            if point_labels is None:
+                point_labels = torch.zeros(
+                    x_emb.shape[0], x_emb.shape[1], dtype=torch.long, device=x_emb.device
+                )
+            source_mask = point_labels.float().unsqueeze(-1)  # 0=SMPL, 1=VGGT
+            h_smpl = self.smpl_branch(input_feat)
+            h_vggt = self.vggt_branch(input_feat)
+            h = h_smpl * (1.0 - source_mask) + h_vggt * source_mask
+        else:
+            h = input_feat
+
+        h = self.mlp(h)
         d_xyz, d_scaling, d_rotation = self.gaussian_warp(h), self.gaussian_scaling(h), self.gaussian_rotation(h)
         
         return d_xyz, d_rotation, d_scaling

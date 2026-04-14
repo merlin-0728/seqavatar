@@ -11,6 +11,7 @@
 
 import os
 import torch
+import torch.nn.functional as F
 from random import randint
 from utils.loss_utils import l1_loss, l1_loss_masked, l2_loss_masked, ssim, full_aiap_loss
 from gaussian_renderer import render, network_gui
@@ -46,6 +47,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree, dataset.smpl_type, dataset.motion_offset_flag, dataset.actor_gender, dataset)
     scene = Scene(dataset, gaussians)
+    print(
+        f"Densify settings: grad_threshold={opt.densify_grad_threshold}, "
+        f"prune_opacity_threshold={opt.prune_opacity_threshold}"
+    )
     gaussians.training_setup(opt)
 
     if checkpoint:
@@ -86,6 +91,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         iter_start.record()
 
         gaussians.update_learning_rate(iteration)
+        if gaussians.non_rigid_flag and hasattr(gaussians.non_rigid_deformer, "set_phase"):
+            phase1_active = opt.phase1_vggt_iters > 0 and iteration <= opt.phase1_vggt_iters
+            gaussians.non_rigid_deformer.set_phase(phase1_active)
 
         if iteration % 1000 == 0:
             gaussians.oneupSHdegree()
@@ -119,6 +127,16 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         loss_aiap_xyz, loss_aiap_cov = full_aiap_loss(scene.gaussians.get_xyz, render_pkg["deformed_means3D"], scene.gaussians.get_covariance(), render_pkg["deformed_cov3D"])
         loss = loss + opt.iospos_w * loss_aiap_xyz + opt.ioscov_w * loss_aiap_cov
+
+        loss_vggt = torch.zeros((), dtype=loss.dtype, device=loss.device)
+        if opt.lambda_vggt > 0 and gaussians.has_vggt_points and "canonical_means3D" in render_pkg:
+            vggt_mask = gaussians.vggt_mask
+            canonical_pred = render_pkg["canonical_means3D"]
+            if canonical_pred.ndim == 3:
+                canonical_pred = canonical_pred.squeeze(0)
+            if vggt_mask is not None and vggt_mask.any() and gaussians._vggt_target.shape[0] == canonical_pred.shape[0]:
+                loss_vggt = F.mse_loss(canonical_pred[vggt_mask], gaussians._vggt_target[vggt_mask])
+                loss = loss + opt.lambda_vggt * loss_vggt
         
         # ==========================================
         # 🛡️ 【防爆盾 A】：检查 Loss 本身
@@ -177,9 +195,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     "Train/Alpha_Loss": alpha_loss.item(),
                     "Train/SSIM_Loss": ssim_loss.item(),
                     "Train/LPIPS_Loss": lpips_loss.item(),
+                    "Train/VGGT_Geo_Loss": loss_vggt.item(),
                     "Train/AIAP_XYZ_Loss": loss_aiap_xyz.item(),
                     "Train/AIAP_COV_Loss": loss_aiap_cov.item(),
                     "Train/Num_Points": gaussians._xyz.shape[0],
+                    "Train/Phase1_VGGT_Only": int(opt.phase1_vggt_iters > 0 and iteration <= opt.phase1_vggt_iters),
                     "iteration": iteration
                 })
             
@@ -187,7 +207,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             curr_percent = int(100 * completed_iters / total_train_iters)
             if curr_percent > last_logged_percent:
                 progress_bar.set_postfix({"#pts": gaussians._xyz.shape[0], "Ll1 Loss": f"{Ll1_loss_for_log:.{3}f}", "mask Loss": f"{mask_loss_for_log:.{2}f}",
-                                          "ssim": f"{ssim_loss_for_log:.{2}f}", "lpips": f"{lpips_loss_for_log:.{2}f}"})
+                                          "ssim": f"{ssim_loss_for_log:.{2}f}", "lpips": f"{lpips_loss_for_log:.{2}f}",
+                                          "vggt": f"{loss_vggt.item():.{3}f}"})
                 progress_bar.update(completed_iters - progress_steps)
                 progress_steps = completed_iters
                 last_logged_percent = curr_percent
@@ -209,7 +230,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0 and len(gaussians.get_xyz) < 120000:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
-                    gaussians.densify_and_prune(opt.densify_grad_threshold, 0.001, scene.cameras_extent, size_threshold)
+                    gaussians.densify_and_prune(
+                        opt.densify_grad_threshold,
+                        opt.prune_opacity_threshold,
+                        scene.cameras_extent,
+                        size_threshold,
+                    )
                 
                 # [3DHGS]: 这里的重置逻辑我们已经在 gaussian_model 里用 torch.min 适配了双通道
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
