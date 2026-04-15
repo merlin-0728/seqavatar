@@ -123,6 +123,8 @@ class OptimizationParams(ParamGroup):
         self.ioscov_w = 100.0
         self.lambda_vggt = 0.2
         self.phase1_vggt_iters = 0
+        self.vggt_loss_phase1_only = 1
+        self.phase1_vggt_ramp_iters = 2000
         super().__init__(parser, "Optimization Parameters")
 
 def get_combined_args(parser : ArgumentParser):

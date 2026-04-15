@@ -41,6 +41,10 @@ Environment overrides:
   NPZ_PATH        explicit bind input npz (skip auto resolution)
   MAX_POINTS      bind output max points (default 60000)
   SAMPLE_METHOD   random|fps (default fps)
+  RUN_GARMENT_EXTRACT  1|0, whether to run VGGT inference to regenerate garment ply (default 1)
+  BODY_KNN        cloth-to-body knn for weighted binding (default 4)
+  PATCH_KNN       patch size for local weighted rotation (default 12)
+  SIGMA_SCALE     gaussian weight scale for binding (default 1.0)
   SEED            random seed (default 0)
 EOF
 }
@@ -90,6 +94,10 @@ FRAME6="$(printf "%06d" "${FRAME_INDEX}")"
 FRAME_INT="$((10#${FRAME_INDEX}))"
 MAX_POINTS="${MAX_POINTS:-60000}"
 SAMPLE_METHOD="${SAMPLE_METHOD:-fps}"
+RUN_GARMENT_EXTRACT="${RUN_GARMENT_EXTRACT:-1}"
+BODY_KNN="${BODY_KNN:-4}"
+PATCH_KNN="${PATCH_KNN:-12}"
+SIGMA_SCALE="${SIGMA_SCALE:-1.0}"
 SEED="${SEED:-0}"
 
 IMG_DIR=""
@@ -318,10 +326,18 @@ echo "Garment PT      : ${GARMENT_PT_VGGT}"
 echo "Canonical PT    : ${CANONICAL_PT_VGGT}"
 echo "==============================================="
 
-(cd "${VGGT_ROOT}" && "${PY_BIN}" "${EXTRACT_GARMENT_PY}" \
-    --image_dir "${IMG_DIR}" \
-    --mask_dir "${MASK_DIR}" \
-    --output_ply "${GARMENT_PLY}")
+if [[ "${RUN_GARMENT_EXTRACT}" == "1" ]]; then
+    (cd "${VGGT_ROOT}" && "${PY_BIN}" "${EXTRACT_GARMENT_PY}" \
+        --image_dir "${IMG_DIR}" \
+        --mask_dir "${MASK_DIR}" \
+        --output_ply "${GARMENT_PLY}")
+else
+    echo "Skip garment extraction and reuse existing ply: ${GARMENT_PLY}"
+    if [[ ! -f "${GARMENT_PLY}" ]]; then
+        echo "Error: RUN_GARMENT_EXTRACT=0 but garment ply not found: ${GARMENT_PLY}"
+        exit 1
+    fi
+fi
 
 "${PY_BIN}" - "${GARMENT_PLY}" "${GARMENT_PT_VGGT}" <<'PY'
 import sys
@@ -349,6 +365,10 @@ cp -f "${GARMENT_PT_VGGT}" "${GARMENT_PT_SEQ}"
     --debug_ply "${DEBUG_PLY}" \
     --max_points "${MAX_POINTS}" \
     --sample_method "${SAMPLE_METHOD}" \
+    --body_knn "${BODY_KNN}" \
+    --patch_knn "${PATCH_KNN}" \
+    --sigma_scale "${SIGMA_SCALE}" \
+    --seqavatar_root "${SEQAVATAR_ROOT}" \
     --seed "${SEED}")
 
 cp -f "${OUTPUT_PT}" "${CANONICAL_PT_VGGT}"

@@ -128,15 +128,23 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         loss_aiap_xyz, loss_aiap_cov = full_aiap_loss(scene.gaussians.get_xyz, render_pkg["deformed_means3D"], scene.gaussians.get_covariance(), render_pkg["deformed_cov3D"])
         loss = loss + opt.iospos_w * loss_aiap_xyz + opt.ioscov_w * loss_aiap_cov
 
+        lambda_vggt_eff = float(opt.lambda_vggt)
+        if opt.phase1_vggt_iters > 0:
+            ramp_iters = max(1, int(getattr(opt, "phase1_vggt_ramp_iters", 1)))
+            if iteration <= opt.phase1_vggt_iters and ramp_iters > 0:
+                lambda_vggt_eff *= min(1.0, float(iteration) / float(ramp_iters))
+            if int(getattr(opt, "vggt_loss_phase1_only", 1)) > 0 and iteration > opt.phase1_vggt_iters:
+                lambda_vggt_eff = 0.0
+
         loss_vggt = torch.zeros((), dtype=loss.dtype, device=loss.device)
-        if opt.lambda_vggt > 0 and gaussians.has_vggt_points and "canonical_means3D" in render_pkg:
+        if lambda_vggt_eff > 0 and gaussians.has_vggt_points and "canonical_means3D" in render_pkg:
             vggt_mask = gaussians.vggt_mask
             canonical_pred = render_pkg["canonical_means3D"]
             if canonical_pred.ndim == 3:
                 canonical_pred = canonical_pred.squeeze(0)
             if vggt_mask is not None and vggt_mask.any() and gaussians._vggt_target.shape[0] == canonical_pred.shape[0]:
                 loss_vggt = F.mse_loss(canonical_pred[vggt_mask], gaussians._vggt_target[vggt_mask])
-                loss = loss + opt.lambda_vggt * loss_vggt
+                loss = loss + lambda_vggt_eff * loss_vggt
         
         # ==========================================
         # 🛡️ 【防爆盾 A】：检查 Loss 本身
@@ -199,6 +207,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     "Train/AIAP_XYZ_Loss": loss_aiap_xyz.item(),
                     "Train/AIAP_COV_Loss": loss_aiap_cov.item(),
                     "Train/Num_Points": gaussians._xyz.shape[0],
+                    "Train/Lambda_VGGT_Eff": lambda_vggt_eff,
                     "Train/Phase1_VGGT_Only": int(opt.phase1_vggt_iters > 0 and iteration <= opt.phase1_vggt_iters),
                     "iteration": iteration
                 })
