@@ -356,7 +356,15 @@ class GaussianModel:
                 if self.vggt_jitter_std > 0:
                     vggt_points = vggt_points + torch.randn_like(vggt_points) * self.vggt_jitter_std
 
-                if "vg_feat_vggt" in vggt_data:
+                if "vggt_support" in vggt_data and vggt_data["vggt_support"].shape[0] == raw_vggt_points.shape[0]:
+                    support = vggt_data["vggt_support"].float().cuda()[valid_mask]
+                    if support.ndim > 1:
+                        support = support.squeeze(-1)
+                    support = (support - support.min()) / (support.max() - support.min() + 1e-8)
+                    vggt_feat = support[:, None]
+                    if self.vggt_feat_dim > 1:
+                        vggt_feat = vggt_feat.repeat(1, self.vggt_feat_dim)
+                elif "vg_feat_vggt" in vggt_data:
                     vggt_feat = vggt_data["vg_feat_vggt"].float().cuda()
                     vggt_feat = vggt_feat[valid_mask]
                 elif "vg_feat" in vggt_data and vggt_data["vg_feat"].shape[0] == raw_vggt_points.shape[0]:

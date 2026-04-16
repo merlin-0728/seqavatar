@@ -143,7 +143,21 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if canonical_pred.ndim == 3:
                 canonical_pred = canonical_pred.squeeze(0)
             if vggt_mask is not None and vggt_mask.any() and gaussians._vggt_target.shape[0] == canonical_pred.shape[0]:
-                loss_vggt = F.mse_loss(canonical_pred[vggt_mask], gaussians._vggt_target[vggt_mask])
+                pred_vggt = canonical_pred[vggt_mask]
+                tgt_vggt = gaussians._vggt_target[vggt_mask]
+                if (
+                    hasattr(gaussians, "_point_vgfeat")
+                    and gaussians._point_vgfeat is not None
+                    and gaussians._point_vgfeat.shape[0] == canonical_pred.shape[0]
+                ):
+                    conf = gaussians._point_vgfeat[vggt_mask, 0].detach().clamp(0.0, 1.0)
+                    if conf.numel() == pred_vggt.shape[0]:
+                        sq_err = ((pred_vggt - tgt_vggt) ** 2).mean(dim=-1)
+                        loss_vggt = (sq_err * conf).sum() / conf.sum().clamp_min(1e-6)
+                    else:
+                        loss_vggt = F.mse_loss(pred_vggt, tgt_vggt)
+                else:
+                    loss_vggt = F.mse_loss(pred_vggt, tgt_vggt)
                 loss = loss + lambda_vggt_eff * loss_vggt
         
         # ==========================================

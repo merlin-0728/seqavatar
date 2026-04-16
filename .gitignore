@@ -40,3 +40,4 @@ dist/
 *.tar.gz
 
 wandb/
+extracted_frame/
