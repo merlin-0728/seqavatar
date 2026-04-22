@@ -112,6 +112,27 @@ class OptimizationParams(ParamGroup):
         self.ssim_loss_w = 0.1
         self.iospos_w = 1.0
         self.ioscov_w = 100.0
+
+        # FoundationStereo depth-prior pruning (optional, disabled by default)
+        self.depth_prior_enable = False
+        self.depth_prior_dir = ""
+        self.depth_prior_interval = 100
+        self.depth_prior_start_iter = 500
+        self.depth_prior_end_iter = -1
+        self.depth_prior_tau_z = 0.05
+        self.depth_prior_tau_alpha = 0.005
+        self.depth_prior_soft_factor = 0.7
+        self.depth_prior_hard_prune = False
+        self.depth_prior_max_prune_ratio = 0.1
+        self.depth_prior_views_per_iter = 1
+        self.depth_prior_min_valid_views = 1
+        self.depth_prior_temporal_momentum = 0.0
+        self.depth_prior_depth_scale = 1.0
+        self.depth_prior_device = "cuda"
+        self.depth_prior_min_valid_ratio = 0.0
+        self.depth_prior_rel_tau = 0.0
+        self.depth_prior_use_low_alpha = False
+        self.depth_prior_hard_prune_start_iter = 0
         super().__init__(parser, "Optimization Parameters")
 
 def get_combined_args(parser : ArgumentParser):

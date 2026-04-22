@@ -12,6 +12,7 @@
 import os
 import torch
 from random import randint
+import random
 from utils.loss_utils import l1_loss, l1_loss_masked, l2_loss_masked, ssim, full_aiap_loss
 from gaussian_renderer import render, network_gui
 import sys
@@ -27,6 +28,7 @@ from arguments import ModelParams, PipelineParams, OptimizationParams
 import shutil
 from torchvision.ops import masks_to_boxes
 import time
+from utils.depth_prior import DepthPriorPruner
 
 # --- WANDB 新增：引入库 ---
 import wandb
@@ -47,6 +49,21 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     gaussians = GaussianModel(dataset.sh_degree, dataset.smpl_type, dataset.motion_offset_flag, dataset.actor_gender, dataset)
     scene = Scene(dataset, gaussians)
     gaussians.training_setup(opt)
+    depth_prior_pruner = DepthPriorPruner(opt, scene.getTrainCameras(), gaussians.get_xyz.device)
+    if opt.depth_prior_enable and not depth_prior_pruner.enabled:
+        print("[DepthPrior] Disabled. Check --depth_prior_dir and config.")
+    if depth_prior_pruner.enabled:
+        print(
+            "[DepthPrior] Enabled | dir={} interval={} iter=[{}, {}] tau_z={} views={} device={}".format(
+                depth_prior_pruner.depth_dir,
+                depth_prior_pruner.interval,
+                depth_prior_pruner.start_iter,
+                depth_prior_pruner.end_iter,
+                depth_prior_pruner.tau_z,
+                depth_prior_pruner.views_per_iter,
+                depth_prior_pruner.compute_device,
+            )
+        )
 
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
@@ -187,6 +204,21 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
 
+            if depth_prior_pruner.enabled:
+                depth_prior_stats = depth_prior_pruner.apply(iteration, gaussians, viewpoint_cam)
+                if depth_prior_stats.get("applied", False):
+                    wandb.log({
+                        "DepthPrior/ViewsUsed": depth_prior_stats["views_used"],
+                        "DepthPrior/ValidRatio": depth_prior_stats["valid_ratio"],
+                        "DepthPrior/MeanDeltaZ": depth_prior_stats["mean_delta_z"],
+                        "DepthPrior/DepthBadCount": depth_prior_stats["depth_bad_count"],
+                        "DepthPrior/LowAlphaCount": depth_prior_stats["low_alpha_count"],
+                        "DepthPrior/SoftAffected": depth_prior_stats["soft_count"],
+                        "DepthPrior/HardPruned": depth_prior_stats["hard_count"],
+                        "DepthPrior/MeanValidViews": depth_prior_stats["mean_valid_views"],
+                        "iteration": iteration
+                    })
+
             # Optimizer step
             if iteration < opt.iterations:
                 gaussians.optimizer.step()
@@ -315,11 +347,6 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
 
 if __name__ == "__main__":
     # Set up command line argument parser
-    seed = 0
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    np.random.seed(seed)
-
     parser = ArgumentParser(description="Training script parameters")
     lp = ModelParams(parser)
     op = OptimizationParams(parser)
@@ -331,6 +358,7 @@ if __name__ == "__main__":
     parser.add_argument("--test_iterations", nargs="+", type=int, default=[3000, 15_000, 25_000, 30_000])
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[3000, 15_000, 25_000, 30_000])
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)
     parser.add_argument("--mono_test", action="store_true")
@@ -340,6 +368,11 @@ if __name__ == "__main__":
     print("Optimizing " + args.model_path)
     # Initialize system state (RNG)
     safe_state(args.quiet)
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+    print(f"Using seed: {args.seed}")
 
     # network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)

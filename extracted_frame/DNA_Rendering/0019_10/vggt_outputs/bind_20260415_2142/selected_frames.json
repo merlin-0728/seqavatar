@@ -1,0 +1,33 @@
+{
+  "dataset": "DNA",
+  "sequence": "0019_10",
+  "model_type": "smplx",
+  "weights": {
+    "w_pose": 1.0,
+    "w_joint": 0.2,
+    "w_contact": 0.1
+  },
+  "results": [
+    {
+      "frame": 125,
+      "score": 0.09520024806261063,
+      "pose_score": 0.0903836265206337,
+      "joint_score": 0.00011869215086335316,
+      "self_contact_penalty": 0.04792886599898338
+    },
+    {
+      "frame": 126,
+      "score": 0.0964728444814682,
+      "pose_score": 0.09165622293949127,
+      "joint_score": 0.00011869215086335316,
+      "self_contact_penalty": 0.04792886599898338
+    },
+    {
+      "frame": 137,
+      "score": 0.09694540500640869,
+      "pose_score": 0.09212878346443176,
+      "joint_score": 0.00011869215086335316,
+      "self_contact_penalty": 0.04792886599898338
+    }
+  ]
+}

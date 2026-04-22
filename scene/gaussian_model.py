@@ -349,6 +349,33 @@ class GaussianModel:
                 optimizable_tensors[group["name"]] = group["params"][0]
         return optimizable_tensors
 
+    def apply_opacity_decay(self, mask, decay_factor):
+        if mask is None:
+            return 0
+        if not isinstance(mask, torch.Tensor):
+            return 0
+        if mask.numel() == 0:
+            return 0
+        if mask.dtype != torch.bool:
+            mask = mask.bool()
+        if mask.dim() != 1:
+            mask = mask.view(-1)
+        if mask.shape[0] != self._opacity.shape[0]:
+            return 0
+
+        decay = float(decay_factor)
+        decay = max(0.0, min(decay, 1.0))
+        if decay >= 1.0 or not mask.any():
+            return 0
+
+        with torch.no_grad():
+            cur_opacity = self.get_opacity
+            new_opacity = cur_opacity.clone()
+            new_opacity[mask] = new_opacity[mask] * decay
+            new_opacity = torch.clamp(new_opacity, min=1e-6, max=1.0 - 1e-6)
+            self._opacity.data.copy_(inverse_sigmoid(new_opacity))
+        return int(mask.sum().item())
+
     def _prune_optimizer(self, mask):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
