@@ -39,7 +39,7 @@ class DepthPriorPruner:
         if not self.depth_dir or not os.path.isdir(self.depth_dir):
             self.enabled = False
 
-        self.depth_cache: Dict[str, torch.Tensor] = {}
+        self.depth_cache: Dict[str, Dict[str, torch.Tensor]] = {}
         self.image_to_depth_path: Dict[str, Optional[str]] = {}
         self.pose_to_cameras: Dict[int, List] = {}
         for cam in train_cameras:
@@ -264,15 +264,20 @@ class DepthPriorPruner:
             active_mask = opacity.to(self.compute_device) > max(self.tau_alpha * 0.5, 1e-3)
 
         for cam in views:
-            depth = self._load_depth_map(cam.image_name)
-            if depth is None:
+            depth_bundle = self._load_depth_map(cam.image_name)
+            if depth_bundle is None:
                 continue
 
             used_views += 1
-            depth = depth.to(self.compute_device)
+            depth = depth_bundle["depth"].to(self.compute_device)
+            depth_valid = depth_bundle["valid_mask"].to(self.compute_device)
             if depth.dim() == 3:
                 depth = depth.squeeze()
+            if depth_valid.dim() == 3:
+                depth_valid = depth_valid.squeeze()
             if depth.dim() != 2:
+                continue
+            if depth_valid.shape != depth.shape:
                 continue
 
             h, w = depth.shape
@@ -301,7 +306,10 @@ class DepthPriorPruner:
 
             sampled_depth = torch.zeros_like(z)
             sampled_depth[valid] = depth[v_idx[valid], u_idx[valid]]
+            sampled_depth_valid = torch.zeros_like(valid)
+            sampled_depth_valid[valid] = depth_valid[v_idx[valid], u_idx[valid]]
             valid = valid & torch.isfinite(sampled_depth) & (sampled_depth > self.depth_min)
+            valid = valid & sampled_depth_valid
             if not valid.any():
                 continue
 
@@ -345,14 +353,24 @@ class DepthPriorPruner:
             used_delta = mean_delta
 
         denom = torch.clamp(valid_count.float(), min=1.0)
+        abs_bad_ratio = torch.zeros_like(denom)
+        abs_bad_ratio[enough_views] = torch.clamp(
+            used_delta[enough_views] / torch.clamp(self.tau_z + self.rel_tau * mean_depth[enough_views], min=1e-4),
+            min=0.0,
+            max=4.0,
+        )
         front_bad_ratio = front_bad_count.float() / denom
         severe_bad_ratio = severe_front_count.float() / denom
 
         mismatch_mask = enough_views & (
             (front_bad_ratio >= self.front_consensus_ratio)
             | (severe_bad_ratio >= self.severe_consensus_ratio)
+            | (abs_bad_ratio >= 1.25)
         )
-        severe_mask = enough_views & (severe_bad_ratio >= self.severe_consensus_ratio)
+        severe_mask = enough_views & (
+            (severe_bad_ratio >= self.severe_consensus_ratio)
+            | (abs_bad_ratio >= 1.8)
+        )
         return {
             "mismatch_mask": mismatch_mask,
             "severe_mask": severe_mask,
@@ -379,7 +397,7 @@ class DepthPriorPruner:
             return 1.0
         return float(np.clip(scale, 0.5, 2.0))
 
-    def _load_depth_map(self, image_name: str) -> Optional[torch.Tensor]:
+    def _load_depth_map(self, image_name: str) -> Optional[Dict[str, torch.Tensor]]:
         if image_name in self.image_to_depth_path:
             path = self.image_to_depth_path[image_name]
             if path is None:
@@ -390,11 +408,11 @@ class DepthPriorPruner:
         self.image_to_depth_path[image_name] = path
         if path is None:
             return None
-        depth_tensor = self._read_depth_file(path)
-        if depth_tensor is None:
+        depth_bundle = self._read_depth_file(path)
+        if depth_bundle is None:
             return None
-        self.depth_cache[path] = depth_tensor
-        return depth_tensor
+        self.depth_cache[path] = depth_bundle
+        return depth_bundle
 
     def _find_depth_path(self, image_name: str) -> Optional[str]:
         extensions = [".npy", ".npz", ".png", ".tif", ".tiff"]
@@ -424,8 +442,9 @@ class DepthPriorPruner:
                 return path
         return None
 
-    def _read_depth_file(self, path: str) -> Optional[torch.Tensor]:
+    def _read_depth_file(self, path: str) -> Optional[Dict[str, torch.Tensor]]:
         ext = os.path.splitext(path)[1].lower()
+        conf_arr = None
         try:
             if ext == ".npy":
                 arr = np.load(path)
@@ -447,6 +466,13 @@ class DepthPriorPruner:
                 if key is None:
                     return None
                 arr = data[key]
+                conf_key = None
+                for k in ["confidence", "conf", "confidence_map", "valid_mask", "mask"]:
+                    if k in data.files:
+                        conf_key = k
+                        break
+                if conf_key is not None:
+                    conf_arr = data[conf_key]
             else:
                 arr = np.array(Image.open(path))
         except Exception:
@@ -460,7 +486,38 @@ class DepthPriorPruner:
             return None
 
         arr = arr.astype(np.float32) * self.depth_scale
-        return torch.from_numpy(arr)
+        valid_mask = self._build_valid_mask(arr, conf_arr)
+        return {
+            "depth": torch.from_numpy(arr),
+            "valid_mask": torch.from_numpy(valid_mask),
+        }
+
+    def _build_valid_mask(self, depth_arr: np.ndarray, conf_arr: Optional[np.ndarray]) -> np.ndarray:
+        valid = np.isfinite(depth_arr) & (depth_arr > self.depth_min)
+        if valid.sum() == 0:
+            return valid.astype(np.bool_)
+
+        if valid.sum() >= 64:
+            vals = depth_arr[valid]
+            lo = float(np.percentile(vals, 0.5))
+            hi = float(np.percentile(vals, 99.5))
+            valid = valid & (depth_arr >= lo) & (depth_arr <= hi)
+
+        if conf_arr is not None:
+            if conf_arr.ndim == 3:
+                conf_arr = conf_arr[..., 0]
+            if conf_arr.shape == depth_arr.shape:
+                conf = conf_arr.astype(np.float32)
+                conf_valid = np.isfinite(conf)
+                if conf_valid.any():
+                    conf_vals = conf[conf_valid]
+                    c_lo = float(np.percentile(conf_vals, 1.0))
+                    c_hi = float(np.percentile(conf_vals, 99.0))
+                    if c_hi > c_lo:
+                        conf = np.clip((conf - c_lo) / (c_hi - c_lo + 1e-6), 0.0, 1.0)
+                        valid = valid & (conf >= 0.2)
+
+        return valid.astype(np.bool_)
 
     def _limit_hard_prune(self, hard_mask: torch.Tensor, delta_z: torch.Tensor, low_alpha_mask: torch.Tensor):
         if not hard_mask.any():
