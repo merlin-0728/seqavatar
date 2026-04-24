@@ -40,6 +40,11 @@ class DepthPriorPruner:
             self.temporal_mode = "mean"
         self.use_exp_alpha_decay = bool(getattr(opt, "depth_prior_exp_alpha_decay", True))
         self.k_alpha = float(getattr(opt, "depth_prior_k_alpha", 0.15))
+        self.dynamic_tau_strength = float(getattr(opt, "depth_prior_dynamic_tau_strength", 0.9))
+        self.low_quality_moderate_disable = float(getattr(opt, "depth_prior_low_quality_moderate_disable", 0.30))
+        self.hard_prune_min_quality = float(getattr(opt, "depth_prior_hard_prune_min_quality", 0.45))
+        self.decay_min_quality_scale = float(getattr(opt, "depth_prior_decay_min_quality_scale", 0.35))
+        self.min_quality_score = float(getattr(opt, "depth_prior_min_quality_score", 0.05))
         self.front_consensus_ratio = 0.55
         self.severe_consensus_ratio = 0.25
         self.profile = os.environ.get("DEPTH_PRIOR_PROFILE", "adaptive_v1").strip().lower()
@@ -183,6 +188,13 @@ class DepthPriorPruner:
         delta_z = depth_result["delta_z"].to(self.gaussian_device)
         valid_count = depth_result["valid_count"].to(self.gaussian_device)
         used_views = int(depth_result["used_views"])
+        quality_score = float(depth_result.get("quality_score", 1.0))
+        adaptive_scale = float(depth_result.get("adaptive_scale", 1.0))
+        abs_bad_ratio = depth_result.get("abs_bad_ratio", None)
+        if isinstance(abs_bad_ratio, torch.Tensor):
+            abs_bad_ratio = abs_bad_ratio.to(self.gaussian_device)
+        else:
+            abs_bad_ratio = None
 
         valid_ratio = float(valid_mask.float().mean().item()) if valid_mask.numel() > 0 else 0.0
         if valid_ratio < self.min_valid_ratio:
@@ -197,6 +209,8 @@ class DepthPriorPruner:
                 "hard_count": 0,
                 "mean_valid_views": float(valid_count.float()[valid_mask].mean().item()) if valid_mask.any() else 0.0,
                 "skipped_low_valid_ratio": 1,
+                "depth_quality_score": quality_score,
+                "adaptive_scale": adaptive_scale,
             }
 
         opacity = gaussians.get_opacity.detach().squeeze(-1)
@@ -204,6 +218,12 @@ class DepthPriorPruner:
 
         soft_count = 0
         moderate_mask = mismatch_mask & (~severe_mask)
+        if quality_score < self.low_quality_moderate_disable:
+            if abs_bad_ratio is not None:
+                strict_gate = abs_bad_ratio >= (1.25 * adaptive_scale * 1.25)
+                moderate_mask = moderate_mask & strict_gate
+            else:
+                moderate_mask = torch.zeros_like(moderate_mask)
         if self.use_exp_alpha_decay:
             soft_count = self._apply_exp_decay(
                 gaussians=gaussians,
@@ -212,6 +232,8 @@ class DepthPriorPruner:
                 severe_mask=severe_mask,
                 valid_mask=valid_mask,
                 low_alpha_mask=low_alpha_mask,
+                quality_score=quality_score,
+                abs_bad_ratio=abs_bad_ratio,
             )
         else:
             # Keep soft pruning conservative: remap aggressive factors to milder decay.
@@ -225,7 +247,7 @@ class DepthPriorPruner:
                 soft_count += gaussians.apply_opacity_decay(low_alpha_mask & severe_mask, eff_soft)
 
         hard_count = 0
-        if self.hard_prune and iteration >= self.hard_prune_start_iter:
+        if self.hard_prune and iteration >= self.hard_prune_start_iter and quality_score >= self.hard_prune_min_quality:
             # Hard stage: only prune severe front-outliers with multi-view agreement.
             hard_mask = severe_mask
             hard_mask = self._limit_hard_prune(hard_mask, delta_z, low_alpha_mask)
@@ -251,6 +273,8 @@ class DepthPriorPruner:
             "hard_count": hard_count,
             "mean_valid_views": float(valid_count.float()[valid_mask].mean().item()) if valid_mask.any() else 0.0,
             "skipped_low_valid_ratio": 0,
+            "depth_quality_score": quality_score,
+            "adaptive_scale": adaptive_scale,
         }
 
     def _select_views(self, viewpoint_cam):
@@ -394,15 +418,21 @@ class DepthPriorPruner:
         )
         front_bad_ratio = front_bad_count.float() / denom
         severe_bad_ratio = severe_front_count.float() / denom
+        quality_score = self._estimate_depth_quality(used_delta, enough_views, used_views)
+        adaptive_scale = self._adaptive_threshold_scale(quality_score)
+        front_ratio_thresh = min(0.92, self.front_consensus_ratio + (adaptive_scale - 1.0) * 0.18)
+        severe_ratio_thresh = min(0.90, self.severe_consensus_ratio + (adaptive_scale - 1.0) * 0.15)
+        mismatch_abs_thresh = 1.25 * adaptive_scale
+        severe_abs_thresh = 1.8 * adaptive_scale
 
         mismatch_mask = enough_views & (
-            (front_bad_ratio >= self.front_consensus_ratio)
-            | (severe_bad_ratio >= self.severe_consensus_ratio)
-            | (abs_bad_ratio >= 1.25)
+            (front_bad_ratio >= front_ratio_thresh)
+            | (severe_bad_ratio >= severe_ratio_thresh)
+            | (abs_bad_ratio >= mismatch_abs_thresh)
         )
         severe_mask = enough_views & (
-            (severe_bad_ratio >= self.severe_consensus_ratio)
-            | (abs_bad_ratio >= 1.8)
+            (severe_bad_ratio >= severe_ratio_thresh)
+            | (abs_bad_ratio >= severe_abs_thresh)
         )
         return {
             "mismatch_mask": mismatch_mask,
@@ -411,7 +441,26 @@ class DepthPriorPruner:
             "delta_z": used_delta,
             "valid_count": valid_count,
             "used_views": used_views,
+            "quality_score": quality_score,
+            "adaptive_scale": adaptive_scale,
+            "abs_bad_ratio": abs_bad_ratio,
         }
+
+    def _estimate_depth_quality(self, used_delta: torch.Tensor, enough_views: torch.Tensor, used_views: int) -> float:
+        if used_delta.numel() == 0 or not enough_views.any():
+            return self.min_quality_score
+        mean_delta = float(used_delta[enough_views].mean().item())
+        valid_ratio = float(enough_views.float().mean().item())
+        q_delta = float(np.exp(-mean_delta / max(self.tau_z * 12.0, 0.6)))
+        q_valid = float(np.clip(valid_ratio / 0.35, 0.0, 1.0))
+        q_views = float(np.clip(float(used_views) / max(float(self.views_per_iter), 1.0), 0.0, 1.0))
+        score = q_delta * (0.25 + 0.75 * q_valid) * (0.4 + 0.6 * q_views)
+        return float(np.clip(score, self.min_quality_score, 1.0))
+
+    def _adaptive_threshold_scale(self, quality_score: float) -> float:
+        quality = float(np.clip(quality_score, self.min_quality_score, 1.0))
+        scale = 1.0 + self.dynamic_tau_strength * (1.0 - quality)
+        return float(np.clip(scale, 1.0, 2.0))
 
     def _smooth_temporal_delta(self, delta_t: torch.Tensor, valid_t: torch.Tensor) -> torch.Tensor:
         if self.temporal_window <= 1:
@@ -447,6 +496,8 @@ class DepthPriorPruner:
         severe_mask: torch.Tensor,
         valid_mask: torch.Tensor,
         low_alpha_mask: torch.Tensor,
+        quality_score: float,
+        abs_bad_ratio: Optional[torch.Tensor],
     ) -> int:
         if delta_z.numel() == 0:
             return 0
@@ -461,16 +512,25 @@ class DepthPriorPruner:
             if cur_opacity.shape[0] != delta_z.shape[0]:
                 return 0
 
+            quality = float(np.clip(quality_score, self.min_quality_score, 1.0))
+            quality_gain = self.decay_min_quality_scale + (1.0 - self.decay_min_quality_scale) * quality
             safe_delta = torch.clamp(delta_z, min=0.0, max=5.0)
-            base_decay = torch.exp(-self.k_alpha * safe_delta)
-            base_decay = torch.clamp(base_decay, min=0.80, max=0.9999)
+            if abs_bad_ratio is not None and abs_bad_ratio.shape[0] == safe_delta.shape[0]:
+                ratio_score = torch.clamp(abs_bad_ratio, min=0.0, max=4.0) / 4.0
+            else:
+                ratio_score = torch.full_like(safe_delta, 0.5)
+            point_conf = 0.4 + 0.6 * ratio_score
+            base_decay = torch.exp(-self.k_alpha * quality_gain * safe_delta * point_conf)
+            base_decay = 1.0 - quality_gain * (1.0 - base_decay)
+            base_decay = torch.clamp(base_decay, min=0.85, max=0.99995)
 
             decay = torch.ones_like(cur_opacity)
             if moderate_mask.any():
                 decay[moderate_mask] = base_decay[moderate_mask]
             if severe_mask.any():
-                severe_decay = torch.pow(base_decay[severe_mask], 1.5)
-                severe_decay = torch.clamp(severe_decay, min=0.65, max=0.995)
+                severe_decay = torch.pow(base_decay[severe_mask], 1.0 + 0.8 * quality_gain)
+                severe_floor = 0.80 + 0.15 * (1.0 - quality_gain)
+                severe_decay = torch.clamp(severe_decay, min=severe_floor, max=0.997)
                 decay[severe_mask] = severe_decay
 
             new_opacity = cur_opacity.clone()
