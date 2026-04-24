@@ -1,10 +1,12 @@
 import os
 import re
+from collections import deque
 from typing import Dict, List, Optional
 
 import numpy as np
 import torch
 from PIL import Image
+from utils.general_utils import inverse_sigmoid
 
 
 class DepthPriorPruner:
@@ -28,6 +30,16 @@ class DepthPriorPruner:
         self.rel_tau = float(getattr(opt, "depth_prior_rel_tau", 0.0))
         self.use_low_alpha = bool(getattr(opt, "depth_prior_use_low_alpha", False))
         self.hard_prune_start_iter = int(getattr(opt, "depth_prior_hard_prune_start_iter", self.start_iter))
+        self.use_all_pose_views = bool(getattr(opt, "depth_prior_use_all_pose_views", True))
+        self.view_fusion_mode = str(getattr(opt, "depth_prior_view_fusion", "min")).strip().lower()
+        if self.view_fusion_mode not in {"min", "mean"}:
+            self.view_fusion_mode = "min"
+        self.temporal_window = max(1, int(getattr(opt, "depth_prior_temporal_window", 4)))
+        self.temporal_mode = str(getattr(opt, "depth_prior_temporal_mode", "mean")).strip().lower()
+        if self.temporal_mode not in {"mean", "last"}:
+            self.temporal_mode = "mean"
+        self.use_exp_alpha_decay = bool(getattr(opt, "depth_prior_exp_alpha_decay", True))
+        self.k_alpha = float(getattr(opt, "depth_prior_k_alpha", 0.15))
         self.front_consensus_ratio = 0.55
         self.severe_consensus_ratio = 0.25
         self.profile = os.environ.get("DEPTH_PRIOR_PROFILE", "adaptive_v1").strip().lower()
@@ -48,6 +60,7 @@ class DepthPriorPruner:
             self.pose_to_cameras[pose_id] = sorted(self.pose_to_cameras[pose_id], key=lambda c: c.image_name)
 
         self._ema_delta: Optional[torch.Tensor] = None
+        self._dz_history = deque(maxlen=self.temporal_window)
 
     @staticmethod
     def _resolve_device(device_str, fallback_device):
@@ -190,16 +203,26 @@ class DepthPriorPruner:
         low_alpha_mask = opacity < self.tau_alpha if self.use_low_alpha else torch.zeros_like(opacity, dtype=torch.bool)
 
         soft_count = 0
-        # Keep soft pruning conservative: remap aggressive factors to milder decay.
-        eff_soft = 1.0 - (1.0 - self.soft_factor) * 0.2
-        severe_soft = max(0.85, eff_soft - 0.05)
-        if severe_soft < 1.0:
-            soft_count += gaussians.apply_opacity_decay(severe_mask, severe_soft)
-        if eff_soft < 1.0:
-            moderate_mask = mismatch_mask & (~severe_mask)
-            soft_count += gaussians.apply_opacity_decay(moderate_mask, eff_soft)
-        if self.use_low_alpha and eff_soft < 1.0:
-            soft_count += gaussians.apply_opacity_decay(low_alpha_mask & severe_mask, eff_soft)
+        moderate_mask = mismatch_mask & (~severe_mask)
+        if self.use_exp_alpha_decay:
+            soft_count = self._apply_exp_decay(
+                gaussians=gaussians,
+                delta_z=delta_z,
+                moderate_mask=moderate_mask,
+                severe_mask=severe_mask,
+                valid_mask=valid_mask,
+                low_alpha_mask=low_alpha_mask,
+            )
+        else:
+            # Keep soft pruning conservative: remap aggressive factors to milder decay.
+            eff_soft = 1.0 - (1.0 - self.soft_factor) * 0.2
+            severe_soft = max(0.85, eff_soft - 0.05)
+            if severe_soft < 1.0:
+                soft_count += gaussians.apply_opacity_decay(severe_mask, severe_soft)
+            if eff_soft < 1.0:
+                soft_count += gaussians.apply_opacity_decay(moderate_mask, eff_soft)
+            if self.use_low_alpha and eff_soft < 1.0:
+                soft_count += gaussians.apply_opacity_decay(low_alpha_mask & severe_mask, eff_soft)
 
         hard_count = 0
         if self.hard_prune and iteration >= self.hard_prune_start_iter:
@@ -210,6 +233,7 @@ class DepthPriorPruner:
                 hard_count = int(hard_mask.sum().item())
                 gaussians.prune_points(hard_mask)
                 self._ema_delta = None
+                self._dz_history.clear()
 
         if valid_mask.any():
             mean_delta_z = float(delta_z[valid_mask].mean().item())
@@ -237,6 +261,8 @@ class DepthPriorPruner:
         selected = [viewpoint_cam]
         if self.views_per_iter <= 1:
             return selected
+        if self.use_all_pose_views:
+            return pose_cams
 
         for cam in pose_cams:
             if cam.image_name == viewpoint_cam.image_name:
@@ -253,6 +279,7 @@ class DepthPriorPruner:
         xyz = xyz_world.to(self.compute_device)
         n_points = xyz.shape[0]
         delta_sum = torch.zeros(n_points, dtype=torch.float32, device=self.compute_device)
+        delta_min = torch.full((n_points,), float("inf"), dtype=torch.float32, device=self.compute_device)
         depth_sum = torch.zeros(n_points, dtype=torch.float32, device=self.compute_device)
         valid_count = torch.zeros(n_points, dtype=torch.int32, device=self.compute_device)
         front_bad_count = torch.zeros(n_points, dtype=torch.int32, device=self.compute_device)
@@ -324,6 +351,7 @@ class DepthPriorPruner:
             severe_front_bad = valid & (signed_delta < -(abs_tau * 1.8)) & rel_gate
 
             delta_sum[valid] += delta_z[valid]
+            delta_min[valid] = torch.minimum(delta_min[valid], delta_z[valid])
             depth_sum[valid] += sampled_depth[valid]
             valid_count[valid] += 1
             front_bad_count[front_bad] += 1
@@ -334,23 +362,28 @@ class DepthPriorPruner:
 
         enough_views = valid_count >= self.min_valid_views
         mean_delta = torch.zeros_like(delta_sum)
+        min_delta = torch.zeros_like(delta_sum)
         mean_depth = torch.zeros_like(depth_sum)
         mean_delta[enough_views] = delta_sum[enough_views] / valid_count[enough_views].float()
+        finite_min = torch.isfinite(delta_min)
+        min_delta[enough_views & finite_min] = delta_min[enough_views & finite_min]
         mean_depth[enough_views] = depth_sum[enough_views] / valid_count[enough_views].float()
+        fused_delta = min_delta if self.view_fusion_mode == "min" else mean_delta
 
         if self.temporal_momentum > 0.0:
             momentum = max(0.0, min(self.temporal_momentum, 0.999))
             if self._ema_delta is None or self._ema_delta.shape[0] != n_points:
-                self._ema_delta = mean_delta.clone()
+                self._ema_delta = fused_delta.clone()
             else:
                 update_mask = enough_views
                 self._ema_delta[update_mask] = (
                     momentum * self._ema_delta[update_mask]
-                    + (1.0 - momentum) * mean_delta[update_mask]
+                    + (1.0 - momentum) * fused_delta[update_mask]
                 )
-            used_delta = self._ema_delta
+            ema_delta = self._ema_delta
         else:
-            used_delta = mean_delta
+            ema_delta = fused_delta
+        used_delta = self._smooth_temporal_delta(ema_delta, enough_views)
 
         denom = torch.clamp(valid_count.float(), min=1.0)
         abs_bad_ratio = torch.zeros_like(denom)
@@ -379,6 +412,72 @@ class DepthPriorPruner:
             "valid_count": valid_count,
             "used_views": used_views,
         }
+
+    def _smooth_temporal_delta(self, delta_t: torch.Tensor, valid_t: torch.Tensor) -> torch.Tensor:
+        if self.temporal_window <= 1:
+            return delta_t
+        if delta_t.numel() == 0:
+            return delta_t
+
+        if len(self._dz_history) > 0:
+            hist_n = self._dz_history[0][0].shape[0]
+            if hist_n != delta_t.shape[0]:
+                self._dz_history.clear()
+
+        self._dz_history.append((delta_t.detach().clone(), valid_t.detach().clone()))
+        if self.temporal_mode == "last":
+            return delta_t
+
+        delta_sum = torch.zeros_like(delta_t)
+        cnt = torch.zeros_like(delta_t)
+        for hist_delta, hist_valid in self._dz_history:
+            delta_sum[hist_valid] += hist_delta[hist_valid]
+            cnt[hist_valid] += 1.0
+
+        out = delta_t.clone()
+        smooth_valid = cnt > 0
+        out[smooth_valid] = delta_sum[smooth_valid] / cnt[smooth_valid]
+        return out
+
+    def _apply_exp_decay(
+        self,
+        gaussians,
+        delta_z: torch.Tensor,
+        moderate_mask: torch.Tensor,
+        severe_mask: torch.Tensor,
+        valid_mask: torch.Tensor,
+        low_alpha_mask: torch.Tensor,
+    ) -> int:
+        if delta_z.numel() == 0:
+            return 0
+        target_mask = valid_mask & (moderate_mask | severe_mask)
+        if self.use_low_alpha:
+            target_mask = target_mask | (low_alpha_mask & severe_mask)
+        if not target_mask.any():
+            return 0
+
+        with torch.no_grad():
+            cur_opacity = gaussians.get_opacity.squeeze(-1)
+            if cur_opacity.shape[0] != delta_z.shape[0]:
+                return 0
+
+            safe_delta = torch.clamp(delta_z, min=0.0, max=5.0)
+            base_decay = torch.exp(-self.k_alpha * safe_delta)
+            base_decay = torch.clamp(base_decay, min=0.80, max=0.9999)
+
+            decay = torch.ones_like(cur_opacity)
+            if moderate_mask.any():
+                decay[moderate_mask] = base_decay[moderate_mask]
+            if severe_mask.any():
+                severe_decay = torch.pow(base_decay[severe_mask], 1.5)
+                severe_decay = torch.clamp(severe_decay, min=0.65, max=0.995)
+                decay[severe_mask] = severe_decay
+
+            new_opacity = cur_opacity.clone()
+            new_opacity[target_mask] = new_opacity[target_mask] * decay[target_mask]
+            new_opacity = torch.clamp(new_opacity, min=1e-6, max=1.0 - 1e-6)
+            gaussians._opacity.data.copy_(inverse_sigmoid(new_opacity.unsqueeze(-1)))
+        return int(target_mask.sum().item())
 
     def _estimate_view_scale(self, z_vals: torch.Tensor, depth_vals: torch.Tensor) -> float:
         if z_vals.numel() < 64:
