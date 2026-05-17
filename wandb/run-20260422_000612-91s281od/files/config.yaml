@@ -1,0 +1,283 @@
+_wandb:
+    value:
+        cli_version: 0.25.0
+        e:
+            caf0nhnwwt6l3r23otawrjtp4cyt5sps:
+                args:
+                    - -s
+                    - /media/image/mxz/human/SeqAvatar/DNA-Rendering/0044_11
+                    - --eval
+                    - --exp_name
+                    - fs_depth_prior_ablation/20260421_222639/0044_11/fs
+                    - --motion_offset_flag
+                    - --smpl_type
+                    - smplx
+                    - --actor_gender
+                    - neutral
+                    - --iterations
+                    - "25000"
+                    - --densify_until_iter
+                    - "1500"
+                    - --seq_len
+                    - "8"
+                    - --seq_xyz_knn
+                    - "8"
+                    - --time_step_num
+                    - "3"
+                    - --max_time_step
+                    - "3"
+                    - --minimal_time_step
+                    - "1"
+                    - --l1_loss_w
+                    - "1.0"
+                    - --ssim_loss_w
+                    - "0.01"
+                    - --lpips_loss_w
+                    - "0.01"
+                    - --depth_prior_enable
+                    - --depth_prior_dir
+                    - /media/image/mxz/human/SeqAvatar/DNA-Rendering/0044_11/fs_depth
+                    - --depth_prior_interval
+                    - "100"
+                    - --depth_prior_start_iter
+                    - "500"
+                    - --depth_prior_end_iter
+                    - "-1"
+                    - --depth_prior_tau_z
+                    - "0.05"
+                    - --depth_prior_tau_alpha
+                    - "0.005"
+                    - --depth_prior_soft_factor
+                    - "0.7"
+                    - --depth_prior_hard_prune
+                    - --depth_prior_max_prune_ratio
+                    - "0.1"
+                    - --depth_prior_views_per_iter
+                    - "2"
+                    - --depth_prior_min_valid_views
+                    - "1"
+                    - --depth_prior_temporal_momentum
+                    - "0.2"
+                    - --depth_prior_depth_scale
+                    - "1.0"
+                    - --depth_prior_device
+                    - cuda
+                codePath: train.py
+                codePathLocal: train.py
+                cpu_count: 56
+                cpu_count_logical: 112
+                cudaVersion: "13.0"
+                disk:
+                    /:
+                        total: "1888559353856"
+                        used: "167348461568"
+                email: 2025439153@tju.edu.cn
+                executable: /media/image/mxz/.conda/envs/seqavatar/bin/python
+                git:
+                    commit: c74ac06e303573319c5eef6dec63f5026f297277
+                    remote: https://github.com/merlin-0728/seqavatar.git
+                gpu: NVIDIA GeForce RTX 4090
+                gpu_count: 4
+                gpu_nvidia:
+                    - architecture: Ada
+                      cudaCores: 16384
+                      memoryTotal: "25757220864"
+                      name: NVIDIA GeForce RTX 4090
+                      uuid: GPU-b1446af0-bb3b-eb06-d714-460b718ef8d7
+                    - architecture: Ada
+                      cudaCores: 16384
+                      memoryTotal: "25757220864"
+                      name: NVIDIA GeForce RTX 4090
+                      uuid: GPU-7e555418-4884-ddc5-c6b9-460cce2f5c81
+                    - architecture: Ada
+                      cudaCores: 16384
+                      memoryTotal: "25757220864"
+                      name: NVIDIA GeForce RTX 4090
+                      uuid: GPU-d27325c9-f80d-be42-1770-55f105588322
+                    - architecture: Ada
+                      cudaCores: 16384
+                      memoryTotal: "25757220864"
+                      name: NVIDIA GeForce RTX 4090
+                      uuid: GPU-e0a4de04-7a4f-ae4b-8651-b4fe0b9d70f6
+                host: 4090-3
+                memory:
+                    total: "270016204800"
+                os: Linux-6.8.0-90-generic-x86_64-with-glibc2.35
+                program: /media/image/mxz/human/SeqAvatar/train.py
+                python: CPython 3.9.23
+                root: /media/image/mxz/human/SeqAvatar
+                startedAt: "2026-04-21T16:06:12.083507Z"
+                writerId: caf0nhnwwt6l3r23otawrjtp4cyt5sps
+        m: []
+        python_version: 3.9.23
+        t:
+            "1":
+                - 1
+                - 41
+            "2":
+                - 1
+                - 41
+            "3":
+                - 2
+                - 16
+            "4": 3.9.23
+            "5": 0.25.0
+            "12": 0.25.0
+            "13": linux-x86_64
+actor_gender:
+    value: neutral
+checkpoint_iterations:
+    value: []
+compute_cov3D_python:
+    value: true
+convert_SHs_python:
+    value: false
+data_device:
+    value: cuda
+debug:
+    value: false
+debug_from:
+    value: -1
+densification_interval:
+    value: 100
+densify_from_iter:
+    value: 400
+densify_grad_threshold:
+    value: 0.0002
+densify_until_iter:
+    value: 1500
+depth_prior_depth_scale:
+    value: 1
+depth_prior_device:
+    value: cuda
+depth_prior_dir:
+    value: /media/image/mxz/human/SeqAvatar/DNA-Rendering/0044_11/fs_depth
+depth_prior_enable:
+    value: true
+depth_prior_end_iter:
+    value: -1
+depth_prior_hard_prune:
+    value: true
+depth_prior_interval:
+    value: 100
+depth_prior_max_prune_ratio:
+    value: 0.1
+depth_prior_min_valid_views:
+    value: 1
+depth_prior_soft_factor:
+    value: 0.7
+depth_prior_start_iter:
+    value: 500
+depth_prior_tau_alpha:
+    value: 0.005
+depth_prior_tau_z:
+    value: 0.05
+depth_prior_temporal_momentum:
+    value: 0.2
+depth_prior_views_per_iter:
+    value: 2
+detect_anomaly:
+    value: false
+eval:
+    value: true
+exp_name:
+    value: fs_depth_prior_ablation/20260421_222639/0044_11/fs
+feature_lr:
+    value: 0.0025
+images:
+    value: images
+ioscov_w:
+    value: 100
+iospos_w:
+    value: 1
+ip:
+    value: 127.0.0.1
+iterations:
+    value: 25000
+l1_loss_w:
+    value: 1
+lambda_dssim:
+    value: 0.2
+lbs_offset_lr:
+    value: 5e-05
+lpips_loss_w:
+    value: 0.01
+max_time_step:
+    value: 3
+minimal_time_step:
+    value: 1
+mlp_lr_ratio:
+    value: 0.1
+model_path:
+    value: ""
+mono_test:
+    value: false
+motion_offset_flag:
+    value: true
+non_rigid_deformer_lr:
+    value: 0.001
+non_rigid_flag:
+    value: true
+nonrigid_deltaposeconds_flag:
+    value: true
+nonrigid_deltaxyzconds_flag:
+    value: true
+nonrigid_poseconds_flag:
+    value: true
+opacity_lr:
+    value: 0.05
+opacity_reset_interval:
+    value: 3000
+percent_dense:
+    value: 0.01
+port:
+    value: 6009
+pose_refine_lr:
+    value: 5e-05
+position_lr_delay_mult:
+    value: 0.01
+position_lr_final:
+    value: 1.6e-06
+position_lr_init:
+    value: 0.00016
+position_lr_max_steps:
+    value: 30000
+quiet:
+    value: false
+resolution:
+    value: -1
+rotation_lr:
+    value: 0.001
+save_iterations:
+    value:
+        - 3000
+        - 15000
+        - 25000
+        - 30000
+        - 25000
+scaling_lr:
+    value: 0.005
+seq_len:
+    value: 8
+seq_xyz_knn:
+    value: 8
+sh_degree:
+    value: 3
+smpl_type:
+    value: smplx
+source_path:
+    value: /media/image/mxz/human/SeqAvatar/DNA-Rendering/0044_11
+ssim_loss_w:
+    value: 0.01
+start_checkpoint:
+    value: null
+test_iterations:
+    value:
+        - 3000
+        - 15000
+        - 25000
+        - 30000
+time_step_num:
+    value: 3
+white_background:
+    value: false

@@ -527,9 +527,11 @@ class GaussianModel:
         query_pts = query_pts - canon_pose_offsets
 
         # From mean shape to normal shape
-        shapedirs = self.SMPL_NEUTRAL['shapedirs'][..., :params['shapes'].shape[-1]]#.cuda()
+        betas = params['shapes'].cuda()
+        num_shape_coeffs = min(self.SMPL_NEUTRAL['shapedirs'].shape[-1], betas.shape[-1])
+        shapedirs = self.SMPL_NEUTRAL['shapedirs'][..., :num_shape_coeffs]#.cuda()
         shapedirs = shapedirs.unsqueeze(0).expand(bs, *shapedirs.shape)
-        shape_offset = torch.matmul(shapedirs, torch.reshape(params['shapes'].cuda(), (bs, 1, -1, 1))).squeeze(-1)
+        shape_offset = torch.matmul(shapedirs, torch.reshape(betas[..., :num_shape_coeffs], (bs, 1, -1, 1))).squeeze(-1)
         shape_offset = torch.gather(shape_offset, 1, vert_ids.expand(-1, -1, 3)) # [bs, N_rays*N_samples, 3]
         query_pts = query_pts + shape_offset
 

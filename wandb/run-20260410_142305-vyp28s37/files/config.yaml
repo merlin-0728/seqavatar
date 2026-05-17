@@ -1,0 +1,147 @@
+_wandb:
+    value:
+        cli_version: 0.25.0
+        e:
+            a1wuwhb8qm3j55tj6du5xfweuq5ug8uy:
+                args:
+                    - -s
+                    - /media/image/mxz/human/SeqAvatar/DNA-Rendering/0007_04/
+                    - -m
+                    - output/DNA-Rendering/0007_04//
+                    - --motion_offset_flag
+                    - --smpl_type
+                    - smplx
+                    - --actor_gender
+                    - neutral
+                    - --iteration
+                    - "25000"
+                    - --skip_train
+                    - --seq_len
+                    - "8"
+                    - --seq_xyz_knn
+                    - "8"
+                    - --time_step_num
+                    - "3"
+                    - --max_time_step
+                    - "3"
+                    - --minimal_time_step
+                    - "1"
+                codePath: render.py
+                codePathLocal: render.py
+                cpu_count: 56
+                cpu_count_logical: 112
+                cudaVersion: "13.0"
+                disk:
+                    /:
+                        total: "1888559353856"
+                        used: "164429299712"
+                email: 2025439153@tju.edu.cn
+                executable: /media/image/mxz/.conda/envs/seqavatar/bin/python
+                git:
+                    commit: fdc5cd2d6833cd4de1f7a6874522ad36dfb68c32
+                    remote: https://github.com/merlin-0728/seqavatar.git
+                gpu: NVIDIA GeForce RTX 4090
+                gpu_count: 4
+                gpu_nvidia:
+                    - architecture: Ada
+                      cudaCores: 16384
+                      memoryTotal: "25757220864"
+                      name: NVIDIA GeForce RTX 4090
+                      uuid: GPU-b1446af0-bb3b-eb06-d714-460b718ef8d7
+                    - architecture: Ada
+                      cudaCores: 16384
+                      memoryTotal: "25757220864"
+                      name: NVIDIA GeForce RTX 4090
+                      uuid: GPU-7e555418-4884-ddc5-c6b9-460cce2f5c81
+                    - architecture: Ada
+                      cudaCores: 16384
+                      memoryTotal: "25757220864"
+                      name: NVIDIA GeForce RTX 4090
+                      uuid: GPU-d27325c9-f80d-be42-1770-55f105588322
+                    - architecture: Ada
+                      cudaCores: 16384
+                      memoryTotal: "25757220864"
+                      name: NVIDIA GeForce RTX 4090
+                      uuid: GPU-e0a4de04-7a4f-ae4b-8651-b4fe0b9d70f6
+                host: 4090-3
+                memory:
+                    total: "270016204800"
+                os: Linux-6.8.0-90-generic-x86_64-with-glibc2.35
+                program: /media/image/mxz/human/SeqAvatar/render.py
+                python: CPython 3.9.23
+                root: /media/image/mxz/human/SeqAvatar
+                startedAt: "2026-04-10T06:23:05.457059Z"
+                writerId: a1wuwhb8qm3j55tj6du5xfweuq5ug8uy
+        m: []
+        python_version: 3.9.23
+        t:
+            "1":
+                - 1
+                - 41
+            "2":
+                - 1
+                - 41
+            "3":
+                - 2
+                - 13
+                - 16
+            "4": 3.9.23
+            "5": 0.25.0
+            "12": 0.25.0
+            "13": linux-x86_64
+actor_gender:
+    value: neutral
+compute_cov3D_python:
+    value: true
+convert_SHs_python:
+    value: false
+data_device:
+    value: cuda
+debug:
+    value: false
+eval:
+    value: true
+exp_name:
+    value: DNA-Rendering/0007_04/
+images:
+    value: images
+iteration:
+    value: 25000
+max_time_step:
+    value: 3
+minimal_time_step:
+    value: 1
+model_path:
+    value: output/DNA-Rendering/0007_04//
+motion_offset_flag:
+    value: true
+non_rigid_flag:
+    value: true
+nonrigid_deltaposeconds_flag:
+    value: true
+nonrigid_deltaxyzconds_flag:
+    value: true
+nonrigid_poseconds_flag:
+    value: true
+quiet:
+    value: false
+resolution:
+    value: -1
+seq_len:
+    value: 8
+seq_xyz_knn:
+    value: 8
+sh_degree:
+    value: 3
+skip_test:
+    value: false
+skip_train:
+    value: true
+smpl_type:
+    value: smplx
+source_path:
+    value: /media/image/mxz/human/SeqAvatar/DNA-Rendering/0007_04/
+time_step_num:
+    value: 3
+white_background:
+    value: false

@@ -1,0 +1,1 @@
+{"_timestamp":1.7751439428672252e+09,"_step":0,"Eval_novelview/Avg_PSNR":29.387272834777832,"Eval_novelview/Avg_SSIM":0.9570596461494764,"Eval_novelview/Avg_LPIPS":0.04990209715130428,"_wandb":{"runtime":74},"_runtime":74,"iteration":25000}

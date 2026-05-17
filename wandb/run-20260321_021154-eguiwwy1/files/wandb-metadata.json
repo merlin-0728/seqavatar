@@ -1,0 +1,93 @@
+{
+  "os":  "Linux-6.8.0-90-generic-x86_64-with-glibc2.35",
+  "python":  "CPython 3.9.23",
+  "startedAt":  "2026-03-20T18:11:54.527696Z",
+  "args":  [
+    "-s",
+    "/media/image/mxz/human/SeqAvatar/DNA-Rendering/0206_04/",
+    "--eval",
+    "--exp_name",
+    "DNA-Rendering/0206_04/",
+    "--motion_offset_flag",
+    "--smpl_type",
+    "smplx",
+    "--actor_gender",
+    "neutral",
+    "--iterations",
+    "25000",
+    "--densify_until_iter",
+    "1500",
+    "--seq_len",
+    "8",
+    "--seq_xyz_knn",
+    "8",
+    "--time_step_num",
+    "3",
+    "--max_time_step",
+    "3",
+    "--minimal_time_step",
+    "1",
+    "--l1_loss_w",
+    "1.0",
+    "--ssim_loss_w",
+    "0.01",
+    "--lpips_loss_w",
+    "0.01"
+  ],
+  "program":  "/media/image/mxz/human/SeqAvatar/train.py",
+  "codePath":  "train.py",
+  "codePathLocal":  "train.py",
+  "git":  {
+    "remote":  "https://github.com/merlin-0728/seqavatar.git",
+    "commit":  "c02a7c8e3a17de1f74ca3d29ab987fb557c8518a"
+  },
+  "email":  "2025439153@tju.edu.cn",
+  "root":  "/media/image/mxz/human/SeqAvatar",
+  "host":  "4090-3",
+  "executable":  "/media/image/mxz/.conda/envs/3dhgsseq/bin/python",
+  "cpu_count":  56,
+  "cpu_count_logical":  112,
+  "gpu":  "NVIDIA GeForce RTX 4090",
+  "gpu_count":  4,
+  "disk":  {
+    "/":  {
+      "total":  "1888559353856",
+      "used":  "161159462912"
+    }
+  },
+  "memory":  {
+    "total":  "270016204800"
+  },
+  "gpu_nvidia":  [
+    {
+      "name":  "NVIDIA GeForce RTX 4090",
+      "memoryTotal":  "25757220864",
+      "cudaCores":  16384,
+      "architecture":  "Ada",
+      "uuid":  "GPU-b1446af0-bb3b-eb06-d714-460b718ef8d7"
+    },
+    {
+      "name":  "NVIDIA GeForce RTX 4090",
+      "memoryTotal":  "25757220864",
+      "cudaCores":  16384,
+      "architecture":  "Ada",
+      "uuid":  "GPU-7e555418-4884-ddc5-c6b9-460cce2f5c81"
+    },
+    {
+      "name":  "NVIDIA GeForce RTX 4090",
+      "memoryTotal":  "25757220864",
+      "cudaCores":  16384,
+      "architecture":  "Ada",
+      "uuid":  "GPU-d27325c9-f80d-be42-1770-55f105588322"
+    },
+    {
+      "name":  "NVIDIA GeForce RTX 4090",
+      "memoryTotal":  "25757220864",
+      "cudaCores":  16384,
+      "architecture":  "Ada",
+      "uuid":  "GPU-e0a4de04-7a4f-ae4b-8651-b4fe0b9d70f6"
+    }
+  ],
+  "cudaVersion":  "13.0",
+  "writerId":  "f6azacvvrk4emgwma9qqkal0jdgvw3wl"
+}

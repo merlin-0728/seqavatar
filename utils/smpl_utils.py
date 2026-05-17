@@ -95,7 +95,11 @@ def get_transform_params_torch(smpl, params, rot_mats=None, correct_Rs=None):
     bs = betas.shape[0]
     v_template = v_template.unsqueeze(0).expand(bs, *v_template.shape)
     shapedirs = shapedirs.unsqueeze(0).expand(bs, *shapedirs.shape)
-    v_shaped = v_template + torch.sum(shapedirs[...,:betas.shape[-1]] * betas[:,None,None], axis=-1).float()
+    num_shape_coeffs = min(shapedirs.shape[-1], betas.shape[-1])
+    v_shaped = v_template + torch.sum(
+        shapedirs[..., :num_shape_coeffs] * betas[:, None, None, :num_shape_coeffs],
+        axis=-1,
+    ).float()
 
     if rot_mats is None:
         # add pose blend shapes

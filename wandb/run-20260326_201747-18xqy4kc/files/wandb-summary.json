@@ -1,0 +1,1 @@
+{"Eval_novelview/Avg_SSIM":0.9668096538633109,"_timestamp":1.7745276316994536e+09,"_step":1,"Eval_novelview/Avg_PSNR":31.994380640983582,"Eval_novelpose/Avg_LPIPS":0.03133884288060168,"_wandb":{"runtime":162},"Eval_novelview/Avg_LPIPS":0.025545841024722904,"iteration":15000,"Eval_novelpose/Avg_PSNR":30.03948647181193,"Eval_novelpose/Avg_SSIM":0.9600318431854248,"_runtime":162}

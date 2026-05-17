@@ -1,0 +1,85 @@
+{
+  "os":  "Linux-6.8.0-90-generic-x86_64-with-glibc2.35",
+  "python":  "CPython 3.9.23",
+  "startedAt":  "2026-04-02T08:55:14.906504Z",
+  "args":  [
+    "-s",
+    "/media/image/mxz/human/SeqAvatar/DNA-Rendering/0007_04/",
+    "-m",
+    "output/DNA-Rendering/0007_04//",
+    "--motion_offset_flag",
+    "--smpl_type",
+    "smplx",
+    "--actor_gender",
+    "neutral",
+    "--iteration",
+    "25000",
+    "--skip_train",
+    "--seq_len",
+    "8",
+    "--seq_xyz_knn",
+    "8",
+    "--time_step_num",
+    "3",
+    "--max_time_step",
+    "3",
+    "--minimal_time_step",
+    "1"
+  ],
+  "program":  "/media/image/mxz/human/SeqAvatar/render.py",
+  "codePath":  "render.py",
+  "codePathLocal":  "render.py",
+  "git":  {
+    "remote":  "https://github.com/merlin-0728/seqavatar.git",
+    "commit":  "c74ac06e303573319c5eef6dec63f5026f297277"
+  },
+  "email":  "2025439153@tju.edu.cn",
+  "root":  "/media/image/mxz/human/SeqAvatar",
+  "host":  "4090-3",
+  "executable":  "/media/image/mxz/.conda/envs/seqavatar/bin/python",
+  "cpu_count":  56,
+  "cpu_count_logical":  112,
+  "gpu":  "NVIDIA GeForce RTX 4090",
+  "gpu_count":  4,
+  "disk":  {
+    "/":  {
+      "total":  "1888559353856",
+      "used":  "163985285120"
+    }
+  },
+  "memory":  {
+    "total":  "270016204800"
+  },
+  "gpu_nvidia":  [
+    {
+      "name":  "NVIDIA GeForce RTX 4090",
+      "memoryTotal":  "25757220864",
+      "cudaCores":  16384,
+      "architecture":  "Ada",
+      "uuid":  "GPU-b1446af0-bb3b-eb06-d714-460b718ef8d7"
+    },
+    {
+      "name":  "NVIDIA GeForce RTX 4090",
+      "memoryTotal":  "25757220864",
+      "cudaCores":  16384,
+      "architecture":  "Ada",
+      "uuid":  "GPU-7e555418-4884-ddc5-c6b9-460cce2f5c81"
+    },
+    {
+      "name":  "NVIDIA GeForce RTX 4090",
+      "memoryTotal":  "25757220864",
+      "cudaCores":  16384,
+      "architecture":  "Ada",
+      "uuid":  "GPU-d27325c9-f80d-be42-1770-55f105588322"
+    },
+    {
+      "name":  "NVIDIA GeForce RTX 4090",
+      "memoryTotal":  "25757220864",
+      "cudaCores":  16384,
+      "architecture":  "Ada",
+      "uuid":  "GPU-e0a4de04-7a4f-ae4b-8651-b4fe0b9d70f6"
+    }
+  ],
+  "cudaVersion":  "13.0",
+  "writerId":  "2tgo7ykqaee2xajl926grumtdywktqrq"
+}
