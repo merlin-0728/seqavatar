@@ -1,7 +1,7 @@
 # depth_render.py
 # Copyright (C) 2023, Inria
 # GRAPHDECO research group
-# Render RGB + Depth for SeqAvatar novelview set.
+# Render RGB + Depth for SeqAvatar train/novelview sets.
 
 import torch
 import os
@@ -66,7 +66,7 @@ def _make_preview(preview_items, preview_path):
 
 # ------------------- 渲染单个集合 -------------------
 def render_set(model_path, dataset_path, name, iteration, views, gaussians, pipeline, background):
-    """Render the novelview split and save RGB + depth."""
+    """Render a split and save RGB + depth."""
     output_path = os.path.join(dataset_path, "depth", name)
     rgb_path = os.path.join(output_path, "rgb")
     depth_raw_path = os.path.join(output_path, "npy")
@@ -151,7 +151,7 @@ def render_set(model_path, dataset_path, name, iteration, views, gaussians, pipe
         print(f"[ITER {iteration}] Evaluating {name} #{rendered_count}: PSNR {psnrs:.4f} SSIM {ssims:.4f} LPIPS {lpipss:.4f}")
 
 
-# ------------------- 渲染测试集合 -------------------
+# ------------------- 渲染集合 -------------------
 def render_sets(dataset: ModelParams, iteration: int, pipeline: PipelineParams, skip_train: bool, skip_test: bool):
     with torch.no_grad():
         gaussians = GaussianModel(dataset.sh_degree, dataset.smpl_type,
@@ -159,6 +159,10 @@ def render_sets(dataset: ModelParams, iteration: int, pipeline: PipelineParams, 
         scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
         bg_color = [1,1,1] if dataset.white_background else [0,0,0]
         background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
+
+        # ------------------- train 集 -------------------
+        if not skip_train:
+            render_set(dataset.model_path, dataset.source_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, background)
 
         # ------------------- novelview / test 集 -------------------
         if not skip_test:
@@ -168,7 +172,7 @@ def render_sets(dataset: ModelParams, iteration: int, pipeline: PipelineParams, 
 
 # ------------------- main -------------------
 if __name__ == "__main__":
-    parser = ArgumentParser(description="Depth rendering for SeqAvatar novelview only")
+    parser = ArgumentParser(description="Depth rendering for SeqAvatar train/novelview splits")
     model = ModelParams(parser, sentinel=True)
     pipeline = PipelineParams(parser)
     parser.add_argument("--iteration", type=int, default=-1)

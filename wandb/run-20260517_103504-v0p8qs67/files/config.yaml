@@ -1,0 +1,101 @@
+_wandb:
+    value:
+        cli_version: 0.25.0
+        e:
+            s7hk1ynjk55zzca80dfmzsbji5tz9rc0:
+                args:
+                    - -s
+                    - /media/image/mxz/human/SeqAvatar/DNA-Rendering/0813_05/
+                    - --eval
+                    - --exp_name
+                    - DNA-Rendering/0813_05/
+                    - --motion_offset_flag
+                    - --smpl_type
+                    - smplx
+                    - --actor_gender
+                    - neutral
+                    - --iterations
+                    - "25000"
+                    - --densify_until_iter
+                    - "1500"
+                    - --seq_len
+                    - "8"
+                    - --seq_xyz_knn
+                    - "8"
+                    - --time_step_num
+                    - "3"
+                    - --max_time_step
+                    - "3"
+                    - --minimal_time_step
+                    - "1"
+                    - --l1_loss_w
+                    - "1.0"
+                    - --ssim_loss_w
+                    - "0.01"
+                    - --lpips_loss_w
+                    - "0.01"
+                codePath: train.py
+                codePathLocal: train.py
+                email: 2025439153@tju.edu.cn
+                executable: /media/image/mxz/.conda/envs/seqavatar/bin/python
+                git:
+                    commit: e861f256ae3c163bb251047cdc94df4f87d769b3
+                    remote: https://github.com/merlin-0728/seqavatar.git
+                host: 4090-3
+                os: Linux-6.8.0-110-generic-x86_64-with-glibc2.35
+                program: /media/image/mxz/human/SeqAvatar/train.py
+                python: CPython 3.9.23
+                root: /media/image/mxz/human/SeqAvatar
+                startedAt: "2026-05-17T02:35:04.184288Z"
+                writerId: s7hk1ynjk55zzca80dfmzsbji5tz9rc0
+        m: []
+        python_version: 3.9.23
+        t:
+            "1":
+                - 1
+                - 41
+            "2":
+                - 1
+                - 41
+            "3":
+                - 2
+                - 13
+                - 16
+            "4": 3.9.23
+            "5": 0.25.0
+            "12": 0.25.0
+            "13": linux-x86_64
+actor_gender:
+    value: neutral
+dataset_path:
+    value: /media/image/mxz/human/SeqAvatar/DNA-Rendering/0813_05/
+densify_until_iter:
+    value: 1500
+depth_loss_w:
+    value: 1
+eval:
+    value: true
+exp_name:
+    value: DNA-Rendering/0813_05/
+iterations:
+    value: 25000
+l1_loss_w:
+    value: 1
+lpips_loss_w:
+    value: 0.01
+max_time_step:
+    value: 3
+minimal_time_step:
+    value: 1
+motion_offset_flag:
+    value: true
+seq_len:
+    value: 8
+seq_xyz_knn:
+    value: 8
+smpl_type:
+    value: smplx
+ssim_loss_w:
+    value: 0.01
+time_step_num:
+    value: 3

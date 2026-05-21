@@ -140,8 +140,8 @@ def infer_depth_and_disp(model, left_file, right_file, intrinsic_file, scale, va
 # -----------------------------
 # 主处理函数
 # -----------------------------
-def process_sequence(model, seq, scale, valid_iters, remove_invisible, min_disp, max_depth, save_disp, max_frames, device):
-    root = DATA_ROOT/seq/"render_depth"/"novelview"
+def process_sequence(model, seq, split, scale, valid_iters, remove_invisible, min_disp, max_depth, save_disp, max_frames, device):
+    root = DATA_ROOT/seq/"render_depth"/split
     rgb_dir = root/"rgb"
     right_dir = root/"right"
     npy_dir = root/"npy"
@@ -155,10 +155,14 @@ def process_sequence(model, seq, scale, valid_iters, remove_invisible, min_disp,
     if max_frames:
         rgb_files = rgb_files[:max_frames]
 
-    for left_file in tqdm(rgb_files, desc=f"{seq} FS depth"):
+    for left_file in tqdm(rgb_files, desc=f"{seq} {split} FS depth"):
         stem = left_file.stem
         right_file = right_dir/left_file.name
         k_file = root/"K"/f"{stem}.txt"
+        if not right_file.exists():
+            raise FileNotFoundError(f"Right image not found: {right_file}")
+        if not k_file.exists():
+            raise FileNotFoundError(f"Intrinsic file not found: {k_file}")
 
         left_img = imageio.imread(left_file)
         target_hw = left_img.shape[:2]
@@ -182,6 +186,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--gpu_id", type=int, default=0, help="选择要使用的 GPU 卡")
     parser.add_argument("--sequences", nargs="+", default=DEFAULT_SEQUENCES)
+    parser.add_argument("--split", choices=["train", "novelview"], default="novelview")
     parser.add_argument("--scale", type=float, default=0.5)
     parser.add_argument("--valid_iters", type=int, default=16)
     parser.add_argument("--max_frames", type=int, default=None)
@@ -193,7 +198,7 @@ def main():
     model = load_model(DEFAULT_CKPT, device)
 
     for seq in args.sequences:
-        process_sequence(model, seq, args.scale, args.valid_iters, True, 1.0, args.max_depth, args.save_disp, args.max_frames, device)
+        process_sequence(model, seq, args.split, args.scale, args.valid_iters, True, 1.0, args.max_depth, args.save_disp, args.max_frames, device)
 
     print("[ALL DONE]")
 

@@ -3,7 +3,7 @@
 import os
 
 # ------------------------- GPU 设置 -------------------------
-GPU_ID = "1"
+GPU_ID = "0"
 os.environ["CUDA_VISIBLE_DEVICES"] = GPU_ID
 
 import argparse
@@ -369,6 +369,27 @@ def maybe_sync(device: torch.device):
         torch.cuda.synchronize(device)
 
 
+def get_ablation_name(args) -> str:
+    """
+    根据消融开关自动生成输出子目录名称。
+    所有结果仍然保存在每个序列的 opt 文件夹下面：
+    <sequence>/opt/<ablation_name>/
+    """
+    if getattr(args, "ablation_name", None) not in [None, "", "auto"]:
+        return str(args.ablation_name)
+
+    depth_on = bool(getattr(args, "enable_depth_loss", True))
+    split_on = bool(getattr(args, "enable_gaussian_split", True))
+
+    if depth_on and split_on:
+        return "depth_loss_and_split"
+    if depth_on and not split_on:
+        return "depth_loss_only"
+    if (not depth_on) and split_on:
+        return "split_only"
+    return "no_depth_no_split"
+
+
 # ------------------------- 测试集评价函数 -------------------------
 @torch.no_grad()
 def evaluate_on_test_set(
@@ -492,8 +513,9 @@ def process_sequence(seq: str, args, pipeline, device: torch.device, lpips_model
     data_dir = args.data_root / seq
     model_dir = args.model_root / seq
 
-    # 每个序列输出统一保存在 <sequence>/opt
-    seq_opt_dir = args.output_root / seq / "opt"
+    # 每个序列输出统一保存在 <sequence>/opt/<ablation_name>
+    ablation_name = get_ablation_name(args)
+    seq_opt_dir = args.output_root / seq / "opt" / ablation_name
     train_vis_dir = seq_opt_dir / "train_opt"
     mask_dir = args.output_root / seq / "depth_map" / "mask_high_error"
 
@@ -540,6 +562,9 @@ def process_sequence(seq: str, args, pipeline, device: torch.device, lpips_model
         "epsilon_split": args.epsilon_split,
         "split_count": args.split_count,
         "fps_mode": args.fps_mode,
+        "ablation_name": ablation_name,
+        "enable_depth_loss": bool(args.enable_depth_loss),
+        "enable_gaussian_split": bool(args.enable_gaussian_split),
         "train_iterations": {},
     }
 
@@ -609,40 +634,54 @@ def process_sequence(seq: str, args, pipeline, device: torch.device, lpips_model
 
             loss_color = masked_l1(rgb, gt_rgb, color_mask)
             loss_alpha = masked_l2(alpha, alpha_target, color_mask)
+
+            # 消融开关 1：深度 loss
+            # enable_depth_loss=True  时：loss 中加入 lambda_depth * L_depth
+            # enable_depth_loss=False 时：仍可计算深度误差用于高斯球分裂，但不参与反向传播损失
             if torch.any(depth_mask):
-                loss_depth = torch.mean(torch.abs(depth[depth_mask] - fs_depth[depth_mask]))
+                loss_depth_raw = torch.mean(torch.abs(depth[depth_mask] - fs_depth[depth_mask]))
+            else:
+                loss_depth_raw = torch.zeros((), device=device)
+
+            if args.enable_depth_loss:
+                loss_depth = loss_depth_raw
+                loss = loss_color + args.lambda_alpha * loss_alpha + args.lambda_depth * loss_depth
             else:
                 loss_depth = torch.zeros((), device=device)
-
-            loss = loss_color + args.lambda_alpha * loss_alpha + args.lambda_depth * loss_depth
+                loss = loss_color + args.lambda_alpha * loss_alpha
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
 
-            selected, selected_count = select_projected_gaussians(
-                view,
-                render_pkg,
-                split_mask.detach(),
-                current_error.detach(),
-                args.max_split_points_per_frame,
-            )
-
+            # 消融开关 2：深度误差引导的高斯球分裂
+            # enable_gaussian_split=True  时：根据 split_mask 选择并分裂高斯球
+            # enable_gaussian_split=False 时：完全不新增高斯球
+            selected_count = 0
             new_points = 0
-            should_split = (
-                args.split_count > 0
-                and selected_count > 0
-                and (global_step % args.split_every == 0)
-                and gaussians.get_xyz.shape[0] < args.max_points
-            )
-            if should_split:
-                new_points = split_selected_gaussians(
-                    gaussians,
-                    selected,
-                    args.split_count,
-                    args.split_scale,
+            if args.enable_gaussian_split:
+                selected, selected_count = select_projected_gaussians(
+                    view,
+                    render_pkg,
+                    split_mask.detach(),
+                    current_error.detach(),
+                    args.max_split_points_per_frame,
                 )
+
+                should_split = (
+                    args.split_count > 0
+                    and selected_count > 0
+                    and (global_step % args.split_every == 0)
+                    and gaussians.get_xyz.shape[0] < args.max_points
+                )
+                if should_split:
+                    new_points = split_selected_gaussians(
+                        gaussians,
+                        selected,
+                        args.split_count,
+                        args.split_scale,
+                    )
 
             metric_mask = color_mask if color_mask is not None and torch.any(color_mask) else valid
             metrics = compute_rgb_metrics(rgb, gt_rgb, metric_mask, bg, lpips_model)
@@ -661,6 +700,9 @@ def process_sequence(seq: str, args, pipeline, device: torch.device, lpips_model
                 "loss_color": float(loss_color.detach().cpu()),
                 "loss_alpha": float(loss_alpha.detach().cpu()),
                 "loss_depth": float(loss_depth.detach().cpu()),
+                "loss_depth_raw": float(loss_depth_raw.detach().cpu()),
+                "enable_depth_loss": bool(args.enable_depth_loss),
+                "enable_gaussian_split": bool(args.enable_gaussian_split),
                 "valid_pixels": int(valid.sum().detach().cpu()),
                 "high_error_pixels": int(split_mask.sum().detach().cpu()),
                 "selected_gaussians": selected_count,
@@ -693,6 +735,9 @@ def process_sequence(seq: str, args, pipeline, device: torch.device, lpips_model
             seq_summary["train_iterations"][f"iter_{opt_iter:03d}"] = {
                 "mean_loss_total": float(np.mean([x["loss_total"] for x in iter_records])),
                 "mean_loss_depth": float(np.mean([x["loss_depth"] for x in iter_records])),
+                "mean_loss_depth_raw": float(np.mean([x["loss_depth_raw"] for x in iter_records])),
+                "enable_depth_loss": bool(args.enable_depth_loss),
+                "enable_gaussian_split": bool(args.enable_gaussian_split),
                 "mean_psnr": float(np.mean([x["psnr"] for x in iter_records])),
                 "mean_ssim": float(np.mean([x["ssim"] for x in iter_records])),
                 "mean_lpips": float(np.mean([x["lpips"] for x in iter_records])),
@@ -757,6 +802,9 @@ def collect_final_sequence_metrics(summary):
     return {
         "sequence": summary.get("sequence"),
         "output_dir": summary.get("output_dir"),
+        "ablation_name": summary.get("ablation_name"),
+        "enable_depth_loss": summary.get("enable_depth_loss"),
+        "enable_gaussian_split": summary.get("enable_gaussian_split"),
         "num_iterations": summary.get("num_iterations"),
         "train_num_views": summary.get("train_num_views"),
         "test_num_views": test_metrics.get("num_views"),
@@ -793,8 +841,18 @@ def parse_args():
     parser.add_argument("--test_split", type=str, default="novelview")
 
     parser.add_argument("--num_iterations", type=int, default=1)
-    parser.add_argument("--lambda_depth", type=float, default=1.0)
+    parser.add_argument("--lambda_depth", type=float, default=0.1)
     parser.add_argument("--lambda_alpha", type=float, default=0.1)
+
+    # ---------------- 消融实验开关 ----------------
+    # 两个都开：--enable_depth_loss --enable_gaussian_split
+    # 只开深度 loss：--enable_depth_loss --no-enable_gaussian_split
+    # 只开高斯球分裂：--no-enable_depth_loss --enable_gaussian_split
+    # 两个都关：--no-enable_depth_loss --no-enable_gaussian_split
+    parser.add_argument("--enable_depth_loss", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--enable_gaussian_split", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--ablation_name", type=str, default="auto")
+
     parser.add_argument("--epsilon_split", type=float, default=0.02)
     parser.add_argument("--split_count", type=int, default=3)
     parser.add_argument("--split_scale", type=float, default=0.5)
@@ -852,6 +910,7 @@ def main():
                 "--num_iterations", str(args.num_iterations),
                 "--lambda_depth", str(args.lambda_depth),
                 "--lambda_alpha", str(args.lambda_alpha),
+                "--ablation_name", str(args.ablation_name),
                 "--epsilon_split", str(args.epsilon_split),
                 "--split_count", str(args.split_count),
                 "--split_scale", str(args.split_scale),
@@ -868,6 +927,16 @@ def main():
                 cmd.extend(["--max_frames", str(args.max_frames)])
             if args.max_test_frames is not None:
                 cmd.extend(["--max_test_frames", str(args.max_test_frames)])
+
+            if args.enable_depth_loss:
+                cmd.append("--enable_depth_loss")
+            else:
+                cmd.append("--no-enable_depth_loss")
+
+            if args.enable_gaussian_split:
+                cmd.append("--enable_gaussian_split")
+            else:
+                cmd.append("--no-enable_gaussian_split")
 
             if args.depth_on_high_error_only:
                 cmd.append("--depth_on_high_error_only")
@@ -911,7 +980,7 @@ def main():
         # 合并六个序列的最终测试集指标
         merged = {"sequences": [], "fps_mode": args.fps_mode}
         for seq in args.sequences:
-            seq_summary_path = args.output_root / seq / "opt" / "optimization_summary.json"
+            seq_summary_path = args.output_root / seq / "opt" / get_ablation_name(args) / "optimization_summary.json"
             if not seq_summary_path.exists():
                 print(f"[WARNING] Missing sequence summary: {seq_summary_path}")
                 continue
@@ -919,7 +988,7 @@ def main():
                 seq_summary = json.load(f)
             merged["sequences"].append(collect_final_sequence_metrics(seq_summary))
 
-        merged_path = args.output_root / "depth_guided_test_summary_all.json"
+        merged_path = args.output_root / f"depth_guided_test_summary_all_{get_ablation_name(args)}.json"
         with merged_path.open("w", encoding="utf-8") as f:
             json.dump(merged, f, indent=2)
         print(f"[DONE] Merged summary saved to {merged_path}")
@@ -948,7 +1017,7 @@ def main():
 
     for summary in summaries:
         summary["elapsed_sec"] = elapsed
-        seq_summary_path = args.output_root / summary["sequence"] / "opt" / "optimization_summary.json"
+        seq_summary_path = args.output_root / summary["sequence"] / "opt" / get_ablation_name(args) / "optimization_summary.json"
         seq_summary_path.parent.mkdir(parents=True, exist_ok=True)
         with seq_summary_path.open("w", encoding="utf-8") as f:
             json.dump(summary, f, indent=2)

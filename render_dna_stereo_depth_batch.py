@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 from argparse import ArgumentParser, Namespace
 
 import cv2
@@ -160,6 +161,12 @@ def save_right_render(render_output, rgb_path):
     torchvision.utils.save_image(image.cpu(), rgb_path)
 
 
+def save_original_left(base_info, rgb_path):
+    if not os.path.exists(base_info.image_path):
+        raise FileNotFoundError(f"Missing source image: {base_info.image_path}")
+    shutil.copyfile(base_info.image_path, rgb_path)
+
+
 def make_preview(left_path, right_path, preview_path):
     left = cv2.imread(left_path, cv2.IMREAD_COLOR)
     right = cv2.imread(right_path, cv2.IMREAD_COLOR)
@@ -227,7 +234,7 @@ def load_sequence_model(cfg, iteration):
     return gaussians, scene_info
 
 
-def render_sequence(seq, iteration, baseline, max_views=None, skip_existing=True, make_previews=True):
+def render_sequence(seq, iteration, baseline, split="novelview", left_source="auto", max_views=None, skip_existing=True, make_previews=True):
     model_path = os.path.join(OUTPUT_ROOT, seq)
     cfg = load_cfg_args(model_path)
     cfg.source_path = os.path.join(DNA_ROOT, seq)
@@ -238,11 +245,20 @@ def render_sequence(seq, iteration, baseline, max_views=None, skip_existing=True
     bg_color = [1, 1, 1] if cfg.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device=DEVICE)
 
-    views_info = list(scene_info.test_cameras.get("novelview", []))
+    if split == "train":
+        views_info = list(scene_info.train_cameras)
+    elif split == "novelview":
+        views_info = list(scene_info.test_cameras.get("novelview", []))
+    else:
+        raise ValueError(f"Unsupported split: {split}")
+
     if max_views is not None:
         views_info = views_info[:max_views]
 
-    out_root = os.path.join(cfg.source_path, "render_depth", "novelview")
+    if left_source == "auto":
+        left_source = "original" if split == "train" else "rendered"
+
+    out_root = os.path.join(cfg.source_path, "render_depth", split)
     dirs = ensure_output_dirs(out_root)
 
     summary = {
@@ -250,14 +266,19 @@ def render_sequence(seq, iteration, baseline, max_views=None, skip_existing=True
         "iteration": int(iteration),
         "baseline_meters": float(baseline),
         "num_views": len(views_info),
+        "split": split,
+        "left_source": left_source,
         "source_path": cfg.source_path,
         "model_path": cfg.model_path,
-        "note": "Left RGB/depth are freshly rendered from the SeqAvatar checkpoint; existing novelview render PNGs are not used.",
+        "note": (
+            f"Left RGB source: {left_source}. Right RGB is rendered from the SeqAvatar "
+            f"checkpoint after shifting the camera by the stereo baseline."
+        ),
     }
     with open(os.path.join(out_root, "summary.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
 
-    for base_info in tqdm(views_info, desc=f"{seq} novelview"):
+    for base_info in tqdm(views_info, desc=f"{seq} {split}"):
         name = base_info.image_name
         left_rgb = os.path.join(dirs["rgb"], f"{name}.png")
         right_rgb = os.path.join(dirs["right"], f"{name}.png")
@@ -267,7 +288,9 @@ def render_sequence(seq, iteration, baseline, max_views=None, skip_existing=True
         k_path = os.path.join(dirs["K"], f"{name}.txt")
         preview_path = os.path.join(dirs["preview"], f"{name}.png")
 
-        expected = [left_rgb, right_rgb, depth_npy, depth_vis, f"{pose_prefix}.json", f"{pose_prefix}.npz", k_path]
+        expected = [left_rgb, right_rgb, f"{pose_prefix}.json", f"{pose_prefix}.npz", k_path]
+        if left_source == "rendered":
+            expected.extend([depth_npy, depth_vis])
         if make_previews:
             expected.append(preview_path)
         if skip_existing and all(os.path.exists(path) for path in expected):
@@ -278,18 +301,25 @@ def render_sequence(seq, iteration, baseline, max_views=None, skip_existing=True
         left_view, right_view = cameraList_from_camInfos([left_info, right_info], 1.0, cfg)
 
         with torch.no_grad():
-            left_output = render(left_view, gaussians, PipelineParams(ArgumentParser()).extract(Namespace(
-                convert_SHs_python=False,
-                compute_cov3D_python=True,
-                debug=False,
-            )), background)
+            left_output = None
+            if left_source == "rendered":
+                left_output = render(left_view, gaussians, PipelineParams(ArgumentParser()).extract(Namespace(
+                    convert_SHs_python=False,
+                    compute_cov3D_python=True,
+                    debug=False,
+                )), background)
             right_output = render(right_view, gaussians, PipelineParams(ArgumentParser()).extract(Namespace(
                 convert_SHs_python=False,
                 compute_cov3D_python=True,
                 debug=False,
             )), background)
 
-        save_render_outputs(left_output, left_view, background, left_rgb, depth_npy, depth_vis)
+        if left_source == "rendered":
+            save_render_outputs(left_output, left_view, background, left_rgb, depth_npy, depth_vis)
+        elif left_source == "original":
+            save_original_left(base_info, left_rgb)
+        else:
+            raise ValueError(f"Unsupported left_source: {left_source}")
         save_right_render(right_output, right_rgb)
         write_pose_files(pose_prefix, base_info, left_pose, right_pose, baseline)
         write_k_file(k_path, np.asarray(base_info.K, dtype=np.float32), baseline)
@@ -302,8 +332,10 @@ def render_sequence(seq, iteration, baseline, max_views=None, skip_existing=True
 
 def main():
     os.chdir(SEQAVATAR_DIR)
-    parser = ArgumentParser(description="Render virtual right stereo views and left depths for DNA-Rendering novelview sets")
+    parser = ArgumentParser(description="Render virtual right stereo views and left depths for DNA-Rendering splits")
     parser.add_argument("--sequences", nargs="+", default=DEFAULT_SEQUENCES)
+    parser.add_argument("--split", choices=["train", "novelview"], default="novelview")
+    parser.add_argument("--left_source", choices=["auto", "rendered", "original"], default="auto")
     parser.add_argument("--iteration", type=int, default=25000)
     parser.add_argument("--baseline", type=float, default=0.06)
     parser.add_argument("--max_views", type=int, default=None)
@@ -318,6 +350,8 @@ def main():
             seq=seq,
             iteration=args.iteration,
             baseline=args.baseline,
+            split=args.split,
+            left_source=args.left_source,
             max_views=args.max_views,
             skip_existing=not args.overwrite,
             make_previews=not args.no_preview,
