@@ -21,7 +21,7 @@ PYTHON_BIN=${PYTHON_BIN:-python}
 if [ -n "${SEQUENCES_OVERRIDE:-}" ]; then
     read -r -a SEQUENCES <<< "$SEQUENCES_OVERRIDE"
 else
-    SEQUENCES=(0206_04 0813_05)
+    SEQUENCES=("0051_09" "0813_05")
 fi
 SKIP_COMPLETED=${SKIP_COMPLETED:-0}
 
@@ -42,23 +42,29 @@ ssim_loss_w=0.01
 lpips_loss_w=0.01
 
 # ---------------- 深度相关参数 ----------------
-lambda_depth=0.1
+lambda_depth=0.01
 depth_loss_start=15000
-depth_split_start=17000
-depth_split_end=18000
+depth_loss_end=20000
+vggt_conf_threshold=0.5
+depth_split_start=${DEPTH_SPLIT_START:-11000}
+depth_split_end=${DEPTH_SPLIT_END:-12000}
 
-depth_split_threshold=0.02
-depth_split_interval=100
-depth_split_count=3
+depth_split_threshold=0.05
+depth_split_interval=25
+depth_split_count=4
 depth_split_scale=0.5
 max_depth_split_points_per_frame=8
-max_depth_split_points=120000
+max_depth_split_points=65000
+max_depth_split_new_points=960
+max_split_extra_new_points=960
 
 # ---------------- 消融实验设置 ----------------
 # 用法：
 # bash scripts/exps_dnarendering.sh depth_loss_and_split
 # bash scripts/exps_dnarendering.sh depth_loss_only
+# bash scripts/exps_dnarendering.sh depth_loss_high_conf_only
 # bash scripts/exps_dnarendering.sh split_only
+# bash scripts/exps_dnarendering.sh split_extra
 # bash scripts/exps_dnarendering.sh no_depth_no_split
 
 ablation_name=${1:-depth_loss_and_split}
@@ -70,24 +76,47 @@ echo "[INFO] DATA_PATH: $data_path"
 echo "[INFO] Sequences: ${SEQUENCES[*]}"
 echo "[INFO] SKIP_COMPLETED: $SKIP_COMPLETED"
 
+# 默认各类开关都关闭，需要哪个消融就在下面分支里打开
+# depth_loss_high_conf_flag 对应 train.py 里的 --depth_loss_high_conf_only
+# split_extra_flag 对应 train.py 里的 --enable_split_extra
 if [ "$ablation_name" = "depth_loss_and_split" ]; then
     depth_loss_flag="--enable_depth_loss"
     gaussian_split_flag="--enable_gaussian_split"
+    depth_loss_high_conf_flag=""
+    split_extra_flag=""
 elif [ "$ablation_name" = "depth_loss_only" ]; then
     depth_loss_flag="--enable_depth_loss"
     gaussian_split_flag=""
+    depth_loss_high_conf_flag=""
+    split_extra_flag=""
+elif [ "$ablation_name" = "depth_loss_high_conf_only" ]; then
+    depth_loss_flag="--enable_depth_loss"
+    gaussian_split_flag=""
+    depth_loss_high_conf_flag="--depth_loss_high_conf_only"
+    split_extra_flag=""
 elif [ "$ablation_name" = "split_only" ]; then
     depth_loss_flag=""
     gaussian_split_flag="--enable_gaussian_split"
+    depth_loss_high_conf_flag=""
+    split_extra_flag=""
+elif [ "$ablation_name" = "split_extra" ]; then
+    depth_loss_flag=""
+    gaussian_split_flag=""
+    depth_loss_high_conf_flag=""
+    split_extra_flag="--enable_split_extra"
 elif [ "$ablation_name" = "no_depth_no_split" ]; then
     depth_loss_flag=""
     gaussian_split_flag=""
+    depth_loss_high_conf_flag=""
+    split_extra_flag=""
 else
     echo "[ERROR] Unknown ablation_name: $ablation_name"
     echo "Available options:"
     echo "  depth_loss_and_split"
     echo "  depth_loss_only"
+    echo "  depth_loss_high_conf_only"
     echo "  split_only"
+    echo "  split_extra"
     echo "  no_depth_no_split"
     exit 1
 fi
@@ -133,9 +162,11 @@ for SEQUENCE in "${SEQUENCES[@]}"; do
         --seq_len $seq_len --seq_xyz_knn $seq_xyz_knn \
         --time_step_num $time_step_num --max_time_step $max_time_step --minimal_time_step $minimal_time_step \
         --l1_loss_w $l1_loss_w --ssim_loss_w $ssim_loss_w --lpips_loss_w $lpips_loss_w \
-        $depth_loss_flag $gaussian_split_flag \
+        $depth_loss_flag $gaussian_split_flag $depth_loss_high_conf_flag $split_extra_flag \
         --lambda_depth $lambda_depth \
         --depth_loss_start $depth_loss_start \
+        --depth_loss_end $depth_loss_end \
+        --vggt_conf_threshold $vggt_conf_threshold \
         --depth_split_start $depth_split_start \
         --depth_split_end $depth_split_end \
         --depth_split_threshold $depth_split_threshold \
@@ -144,6 +175,12 @@ for SEQUENCE in "${SEQUENCES[@]}"; do
         --depth_split_scale $depth_split_scale \
         --max_depth_split_points_per_frame $max_depth_split_points_per_frame \
         --max_depth_split_points $max_depth_split_points \
+        --max_depth_split_new_points $max_depth_split_new_points \
+        --max_split_extra_new_points $max_split_extra_new_points \
+        --split_extra_start $depth_split_start \
+        --split_extra_end $depth_split_end \
+        --split_extra_interval $depth_split_interval \
+        --split_extra_max_points $max_depth_split_points \
         2>&1 | tee "$model_path/logs/train_${SEQUENCE}_${ablation_name}.log"
 
     # Evaluation
