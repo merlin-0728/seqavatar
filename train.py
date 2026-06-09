@@ -28,6 +28,7 @@ from arguments import ModelParams, PipelineParams, OptimizationParams
 import shutil
 from torchvision.ops import masks_to_boxes
 import time
+from utils.glue_loss import FeatureMatchingLoss, build_projected_coord_colors
 torch.backends.cudnn.enabled = False
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -480,6 +481,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     ssim_loss_for_log = 0.0
     lpips_loss_for_log = 0.0
     depth_loss_for_log = 0.0
+    glue_loss_for_log = 0.0
 
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training")
     first_iter += 1
@@ -504,7 +506,18 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     print("Depth loss high-confidence only:", getattr(opt, "depth_loss_high_conf_only", False))
     print("Lambda RDC:", getattr(opt, "lambda_rdc", 0.0))
     print("RDC max offset:", getattr(opt, "rdc_max_offset", None))
+    print("Enable glue loss:", getattr(opt, "enable_glue_loss", False))
+    print("Glue loss start/end:", getattr(opt, "glue_start_iter", None), getattr(opt, "glue_end_iter", None))
+    print("Lambda glue:", getattr(opt, "lambda_glue", None))
     print("=============================================")
+
+    glue_loss_fn = None
+    if getattr(opt, "enable_glue_loss", False):
+        glue_loss_fn = FeatureMatchingLoss(
+            max_num_keypoints=getattr(opt, "glue_max_keypoints", 512),
+            device="cuda",
+            alpha_threshold=getattr(opt, "glue_alpha_threshold", 0.9),
+        )
 
     if getattr(opt, "enable_gaussian_split", False) and getattr(opt, "enable_split_extra", False):
         raise ValueError(
@@ -527,6 +540,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             getattr(opt, "enable_split_extra", False)
             and iteration >= getattr(opt, "split_extra_start", 11000)
             and iteration < getattr(opt, "split_extra_end", 12000)
+        )
+        use_glue_loss = (
+            getattr(opt, "enable_glue_loss", False)
+            and iteration >= getattr(opt, "glue_start_iter", 15000)
+            and iteration < getattr(opt, "glue_end_iter", opt.iterations + 1)
         )
         need_depth = use_depth_loss or use_depth_split
 
@@ -569,7 +587,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # Render.
         if (iteration - 1) == debug_from:
             pipe.debug = True
-        render_pkg = render(viewpoint_cam, gaussians, pipe, background)
+        render_pkg = render(viewpoint_cam, gaussians, pipe, background, return_smpl_rot=use_glue_loss)
         image = render_pkg["render"]
         alpha = render_pkg["render_alpha"]
         viewspace_point_tensor = render_pkg["viewspace_points"]
@@ -602,6 +620,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         loss_depth_raw = torch.zeros((), device=image.device)
         depth_error_map = None
         depth_split_mask = None
+        loss_glue_raw = torch.zeros((), device=image.device)
 
         if need_depth:
             vggt_depth_np, vggt_conf_np = load_train_vggt_depth(
@@ -722,6 +741,30 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
                     depth_split_mask = split_valid & (depth_error_map > opt.depth_split_threshold)
 
+        if use_glue_loss and glue_loss_fn is not None:
+            proj_coord_norm = build_projected_coord_colors(
+                viewpoint_cam,
+                render_pkg["deformed_means3D"],
+            )
+            proj_pkg = render(
+                viewpoint_cam,
+                gaussians,
+                pipe,
+                torch.zeros_like(background),
+                override_color=proj_coord_norm,
+                transforms=render_pkg.get("transforms", None),
+                translation=render_pkg.get("translation", None),
+                d_nonrigid=render_pkg.get("d_nonrigid", None),
+            )
+            loss_glue_raw = glue_loss_fn(
+                pred_rgb=image,
+                gt_rgb=gt_image,
+                proj_rgb=proj_pkg["render"],
+                proj_mask=proj_pkg["render_alpha"],
+                fg_mask=bound_mask,
+            )
+            loss = loss + opt.lambda_glue * loss_glue_raw
+
         # Original AIAP loss.
         loss_aiap_xyz, loss_aiap_cov = full_aiap_loss(
             scene.gaussians.get_xyz,
@@ -749,6 +792,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             ssim_loss_for_log = 0.4 * ssim_loss.item() + 0.6 * ssim_loss_for_log
             lpips_loss_for_log = 0.4 * lpips_loss.item() + 0.6 * lpips_loss_for_log
             depth_loss_for_log = 0.4 * loss_depth_raw.item() + 0.6 * depth_loss_for_log
+            glue_loss_for_log = 0.4 * loss_glue_raw.item() + 0.6 * glue_loss_for_log
 
             if iteration % 10 == 0:
                 progress_bar.set_postfix({
@@ -760,6 +804,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     "depth_raw": f"{depth_loss_for_log:.4f}",
                     "Dloss": int(use_depth_loss),
                     "Dsplit": int(use_depth_split),
+                    "Glue": int(use_glue_loss),
+                    "Gloss": f"{glue_loss_for_log:.4f}",
                     "DSnew": depth_split_new_points_total,
                     "XSnew": split_extra_new_points_total,
                     "Hconf": int(getattr(opt, "depth_loss_high_conf_only", False) and use_depth_loss),
@@ -1047,6 +1093,12 @@ if __name__ == "__main__":
     parser.add_argument("--lambda_rdc", type=float, default=0.0, help="Weight of VGGS-style relative depth consistency inside depth loss")
     parser.add_argument("--rdc_max_offset", type=int, default=32, help="Max pixel offset for relative depth consistency")
     parser.add_argument("--rdc_margin", type=float, default=1e-4, help="Margin for relative depth consistency")
+    parser.add_argument("--enable_glue_loss", action="store_true", help="Enable DynaFlow-style LightGlue feature matching loss")
+    parser.add_argument("--lambda_glue", type=float, default=0.01, help="Weight of glue feature matching loss")
+    parser.add_argument("--glue_start_iter", type=int, default=15000, help="Start iteration for glue loss")
+    parser.add_argument("--glue_end_iter", type=int, default=1000000000, help="End iteration for glue loss")
+    parser.add_argument("--glue_max_keypoints", type=int, default=512, help="Max SuperPoint keypoints for glue loss")
+    parser.add_argument("--glue_alpha_threshold", type=float, default=0.9, help="Alpha threshold for valid projected-coordinate samples")
     parser.add_argument('--ip', type=str, default="127.0.0.1")
     parser.add_argument('--port', type=int, default=6009)
     parser.add_argument('--debug_from', type=int, default=-1)
@@ -1098,6 +1150,12 @@ if __name__ == "__main__":
     opt_args.lambda_rdc = args.lambda_rdc
     opt_args.rdc_max_offset = args.rdc_max_offset
     opt_args.rdc_margin = args.rdc_margin
+    opt_args.enable_glue_loss = args.enable_glue_loss
+    opt_args.lambda_glue = args.lambda_glue
+    opt_args.glue_start_iter = args.glue_start_iter
+    opt_args.glue_end_iter = args.glue_end_iter
+    opt_args.glue_max_keypoints = args.glue_max_keypoints
+    opt_args.glue_alpha_threshold = args.glue_alpha_threshold
 
     training(
         dataset_args,

@@ -16,12 +16,13 @@ echo "[INFO] Start time: $(date)"
 echo "================================================="
 
 # ================= 基础设置 =================
-GPU_id=${GPU_id:-3}
-PYTHON_BIN=${PYTHON_BIN:-python}
+GPU_id=${GPU_id:-2}
+PYTHON_BIN=${PYTHON_BIN:-/media/image/mxz/.conda/envs/seqavatar/bin/python}
+export PATH="$(dirname "$PYTHON_BIN"):$PATH"
 if [ -n "${SEQUENCES_OVERRIDE:-}" ]; then
     read -r -a SEQUENCES <<< "$SEQUENCES_OVERRIDE"
 else
-    SEQUENCES=("0051_09" "0813_05")
+    SEQUENCES=("0007_04" "0019_10" "0044_11" "0051_09" "0206_04" "0813_05")
 fi
 SKIP_COMPLETED=${SKIP_COMPLETED:-0}
 
@@ -46,8 +47,8 @@ lambda_depth=0.01
 depth_loss_start=15000
 depth_loss_end=20000
 vggt_conf_threshold=0.5
-depth_split_start=${DEPTH_SPLIT_START:-11000}
-depth_split_end=${DEPTH_SPLIT_END:-12000}
+depth_split_start=${DEPTH_SPLIT_START:-16000}
+depth_split_end=${DEPTH_SPLIT_END:-17000}
 
 depth_split_threshold=0.05
 depth_split_interval=25
@@ -58,6 +59,13 @@ max_depth_split_points=65000
 max_depth_split_new_points=960
 max_split_extra_new_points=960
 
+# ---------------- glue loss 参数 ----------------
+lambda_glue=${LAMBDA_GLUE:-0.01}
+glue_start_iter=${GLUE_START_ITER:-17000}
+glue_end_iter=${GLUE_END_ITER:-1000000000}
+glue_max_keypoints=${GLUE_MAX_KEYPOINTS:-512}
+glue_alpha_threshold=${GLUE_ALPHA_THRESHOLD:-0.9}
+
 # ---------------- 消融实验设置 ----------------
 # 用法：
 # bash scripts/exps_dnarendering.sh depth_loss_and_split
@@ -65,6 +73,7 @@ max_split_extra_new_points=960
 # bash scripts/exps_dnarendering.sh depth_loss_high_conf_only
 # bash scripts/exps_dnarendering.sh split_only
 # bash scripts/exps_dnarendering.sh split_extra
+# bash scripts/exps_dnarendering.sh glue_loss_only
 # bash scripts/exps_dnarendering.sh no_depth_no_split
 
 ablation_name=${1:-depth_loss_and_split}
@@ -84,31 +93,52 @@ if [ "$ablation_name" = "depth_loss_and_split" ]; then
     gaussian_split_flag="--enable_gaussian_split"
     depth_loss_high_conf_flag=""
     split_extra_flag=""
+    glue_loss_flag=""
 elif [ "$ablation_name" = "depth_loss_only" ]; then
     depth_loss_flag="--enable_depth_loss"
     gaussian_split_flag=""
     depth_loss_high_conf_flag=""
     split_extra_flag=""
+    glue_loss_flag=""
 elif [ "$ablation_name" = "depth_loss_high_conf_only" ]; then
     depth_loss_flag="--enable_depth_loss"
     gaussian_split_flag=""
     depth_loss_high_conf_flag="--depth_loss_high_conf_only"
     split_extra_flag=""
+    glue_loss_flag=""
 elif [ "$ablation_name" = "split_only" ]; then
     depth_loss_flag=""
     gaussian_split_flag="--enable_gaussian_split"
     depth_loss_high_conf_flag=""
     split_extra_flag=""
+    glue_loss_flag=""
 elif [ "$ablation_name" = "split_extra" ]; then
     depth_loss_flag=""
     gaussian_split_flag=""
     depth_loss_high_conf_flag=""
     split_extra_flag="--enable_split_extra"
+    glue_loss_flag=""
+elif [ "$ablation_name" = "glue_loss_only" ]; then
+    depth_loss_flag=""
+    gaussian_split_flag=""
+    depth_loss_high_conf_flag=""
+    split_extra_flag=""
+    glue_loss_flag="--enable_glue_loss"
 elif [ "$ablation_name" = "no_depth_no_split" ]; then
     depth_loss_flag=""
     gaussian_split_flag=""
     depth_loss_high_conf_flag=""
     split_extra_flag=""
+    glue_loss_flag=""
+elif [ "$ablation_name" = "depth_and_glue" ]; then
+    # depth_and_glue = 深度引导高斯点分裂 + 光流监督 glue loss
+    # 不开启 depth loss
+    depth_loss_flag=""
+    gaussian_split_flag="--enable_gaussian_split"
+    depth_loss_high_conf_flag=""
+    split_extra_flag=""
+    glue_loss_flag="--enable_glue_loss"
+
 else
     echo "[ERROR] Unknown ablation_name: $ablation_name"
     echo "Available options:"
@@ -117,7 +147,9 @@ else
     echo "  depth_loss_high_conf_only"
     echo "  split_only"
     echo "  split_extra"
+    echo "  glue_loss_only"
     echo "  no_depth_no_split"
+    echo "  depth_and_glue"
     exit 1
 fi
 
@@ -162,8 +194,13 @@ for SEQUENCE in "${SEQUENCES[@]}"; do
         --seq_len $seq_len --seq_xyz_knn $seq_xyz_knn \
         --time_step_num $time_step_num --max_time_step $max_time_step --minimal_time_step $minimal_time_step \
         --l1_loss_w $l1_loss_w --ssim_loss_w $ssim_loss_w --lpips_loss_w $lpips_loss_w \
-        $depth_loss_flag $gaussian_split_flag $depth_loss_high_conf_flag $split_extra_flag \
+        $depth_loss_flag $gaussian_split_flag $depth_loss_high_conf_flag $split_extra_flag $glue_loss_flag \
         --lambda_depth $lambda_depth \
+        --lambda_glue $lambda_glue \
+        --glue_start_iter $glue_start_iter \
+        --glue_end_iter $glue_end_iter \
+        --glue_max_keypoints $glue_max_keypoints \
+        --glue_alpha_threshold $glue_alpha_threshold \
         --depth_loss_start $depth_loss_start \
         --depth_loss_end $depth_loss_end \
         --vggt_conf_threshold $vggt_conf_threshold \
