@@ -72,7 +72,22 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor,
                 _, vert_ids = pc.custom_knn_near(pc.canon_vertices, means3D)
                 query_pts_delta_conds = seq_xyz_conds[vert_ids, :,:,:].permute(0,1,3,2,4,5).contiguous()
 
-                d_xyz, d_rotation, d_scaling = pc.non_rigid_deformer(pos_embd, pose_conds, seq_pose_conds, query_pts_delta_conds)            
+                part_label = None
+                part_enabled = False
+                if getattr(pc, "use_part_moe", False):
+                    part_enabled = pc.part_label_enabled
+                    part_label = pc.get_part_label if part_enabled else None
+
+                d_xyz, d_rotation, d_scaling = pc.non_rigid_deformer(
+                    pos_embd,
+                    pose_conds,
+                    seq_pose_conds,
+                    query_pts_delta_conds,
+                    part_label=part_label,
+                    part_enabled=part_enabled,
+                    part_moe_alpha=getattr(pc, "part_moe_alpha", 0.0),
+                    part_moe_global_keep=getattr(pc, "part_moe_global_keep", 0.1),
+                )
                 d_nonrigid = (d_xyz, d_rotation, d_scaling)
             else:
                 d_xyz, d_rotation, d_scaling = d_nonrigid

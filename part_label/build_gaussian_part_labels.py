@@ -8,8 +8,10 @@ import numpy as np
 
 from common import (
     LABELS,
+    PART_LOG_ROOT,
     SOURCE_LABELS,
     default_part_label_dir,
+    enable_part_stdout_logging,
     label_counts,
     load_cfg_args,
     model_point_cloud_path,
@@ -319,8 +321,10 @@ def main():
     parser.add_argument("--gpu", default="3")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--ignore_smpl_rot_cache", action="store_true")
+    parser.add_argument("--part_log_dir", default=str(PART_LOG_ROOT))
     args = parser.parse_args()
 
+    enable_part_stdout_logging(args, "build_gaussian_part_labels", force=True)
     setup_repo(args.gpu)
     cfg = load_cfg_args(args.model_path, args.source_path)
     out_dir = Path(args.out_dir) if args.out_dir else default_part_label_dir(cfg.model_path, args.iteration)

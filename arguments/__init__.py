@@ -69,6 +69,15 @@ class ModelParams(ParamGroup):
         self.seq_len = 8
         self.max_time_step = 6
         self.minimal_time_step = 2
+        self.use_part_moe = False
+        self.part_moe_start_iter = 15000
+        self.part_moe_warmup = 1000
+        self.part_moe_global_keep = 0.1
+        self.num_parts = 5
+        self.part_max_smpl_dist = 0.08
+        self.part_grouping_mode = "prior_only"
+        self.part_label_path = ""
+        self.part_log_dir = ""
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):

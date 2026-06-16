@@ -1,7 +1,10 @@
 import ast
+import atexit
+import datetime
 import json
 import os
 import pickle
+import re
 import sys
 from argparse import Namespace
 from pathlib import Path
@@ -11,6 +14,7 @@ from plyfile import PlyData, PlyElement
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+PART_LOG_ROOT = REPO_ROOT / "logs" / "part"
 
 LABELS = {
     0: "unknown",
@@ -40,6 +44,98 @@ SOURCE_LABELS = {
     4: "semantic_cloth_override",
     5: "hand_split_by_smpl",
 }
+
+
+class _TeeStream:
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, data):
+        for stream in self.streams:
+            try:
+                stream.write(data)
+            except ValueError:
+                pass
+        return len(data)
+
+    def flush(self):
+        for stream in self.streams:
+            try:
+                stream.flush()
+            except ValueError:
+                pass
+
+    def isatty(self):
+        return any(getattr(stream, "isatty", lambda: False)() for stream in self.streams)
+
+    def fileno(self):
+        return self.streams[0].fileno()
+
+
+_ACTIVE_TEE_FILES = []
+
+
+def safe_log_component(value):
+    text = str(value).strip().strip(os.sep)
+    if not text:
+        return "run"
+    text = text.replace(os.sep, "_")
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", text)
+
+
+def resolve_part_log_dir(value=None):
+    path = Path(value).expanduser() if value else PART_LOG_ROOT
+    if not path.is_absolute():
+        path = REPO_ROOT / path
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def infer_model_log_stem(args, script_name):
+    model_path = getattr(args, "model_path", "") or ""
+    exp_name = getattr(args, "exp_name", "") or ""
+    if model_path:
+        try:
+            model_rel = Path(model_path).resolve().relative_to(REPO_ROOT / "output")
+        except ValueError:
+            model_rel = Path(model_path).resolve()
+    elif exp_name:
+        model_rel = Path(exp_name)
+    else:
+        model_rel = Path("manual")
+
+    mode = "part"
+    if getattr(args, "use_part_moe", False):
+        mode = "part_moe"
+
+    bits = [script_name, mode, *model_rel.parts]
+    return safe_log_component("_".join(str(bit) for bit in bits if str(bit)))
+
+
+def enable_part_stdout_logging(args, script_name, force=False):
+    if not force and not getattr(args, "use_part_moe", False):
+        return None
+
+    log_dir = resolve_part_log_dir(getattr(args, "part_log_dir", None))
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    stem = infer_model_log_stem(args, script_name)
+    log_path = log_dir / f"{stem}_{timestamp}.log"
+    log_file = log_path.open("w", encoding="utf-8")
+    _ACTIVE_TEE_FILES.append(log_file)
+
+    sys.stdout = _TeeStream(sys.stdout, log_file)
+    sys.stderr = _TeeStream(sys.stderr, log_file)
+
+    def _close_log_file(file_obj=log_file):
+        try:
+            file_obj.flush()
+            file_obj.close()
+        except Exception:
+            pass
+
+    atexit.register(_close_log_file)
+    print(f"[PART_LOG] {script_name} log: {log_path}", flush=True)
+    return log_path
 
 
 def setup_repo(gpu=None):

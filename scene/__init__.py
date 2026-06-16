@@ -114,6 +114,10 @@ class Scene:
                 self.gaussians.lweight_offset_decoder.load_state_dict(ckpt['lweight_offset_decoder'])
                 
                 if self.gaussians.non_rigid_flag:
+                    non_rigid_state = ckpt['non_rigid_deformer']
+                    has_part_moe = any(key.startswith("part_experts.") for key in non_rigid_state.keys())
+                    if getattr(self.gaussians, "use_part_moe", False) and has_part_moe:
+                        self.gaussians.prepare_part_moe_for_loading()
                     self.gaussians.non_rigid_deformer.load_state_dict(ckpt['non_rigid_deformer'])
 
     def save(self, iteration):

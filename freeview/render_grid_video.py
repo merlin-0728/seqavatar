@@ -17,7 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_DIR = Path(__file__).resolve().parent
 # ================= User Settings =================
 # Change this value when you want to use a different physical GPU.
-GPU_ID = "2"
+GPU_ID = "3"
 if "CUDA_VISIBLE_DEVICES" not in os.environ:
     os.environ["CUDA_VISIBLE_DEVICES"] = GPU_ID
 for path in (PROJECT_ROOT, SCRIPT_DIR):
@@ -62,7 +62,7 @@ from freeview import (
 )
 
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "freeview" / "DNA-Rendering"
-DEFAULT_SEQUENCES = ["0044"]
+DEFAULT_SEQUENCES = ["0813"]
 
 # ================= Camera Extrinsic Defaults =================
 # 相机整体绕人体水平旋转的偏移角度，单位是度。
@@ -111,6 +111,15 @@ def write_metadata(out_dir, metadata):
         f"base_yaw_offset: {metadata.get('base_yaw_offset')}",
         f"grid_rows: {metadata.get('grid_rows')}",
         f"grid_cols: {metadata.get('grid_cols')}",
+        f"output_width: {metadata.get('output_width')}",
+        f"output_height: {metadata.get('output_height')}",
+        f"tile_width: {metadata.get('tile_width')}",
+        f"tile_height: {metadata.get('tile_height')}",
+        f"tile_aspect: {metadata.get('tile_aspect')}",
+        f"crop_mode: {metadata.get('crop_mode')}",
+        f"crop_foreground: {metadata.get('crop_foreground')}",
+        f"crop_margin: {metadata.get('crop_margin')}",
+        f"tile_fit_mode: {metadata.get('tile_fit_mode')}",
         "",
         f"video: {metadata.get('video')}",
         f"frames_dir: {metadata.get('frames_dir')}",
@@ -146,24 +155,170 @@ def get_look_at_rotation(camera_position, target_position, up_vector=np.array([0
     R[2, :] = z_axis
     return R.transpose()
 
-def create_grid_image(image_list, grid_rows=6, grid_cols=12):
+def tensor_to_pil(tensor_img):
+    arr = tensor_img.detach().cpu().numpy().transpose(1, 2, 0)
+    arr = (arr * 255).clip(0, 255).astype(np.uint8)
+    return Image.fromarray(arr)
+
+
+def alpha_to_mask(alpha, threshold=0.03):
+    if alpha is None:
+        return None
+    arr = alpha.detach().cpu().numpy()
+    arr = np.squeeze(arr)
+    if arr.ndim == 3:
+        arr = arr.max(axis=0)
+    return arr > float(threshold)
+
+
+def foreground_bbox(pil_img, alpha=None, threshold=0.03):
+    mask = alpha_to_mask(alpha, threshold)
+    if mask is None:
+        arr = np.asarray(pil_img)
+        mask = arr.max(axis=2) > int(float(threshold) * 255)
+
+    ys, xs = np.where(mask)
+    if xs.size == 0 or ys.size == 0:
+        return None
+    return int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1
+
+
+def crop_with_margin(pil_img, bbox, margin=0.08):
+    if bbox is None:
+        return pil_img
+    width, height = pil_img.size
+    left, top, right, bottom = bbox
+    box_w = max(1, right - left)
+    box_h = max(1, bottom - top)
+    pad_x = int(round(box_w * float(margin)))
+    pad_y = int(round(box_h * float(margin)))
+    left = max(0, left - pad_x)
+    top = max(0, top - pad_y)
+    right = min(width, right + pad_x)
+    bottom = min(height, bottom + pad_y)
+    return pil_img.crop((left, top, right, bottom))
+
+
+def fixed_aspect_bbox(width, height, aspect_width=9.0, aspect_height=16.0):
+    """固定中心裁剪框：每张图裁剪位置和比例一致，不随人体 bbox 抖动。"""
+    target_aspect = float(aspect_width) / float(aspect_height)
+    image_aspect = float(width) / float(height)
+
+    if image_aspect > target_aspect:
+        crop_h = height
+        crop_w = int(round(crop_h * target_aspect))
+    else:
+        crop_w = width
+        crop_h = int(round(crop_w / target_aspect))
+
+    left = max(0, (width - crop_w) // 2)
+    top = max(0, (height - crop_h) // 2)
+    return left, top, left + crop_w, top + crop_h
+
+
+def resize_to_tile(pil_img, tile_size, fit_mode="contain"):
+    tile_w, tile_h = tile_size
+    src_w, src_h = pil_img.size
+    if src_w <= 0 or src_h <= 0:
+        return Image.new("RGB", tile_size, (0, 0, 0))
+
+    if fit_mode == "cover":
+        scale = max(tile_w / src_w, tile_h / src_h)
+    else:
+        scale = min(tile_w / src_w, tile_h / src_h)
+
+    resized_w = max(1, int(round(src_w * scale)))
+    resized_h = max(1, int(round(src_h * scale)))
+    pil_img = pil_img.resize((resized_w, resized_h), Image.Resampling.LANCZOS)
+
+    if fit_mode == "cover":
+        left = max(0, (resized_w - tile_w) // 2)
+        top = max(0, (resized_h - tile_h) // 2)
+        return pil_img.crop((left, top, left + tile_w, top + tile_h))
+
+    canvas = Image.new("RGB", tile_size, (0, 0, 0))
+    left = (tile_w - resized_w) // 2
+    top = (tile_h - resized_h) // 2
+    canvas.paste(pil_img, (left, top))
+    return canvas
+
+
+def resolve_tile_size(
+    grid_rows,
+    grid_cols,
+    output_width=None,
+    output_height=None,
+    tile_width=None,
+    tile_height=None,
+    tile_aspect_width=9.0,
+    tile_aspect_height=16.0,
+    fallback_size=None,
+):
+    if output_width is not None and output_height is not None:
+        tile_w = max(1, int(round(int(output_width) / int(grid_cols))))
+        tile_h = max(1, int(round(int(output_height) / int(grid_rows))))
+        return tile_w, tile_h
+    aspect = float(tile_aspect_width) / float(tile_aspect_height)
+    if tile_width is not None and tile_height is not None:
+        return max(1, int(tile_width)), max(1, int(tile_height))
+    if tile_width is not None:
+        tile_w = max(1, int(tile_width))
+        tile_h = max(1, int(round(tile_w / aspect)))
+        return tile_w, tile_h
+    if tile_height is not None:
+        tile_h = max(1, int(tile_height))
+        tile_w = max(1, int(round(tile_h * aspect)))
+        return tile_w, tile_h
+    if fallback_size is None:
+        raise ValueError("fallback_size is required when output size is not specified")
+    return fallback_size
+
+
+def create_grid_image(
+    image_list,
+    alpha_list=None,
+    grid_rows=6,
+    grid_cols=12,
+    output_width=None,
+    output_height=None,
+    tile_width=None,
+    tile_height=None,
+    tile_aspect_width=9.0,
+    tile_aspect_height=16.0,
+    crop_mode="none",
+    crop_foreground=False,
+    crop_margin=0.12,
+    crop_threshold=0.03,
+    tile_fit_mode="contain",
+):
     """
-    在内存中将 tensor 列表拼接成 PIL Grid 图片
+    在内存中将 tensor 列表拼接成 PIL Grid 图片。
+    crop_mode="none" 不裁剪，保证不裁到人体，所有小视角缩放比例固定；
+    crop_mode="fixed_aspect" 使用固定中心比例裁剪，每帧裁剪黑边一样大；
+    crop_mode="dynamic_foreground" 按每张图 alpha 裁剪，人体最大但容易出现抖动；
+    tile_fit_mode="contain" 保留完整人体，"cover" 会铺满 tile 但可能裁到人体边缘。
     """
     if not image_list:
         return None
-    
-    # 转换第一张图获取尺寸 (C, H, W) -> PIL
-    def to_pil(tensor_img):
-        arr = tensor_img.cpu().numpy().transpose(1, 2, 0)
-        arr = (arr * 255).clip(0, 255).astype(np.uint8)
-        return Image.fromarray(arr)
 
-    first_img = to_pil(image_list[0])
-    w, h = first_img.size
-    
-    total_w = w * grid_cols
-    total_h = h * grid_rows
+    if alpha_list is None:
+        alpha_list = [None] * len(image_list)
+
+    first_img = tensor_to_pil(image_list[0])
+    tile_w, tile_h = resolve_tile_size(
+        grid_rows,
+        grid_cols,
+        output_width=output_width,
+        output_height=output_height,
+        tile_width=tile_width,
+        tile_height=tile_height,
+        tile_aspect_width=tile_aspect_width,
+        tile_aspect_height=tile_aspect_height,
+        fallback_size=first_img.size,
+    )
+
+    total_w = tile_w * grid_cols
+    total_h = tile_h * grid_rows
     
     grid = Image.new('RGB', (total_w, total_h), (0, 0, 0))
     
@@ -173,12 +328,29 @@ def create_grid_image(image_list, grid_rows=6, grid_cols=12):
         row = idx // grid_cols
         col = idx % grid_cols
         
-        pil_img = to_pil(tensor_img)
-        grid.paste(pil_img, (col * w, row * h))
-        
+        pil_img = tensor_to_pil(tensor_img)
+        if crop_mode == "fixed_aspect":
+            bbox = fixed_aspect_bbox(
+                pil_img.size[0],
+                pil_img.size[1],
+                aspect_width=tile_aspect_width,
+                aspect_height=tile_aspect_height,
+            )
+            pil_img = pil_img.crop(bbox)
+        elif crop_mode == "dynamic_foreground" or (crop_mode is None and crop_foreground):
+            bbox = foreground_bbox(pil_img, alpha=alpha_list[idx], threshold=crop_threshold)
+            pil_img = crop_with_margin(pil_img, bbox, margin=crop_margin)
+        pil_img = resize_to_tile(pil_img, (tile_w, tile_h), fit_mode=tile_fit_mode)
+        grid.paste(pil_img, (col * tile_w, row * tile_h))
+
+    if output_width is not None and output_height is not None:
+        target_size = (int(output_width), int(output_height))
+        if grid.size != target_size:
+            grid = grid.resize(target_size, Image.Resampling.LANCZOS)
+
     return grid
 
-def render_dynamic_grid_video(dataset, iteration, pipeline, background, scene, gaussians, fps=24):
+def render_dynamic_grid_video(dataset, iteration, pipeline, background, scene, gaussians, fps=20):
     """
     渲染动态宫格视频：时间 x 空间 (72 views)
     使用训练集数据以获取完整的 100 帧连续动作
@@ -224,6 +396,17 @@ def render_dynamic_grid_video(dataset, iteration, pipeline, background, scene, g
     video_path = os.path.join(output_dir, video_name)
     fps = getattr(dataset, "render_fps", fps)
     quality = getattr(dataset, "render_quality", 8)
+    output_width = getattr(dataset, "render_output_width", None)
+    output_height = getattr(dataset, "render_output_height", None)
+    tile_width_setting = getattr(dataset, "render_tile_width", 432)
+    tile_height_setting = getattr(dataset, "render_tile_height", 768)
+    tile_aspect_width = getattr(dataset, "render_tile_aspect_width", 9.0)
+    tile_aspect_height = getattr(dataset, "render_tile_aspect_height", 16.0)
+    crop_mode = getattr(dataset, "render_crop_mode", "none")
+    crop_foreground = getattr(dataset, "render_crop_foreground", True)
+    crop_margin = getattr(dataset, "render_crop_margin", 0.12)
+    crop_threshold = getattr(dataset, "render_crop_threshold", 0.03)
+    tile_fit_mode = getattr(dataset, "render_tile_fit_mode", "contain")
     
     print(f"[Grid Video] Output directory: {output_dir}")
     if save_frames:
@@ -263,6 +446,22 @@ def render_dynamic_grid_video(dataset, iteration, pipeline, background, scene, g
         raise ValueError(f"grid_rows * grid_cols must be >= num_views, got {grid_rows}x{grid_cols} for {num_views}")
 
     angles = np.linspace(angle_start, angle_end, num_views)
+    tile_w, tile_h = resolve_tile_size(
+        grid_rows,
+        grid_cols,
+        output_width=output_width,
+        output_height=output_height,
+        tile_width=tile_width_setting,
+        tile_height=tile_height_setting,
+        tile_aspect_width=tile_aspect_width,
+        tile_aspect_height=tile_aspect_height,
+        fallback_size=(int(ref_cam.image_width), int(ref_cam.image_height)),
+    )
+    final_output_width = int(output_width) if output_width is not None else tile_w * grid_cols
+    final_output_height = int(output_height) if output_height is not None else tile_h * grid_rows
+    print(f"[Grid Video] Output frame size: {final_output_width}x{final_output_height} (W x H)")
+    print(f"[Grid Video] Tile size: {tile_w}x{tile_h} (W x H), aspect={tile_w / tile_h:.4f}")
+    print(f"[Grid Video] Crop mode: {crop_mode}, margin={crop_margin}, tile_fit_mode={tile_fit_mode}")
 
     # 3. 关键修复：筛选唯一的时间帧 (Unique Pose Frames)
     print(f"Raw camera list size: {len(base_cam_list)}")
@@ -299,6 +498,7 @@ def render_dynamic_grid_video(dataset, iteration, pipeline, background, scene, g
 
         # === B. 渲染当前帧的相邻视角 ===
         frame_images = []
+        frame_alphas = []
         
         for view_idx, angle_deg in enumerate(angles):
             # yaw 是当前相机绕人体中心的水平角度。
@@ -352,9 +552,26 @@ def render_dynamic_grid_video(dataset, iteration, pipeline, background, scene, g
             img = render_pkg["render"]
             img = torch.clamp(img, 0.0, 1.0)
             frame_images.append(img)
+            frame_alphas.append(render_pkg.get("render_alpha"))
         
         # === C. 拼图 (内存操作) ===
-        grid_img_pil = create_grid_image(frame_images, grid_rows=grid_rows, grid_cols=grid_cols)
+        grid_img_pil = create_grid_image(
+            frame_images,
+            alpha_list=frame_alphas,
+            grid_rows=grid_rows,
+            grid_cols=grid_cols,
+            output_width=output_width,
+            output_height=output_height,
+            tile_width=tile_w,
+            tile_height=tile_h,
+            tile_aspect_width=tile_aspect_width,
+            tile_aspect_height=tile_aspect_height,
+            crop_mode=crop_mode,
+            crop_foreground=crop_foreground,
+            crop_margin=crop_margin,
+            crop_threshold=crop_threshold,
+            tile_fit_mode=tile_fit_mode,
+        )
         
         # === D. 保存单帧图片 (新增需求) ===
         # 文件名包含 pose_id 以便核对
@@ -396,6 +613,16 @@ def render_dynamic_grid_video(dataset, iteration, pipeline, background, scene, g
         "base_yaw_offset": getattr(dataset, "render_base_yaw_offset", 0.0),
         "grid_rows": grid_rows,
         "grid_cols": grid_cols,
+        "output_width": int(final_output_width),
+        "output_height": int(final_output_height),
+        "tile_width": int(tile_w),
+        "tile_height": int(tile_h),
+        "tile_aspect": f"{tile_aspect_width}:{tile_aspect_height}",
+        "crop_mode": crop_mode,
+        "crop_foreground": bool(crop_foreground),
+        "crop_margin": float(crop_margin),
+        "crop_threshold": float(crop_threshold),
+        "tile_fit_mode": tile_fit_mode,
         "fps": fps,
         "video": video_path if make_video else None,
         "frames_dir": images_dir if save_frames else None,
@@ -538,6 +765,17 @@ def run_sequence_mode(args, model, pipeline):
         dataset.render_quality = args.quality
         dataset.render_save_frames = args.save_frames
         dataset.render_make_video = args.make_video
+        dataset.render_output_width = args.output_width
+        dataset.render_output_height = args.output_height
+        dataset.render_tile_width = args.tile_width
+        dataset.render_tile_height = args.tile_height
+        dataset.render_tile_aspect_width = args.tile_aspect_width
+        dataset.render_tile_aspect_height = args.tile_aspect_height
+        dataset.render_crop_mode = args.crop_mode
+        dataset.render_crop_foreground = args.crop_foreground
+        dataset.render_crop_margin = args.crop_margin
+        dataset.render_crop_threshold = args.crop_threshold
+        dataset.render_tile_fit_mode = args.tile_fit_mode
         dataset.render_num_views = args.num_views
         dataset.render_grid_rows = args.grid_rows
         dataset.render_grid_cols = args.grid_cols
@@ -589,6 +827,26 @@ if __name__ == "__main__":
     parser.add_argument("--video_name", default="render_grid_video.mp4")
     parser.add_argument("--save_frames", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--make_video", action=argparse.BooleanOptionalAction, default=True)
+    # ===== 输出分辨率/裁剪参数 =====
+    # output_width/output_height 固定整张宫格帧尺寸。默认 None 表示不固定整图，
+    # 而是用下面的 tile_width/tile_height 控制每个小视角的尺寸和比例。
+    parser.add_argument("--output_width", type=int, default=None)
+    parser.add_argument("--output_height", type=int, default=None)
+    # 每个小人体视角 tile 的尺寸。默认 432x768，是 4320x7680 等比例缩小 10 倍。
+    parser.add_argument("--tile_width", type=int, default=432)
+    parser.add_argument("--tile_height", type=int, default=768)
+    parser.add_argument("--tile_aspect_width", type=float, default=9.0)
+    parser.add_argument("--tile_aspect_height", type=float, default=16.0)
+    # none: 不裁剪，最稳，不会裁到人体；fixed_aspect: 固定中心裁剪，每帧裁剪一样；
+    # dynamic_foreground: 逐帧按人体 alpha 裁剪，人体最大但容易抖动。
+    parser.add_argument("--crop_mode", choices=["none", "fixed_aspect", "dynamic_foreground"], default="none")
+    parser.add_argument("--crop_foreground", action=argparse.BooleanOptionalAction, default=False)
+    # 仅 dynamic_foreground 模式使用；默认留 12% 边距，减少裁到人体的风险。
+    parser.add_argument("--crop_margin", type=float, default=0.12)
+    # 前景 alpha 阈值；通常 0.02-0.05 都可以。
+    parser.add_argument("--crop_threshold", type=float, default=0.03)
+    # contain 保留完整人体并可能有少量左右黑边；cover 铺满 tile 但可能裁到人体边缘。
+    parser.add_argument("--tile_fit_mode", choices=["contain", "cover"], default="contain")
     # ===== 相机外参/宫格参数：直接改 default 就能改变每次默认输出 =====
     # 每一帧渲染多少个相机视角；例如 30 表示每个动作帧有 30 个相邻相机。
     parser.add_argument("--num_views", type=int, default=30)
@@ -598,7 +856,7 @@ if __name__ == "__main__":
     # 相机组相对中心方向的角度范围，单位是度。
     # -10 到 10 表示从左到右覆盖 20 度；缩小范围会让相邻相机更近。
     parser.add_argument("--angle_start", type=float, default=-15.0)
-    parser.add_argument("--angle_end", type=float, default=15.0)
+    parser.add_argument("--angle_end", type=float, default=25.0)
     # 参考训练相机的索引，用它继承分辨率、内参、默认半径和默认高度。
     parser.add_argument("--reference_index", type=int, default=0)
     # 整组相机的水平朝向偏移；180 通常用于从背面转到正面。

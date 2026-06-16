@@ -5,7 +5,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from common import LABELS, write_json
+from common import PART_LOG_ROOT, LABELS, enable_part_stdout_logging, write_json
 
 
 def parse_ints(values):
@@ -45,12 +45,14 @@ def main():
     parser.add_argument("--views", nargs="*", default=None)
     parser.add_argument("--frames", nargs="*", default=None)
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--part_log_dir", default=str(PART_LOG_ROOT))
     parser.add_argument(
         "--foreground_body_from_bkgd",
         action="store_true",
         help="Debug fallback: label every foreground pixel from bkgd_masks as body=1.",
     )
     args = parser.parse_args()
+    enable_part_stdout_logging(args, "generate_semantic_masks", force=True)
 
     source_path = Path(args.source_path).resolve()
     image_root = source_path / "images"

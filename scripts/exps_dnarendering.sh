@@ -7,7 +7,6 @@ GLOBAL_LOG_DIR="logs"
 mkdir -p "$GLOBAL_LOG_DIR"
 GLOBAL_LOG_FILE="$GLOBAL_LOG_DIR/run_${RUN_TIME}.log"
 
-# 让整个脚本的所有输出同时显示在终端并保存到总日志
 exec > >(tee -a "$GLOBAL_LOG_FILE") 2>&1
 
 echo "================================================="
@@ -19,18 +18,18 @@ echo "================================================="
 GPU_id=${GPU_id:-2}
 PYTHON_BIN=${PYTHON_BIN:-/media/image/mxz/.conda/envs/seqavatar/bin/python}
 export PATH="$(dirname "$PYTHON_BIN"):$PATH"
+
 if [ -n "${SEQUENCES_OVERRIDE:-}" ]; then
     read -r -a SEQUENCES <<< "$SEQUENCES_OVERRIDE"
 else
     SEQUENCES=("0007_04" "0019_10" "0044_11" "0051_09" "0206_04" "0813_05")
 fi
-SKIP_COMPLETED=${SKIP_COMPLETED:-0}
 
-# 改成你的 DNA-Rendering 路径；也可以运行时用 DATA_PATH=... 覆盖
+SKIP_COMPLETED=${SKIP_COMPLETED:-0}
 data_path=${DATA_PATH:-/media/image/mxz/human/SeqAvatar/DNA-Rendering}
 
 iter=25000
-densify_until_iter=1500
+densify_until_iter=1800
 
 seq_len=8
 seq_xyz_knn=8
@@ -42,124 +41,22 @@ l1_loss_w=1.0
 ssim_loss_w=0.01
 lpips_loss_w=0.01
 
-# ---------------- 深度相关参数 ----------------
-lambda_depth=0.01
-depth_loss_start=15000
-depth_loss_end=20000
-vggt_conf_threshold=0.5
-depth_split_start=${DEPTH_SPLIT_START:-16000}
-depth_split_end=${DEPTH_SPLIT_END:-17000}
+experiment_name=orginal
 
-depth_split_threshold=0.05
-depth_split_interval=25
-depth_split_count=4
-depth_split_scale=0.5
-max_depth_split_points_per_frame=8
-max_depth_split_points=65000
-max_depth_split_new_points=960
-max_split_extra_new_points=960
-
-# ---------------- glue loss 参数 ----------------
-lambda_glue=${LAMBDA_GLUE:-0.01}
-glue_start_iter=${GLUE_START_ITER:-17000}
-glue_end_iter=${GLUE_END_ITER:-1000000000}
-glue_max_keypoints=${GLUE_MAX_KEYPOINTS:-512}
-glue_alpha_threshold=${GLUE_ALPHA_THRESHOLD:-0.9}
-
-# ---------------- 消融实验设置 ----------------
-# 用法：
-# bash scripts/exps_dnarendering.sh depth_loss_and_split
-# bash scripts/exps_dnarendering.sh depth_loss_only
-# bash scripts/exps_dnarendering.sh depth_loss_high_conf_only
-# bash scripts/exps_dnarendering.sh split_only
-# bash scripts/exps_dnarendering.sh split_extra
-# bash scripts/exps_dnarendering.sh glue_loss_only
-# bash scripts/exps_dnarendering.sh no_depth_no_split
-
-ablation_name=${1:-depth_loss_and_split}
-
-echo "[INFO] Ablation setting: $ablation_name"
+echo "[INFO] Experiment: $experiment_name"
 echo "[INFO] GPU_id: $GPU_id"
 echo "[INFO] PYTHON_BIN: $PYTHON_BIN"
 echo "[INFO] DATA_PATH: $data_path"
 echo "[INFO] Sequences: ${SEQUENCES[*]}"
 echo "[INFO] SKIP_COMPLETED: $SKIP_COMPLETED"
 
-# 默认各类开关都关闭，需要哪个消融就在下面分支里打开
-# depth_loss_high_conf_flag 对应 train.py 里的 --depth_loss_high_conf_only
-# split_extra_flag 对应 train.py 里的 --enable_split_extra
-if [ "$ablation_name" = "depth_loss_and_split" ]; then
-    depth_loss_flag="--enable_depth_loss"
-    gaussian_split_flag="--enable_gaussian_split"
-    depth_loss_high_conf_flag=""
-    split_extra_flag=""
-    glue_loss_flag=""
-elif [ "$ablation_name" = "depth_loss_only" ]; then
-    depth_loss_flag="--enable_depth_loss"
-    gaussian_split_flag=""
-    depth_loss_high_conf_flag=""
-    split_extra_flag=""
-    glue_loss_flag=""
-elif [ "$ablation_name" = "depth_loss_high_conf_only" ]; then
-    depth_loss_flag="--enable_depth_loss"
-    gaussian_split_flag=""
-    depth_loss_high_conf_flag="--depth_loss_high_conf_only"
-    split_extra_flag=""
-    glue_loss_flag=""
-elif [ "$ablation_name" = "split_only" ]; then
-    depth_loss_flag=""
-    gaussian_split_flag="--enable_gaussian_split"
-    depth_loss_high_conf_flag=""
-    split_extra_flag=""
-    glue_loss_flag=""
-elif [ "$ablation_name" = "split_extra" ]; then
-    depth_loss_flag=""
-    gaussian_split_flag=""
-    depth_loss_high_conf_flag=""
-    split_extra_flag="--enable_split_extra"
-    glue_loss_flag=""
-elif [ "$ablation_name" = "glue_loss_only" ]; then
-    depth_loss_flag=""
-    gaussian_split_flag=""
-    depth_loss_high_conf_flag=""
-    split_extra_flag=""
-    glue_loss_flag="--enable_glue_loss"
-elif [ "$ablation_name" = "no_depth_no_split" ]; then
-    depth_loss_flag=""
-    gaussian_split_flag=""
-    depth_loss_high_conf_flag=""
-    split_extra_flag=""
-    glue_loss_flag=""
-elif [ "$ablation_name" = "depth_and_glue" ]; then
-    # depth_and_glue = 深度引导高斯点分裂 + 光流监督 glue loss
-    # 不开启 depth loss
-    depth_loss_flag=""
-    gaussian_split_flag="--enable_gaussian_split"
-    depth_loss_high_conf_flag=""
-    split_extra_flag=""
-    glue_loss_flag="--enable_glue_loss"
-
-else
-    echo "[ERROR] Unknown ablation_name: $ablation_name"
-    echo "Available options:"
-    echo "  depth_loss_and_split"
-    echo "  depth_loss_only"
-    echo "  depth_loss_high_conf_only"
-    echo "  split_only"
-    echo "  split_extra"
-    echo "  glue_loss_only"
-    echo "  no_depth_no_split"
-    echo "  depth_and_glue"
-    exit 1
-fi
-
 for SEQUENCE in "${SEQUENCES[@]}"; do
-    exp_name=DNA-Rendering/${SEQUENCE}/${ablation_name}/${RUN_TIME}/
+    exp_name=DNA-Rendering/${SEQUENCE}/${experiment_name}/${RUN_TIME}/
     dataset_path=${data_path}/${SEQUENCE}/
     model_path=output/${exp_name}/
 
     if [ "$SKIP_COMPLETED" = "1" ]; then
-        completed_dir=$(find "output/DNA-Rendering/${SEQUENCE}/${ablation_name}" -mindepth 1 -maxdepth 1 -type d \
+        completed_dir=$(find "output/DNA-Rendering/${SEQUENCE}/${experiment_name}" -mindepth 1 -maxdepth 1 -type d \
             -path "*/${RUN_TIME}" -prune -o \
             -exec test -f "{}/point_cloud/iteration_${iter}/point_cloud.ply" \; \
             -exec test -f "{}/metrics/results_novelview_${iter}.json" \; \
@@ -181,7 +78,7 @@ for SEQUENCE in "${SEQUENCES[@]}"; do
 
     echo "================================================="
     echo "[INFO] Sequence: $SEQUENCE"
-    echo "[INFO] Ablation: $ablation_name"
+    echo "[INFO] Experiment: $experiment_name"
     echo "[INFO] Dataset path: $dataset_path"
     echo "[INFO] Model path: $model_path"
     echo "================================================="
@@ -194,31 +91,7 @@ for SEQUENCE in "${SEQUENCES[@]}"; do
         --seq_len $seq_len --seq_xyz_knn $seq_xyz_knn \
         --time_step_num $time_step_num --max_time_step $max_time_step --minimal_time_step $minimal_time_step \
         --l1_loss_w $l1_loss_w --ssim_loss_w $ssim_loss_w --lpips_loss_w $lpips_loss_w \
-        $depth_loss_flag $gaussian_split_flag $depth_loss_high_conf_flag $split_extra_flag $glue_loss_flag \
-        --lambda_depth $lambda_depth \
-        --lambda_glue $lambda_glue \
-        --glue_start_iter $glue_start_iter \
-        --glue_end_iter $glue_end_iter \
-        --glue_max_keypoints $glue_max_keypoints \
-        --glue_alpha_threshold $glue_alpha_threshold \
-        --depth_loss_start $depth_loss_start \
-        --depth_loss_end $depth_loss_end \
-        --vggt_conf_threshold $vggt_conf_threshold \
-        --depth_split_start $depth_split_start \
-        --depth_split_end $depth_split_end \
-        --depth_split_threshold $depth_split_threshold \
-        --depth_split_interval $depth_split_interval \
-        --depth_split_count $depth_split_count \
-        --depth_split_scale $depth_split_scale \
-        --max_depth_split_points_per_frame $max_depth_split_points_per_frame \
-        --max_depth_split_points $max_depth_split_points \
-        --max_depth_split_new_points $max_depth_split_new_points \
-        --max_split_extra_new_points $max_split_extra_new_points \
-        --split_extra_start $depth_split_start \
-        --split_extra_end $depth_split_end \
-        --split_extra_interval $depth_split_interval \
-        --split_extra_max_points $max_depth_split_points \
-        2>&1 | tee "$model_path/logs/train_${SEQUENCE}_${ablation_name}.log"
+        2>&1 | tee "$model_path/logs/train_${SEQUENCE}_${experiment_name}.log"
 
     # Evaluation
     echo "Evaluating on GPU $GPU_id for sequence $SEQUENCE"
@@ -226,7 +99,7 @@ for SEQUENCE in "${SEQUENCES[@]}"; do
         --motion_offset_flag --smpl_type smplx --actor_gender neutral --iteration $iter --skip_train \
         --seq_len $seq_len --seq_xyz_knn $seq_xyz_knn \
         --time_step_num $time_step_num --max_time_step $max_time_step --minimal_time_step $minimal_time_step \
-        2>&1 | tee "$model_path/logs/render_${SEQUENCE}_${ablation_name}.log"
+        2>&1 | tee "$model_path/logs/render_${SEQUENCE}_${experiment_name}.log"
 
     echo "[INFO] Finished sequence: $SEQUENCE"
 done

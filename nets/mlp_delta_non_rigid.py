@@ -1,15 +1,37 @@
+import copy
+
 import torch
 import torch.nn as nn
+
+
+class PartNonrigidExpert(nn.Module):
+    def __init__(self, mlp, gaussian_warp, gaussian_rotation, gaussian_scaling):
+        super().__init__()
+        self.mlp = copy.deepcopy(mlp)
+        self.gaussian_warp = copy.deepcopy(gaussian_warp)
+        self.gaussian_rotation = copy.deepcopy(gaussian_rotation)
+        self.gaussian_scaling = copy.deepcopy(gaussian_scaling)
+
+    def forward(self, features):
+        h = self.mlp(features)
+        return self.gaussian_warp(h), self.gaussian_rotation(h), self.gaussian_scaling(h)
+
 
 class NonrigidDeformer(nn.Module):
     def __init__(self, D=3, W=512, use_pose_cond=0, use_seq_pose_cond=0, use_seq_xyz_cond=0, 
                  pos_input_dim=63, pose_cond_dim=32, seq_pose_cond_dim=32, seq_xyz_cond_dim=96,
-                 seq_len=6, seq_xyz_knn=1, time_step_num=1, smpl_type='smpl'):
+                 seq_len=6, seq_xyz_knn=1, time_step_num=1, smpl_type='smpl',
+                 use_part_moe=False, num_parts=5, part_moe_global_keep=0.1):
         super(NonrigidDeformer, self).__init__()
 
         self.use_pose_cond = use_pose_cond
         self.use_seq_pose_cond = use_seq_pose_cond
         self.use_seq_xyz_cond = use_seq_xyz_cond
+        self.use_part_moe = use_part_moe
+        self.num_parts = num_parts
+        self.part_moe_global_keep = part_moe_global_keep
+        self.part_moe_active = False
+        self.part_experts = None
 
         self.input_ch = pos_input_dim
         self.pose_cond_dim, self.seq_pose_cond_dim, self.seq_xyz_cond_dim = 0, 0, 0
@@ -39,7 +61,70 @@ class NonrigidDeformer(nn.Module):
         self.gaussian_rotation = nn.Linear(W, 4)
         self.gaussian_scaling = nn.Linear(W, 3)
 
-    def forward(self, x_emb, pose_conds=None, seq_pose_conds=None, seq_xyz_conds=None):
+    def init_part_moe_from_shared(self, num_parts=None):
+        if self.part_moe_active:
+            print("[PartMoE] Experts already initialized. Skip.")
+            return False
+
+        num_parts = int(num_parts or self.num_parts)
+        self.num_parts = num_parts
+        print(f"[PartMoE] Initializing {num_parts} experts from the shared non-rigid MLP.")
+        self.part_experts = nn.ModuleList([
+            PartNonrigidExpert(
+                self.mlp,
+                self.gaussian_warp,
+                self.gaussian_rotation,
+                self.gaussian_scaling,
+            )
+            for _ in range(num_parts)
+        ])
+        self.part_moe_active = True
+        print("[PartMoE] expert_0: global/unknown; expert_1-4: body/left_hand/right_hand/face.")
+        return True
+
+    def freeze_shared_after_part_moe(self):
+        for module in (self.mlp, self.gaussian_warp, self.gaussian_rotation, self.gaussian_scaling):
+            for param in module.parameters():
+                param.requires_grad_(False)
+
+    def forward_part_moe(self, features, part_label, part_moe_alpha=0.0, part_moe_global_keep=None):
+        if not self.part_moe_active or self.part_experts is None:
+            raise RuntimeError("[PartMoE] Experts have not been initialized.")
+
+        part_label = part_label.long().to(features.device)
+        part_label = torch.clamp(part_label, min=0, max=self.num_parts - 1)
+        if part_label.dim() == 1:
+            part_label = part_label.unsqueeze(0).expand(features.shape[0], -1)
+        elif part_label.shape[0] == 1 and features.shape[0] > 1:
+            part_label = part_label.expand(features.shape[0], -1)
+
+        global_keep = self.part_moe_global_keep if part_moe_global_keep is None else float(part_moe_global_keep)
+        global_keep = max(0.0, min(1.0, global_keep))
+        max_part_weight = 1.0 - global_keep
+        part_weight = max(0.0, min(float(part_moe_alpha), max_part_weight))
+        global_weight = 1.0 - part_weight
+
+        global_xyz, global_rotation, global_scaling = self.part_experts[0](features)
+        d_xyz = global_xyz.clone()
+        d_rotation = global_rotation.clone()
+        d_scaling = global_scaling.clone()
+
+        if part_weight <= 0.0:
+            return d_xyz, d_rotation, d_scaling
+
+        for pid in range(1, self.num_parts):
+            mask = part_label == pid
+            if not torch.any(mask):
+                continue
+            part_xyz, part_rotation, part_scaling = self.part_experts[pid](features[mask])
+            d_xyz[mask] = global_weight * global_xyz[mask] + part_weight * part_xyz
+            d_rotation[mask] = global_weight * global_rotation[mask] + part_weight * part_rotation
+            d_scaling[mask] = global_weight * global_scaling[mask] + part_weight * part_scaling
+
+        return d_xyz, d_rotation, d_scaling
+
+    def forward(self, x_emb, pose_conds=None, seq_pose_conds=None, seq_xyz_conds=None,
+                part_label=None, part_enabled=False, part_moe_alpha=0.0, part_moe_global_keep=None):
         feats = []
         feats.append(x_emb)
 
@@ -59,8 +144,22 @@ class NonrigidDeformer(nn.Module):
         if self.use_seq_xyz_cond: 
             seq_xyz_feats = self.SeqXYZEncoder(seq_xyz_conds, x_emb)
             feats.append(seq_xyz_feats)
-        
-        h = self.mlp(torch.cat(feats, dim=-1))
+
+        features = torch.cat(feats, dim=-1)
+        if (
+            self.use_part_moe
+            and self.part_moe_active
+            and part_enabled
+            and part_label is not None
+        ):
+            return self.forward_part_moe(
+                features,
+                part_label,
+                part_moe_alpha=part_moe_alpha,
+                part_moe_global_keep=part_moe_global_keep,
+            )
+
+        h = self.mlp(features)
         d_xyz, d_scaling, d_rotation = self.gaussian_warp(h), self.gaussian_scaling(h), self.gaussian_rotation(h)
         
         return d_xyz, d_rotation, d_scaling

@@ -91,6 +91,15 @@ class GaussianModel:
         self.nonrigid_poseconds_flag = args.nonrigid_poseconds_flag
         self.nonrigid_deltaposeconds_flag = args.nonrigid_deltaposeconds_flag
         self.nonrigid_deltaxyzconds_flag = args.nonrigid_deltaxyzconds_flag
+        self.use_part_moe = getattr(args, "use_part_moe", False)
+        self.part_moe_start_iter = getattr(args, "part_moe_start_iter", 15000)
+        self.part_moe_warmup = getattr(args, "part_moe_warmup", 1000)
+        self.part_moe_global_keep = getattr(args, "part_moe_global_keep", 0.1)
+        self.part_moe_alpha = 0.0
+        self.num_parts = getattr(args, "num_parts", 5)
+        self._part_label = None
+        self._part_conf = None
+        self.part_label_enabled = False
 
         if self.motion_offset_flag:
             # load pose correction module
@@ -105,7 +114,9 @@ class GaussianModel:
             if self.non_rigid_flag:
                 self.non_rigid_deformer = NonrigidDeformer(pos_input_dim=pos_embed_ch,
                         use_pose_cond=self.nonrigid_poseconds_flag, use_seq_pose_cond=self.nonrigid_deltaposeconds_flag, use_seq_xyz_cond=self.nonrigid_deltaxyzconds_flag, 
-                        seq_len=args.seq_len, seq_xyz_knn=self.seq_xyz_knn, time_step_num=args.time_step_num, smpl_type=smpl_type).to(self.device)
+                        seq_len=args.seq_len, seq_xyz_knn=self.seq_xyz_knn, time_step_num=args.time_step_num, smpl_type=smpl_type,
+                        use_part_moe=self.use_part_moe, num_parts=self.num_parts,
+                        part_moe_global_keep=self.part_moe_global_keep).to(self.device)
                             
     def capture(self):
         return (
@@ -144,6 +155,79 @@ class GaussianModel:
         self.xyz_gradient_accum = xyz_gradient_accum
         self.denom = denom
         self.optimizer.load_state_dict(opt_dict)
+
+    def load_part_labels(self, part_label_path, part_conf_path=None):
+        labels = np.load(part_label_path).astype(np.int64)
+        labels = torch.from_numpy(labels).to(self.device)
+        num_gaussians = self.get_xyz.shape[0]
+        if labels.shape[0] != num_gaussians:
+            raise RuntimeError(f"Part label number {labels.shape[0]} != Gaussian number {num_gaussians}")
+
+        self._part_label = labels
+        if part_conf_path is not None and os.path.exists(part_conf_path):
+            conf = np.load(part_conf_path).astype(np.float32)
+            conf = torch.from_numpy(conf).to(self.device)
+            if conf.shape[0] != num_gaussians:
+                raise RuntimeError(f"Part conf number {conf.shape[0]} != Gaussian number {num_gaussians}")
+            self._part_conf = conf
+        else:
+            self._part_conf = None
+        self.part_label_enabled = True
+
+        unique, counts = torch.unique(labels, return_counts=True)
+        print("[PartLabel] Loaded part labels:")
+        for label, count in zip(unique.tolist(), counts.tolist()):
+            print(f"  part {label}: {count}")
+        print(f"[PartLabel] Total gaussians: {num_gaussians}")
+
+    @property
+    def get_part_label(self):
+        return self._part_label
+
+    @property
+    def get_part_conf(self):
+        return self._part_conf
+
+    def prepare_part_moe_for_loading(self):
+        if not (self.non_rigid_flag and self.use_part_moe):
+            return
+        self.non_rigid_deformer.init_part_moe_from_shared(num_parts=self.num_parts)
+        self.non_rigid_deformer.to(self.device)
+
+    def init_part_moe_from_shared(self):
+        if not (self.non_rigid_flag and self.use_part_moe):
+            return False
+        created = self.non_rigid_deformer.init_part_moe_from_shared(num_parts=self.num_parts)
+        self.non_rigid_deformer.to(self.device)
+        if not created:
+            return False
+
+        if self.mlp_optimizer is not None:
+            current_lr = None
+            for group in self.mlp_optimizer.param_groups:
+                if group.get("name") == "non_rigid_deformer":
+                    current_lr = group["lr"]
+                    break
+            if current_lr is None:
+                current_lr = self.mlp_optimizer.param_groups[-1]["lr"]
+
+            for pid, expert in enumerate(self.non_rigid_deformer.part_experts):
+                self.mlp_optimizer.add_param_group({
+                    "params": list(expert.parameters()),
+                    "lr": current_lr,
+                    "initial_lr": current_lr,
+                    "name": f"part_expert_{pid}",
+                })
+                if hasattr(self.mlp_scheduler, "base_lrs"):
+                    self.mlp_scheduler.base_lrs.append(current_lr)
+
+            self.non_rigid_deformer.freeze_shared_after_part_moe()
+            print(f"[PartMoE] Added {self.num_parts} expert param groups to mlp_optimizer at lr={current_lr}.")
+            print("[PartMoE] Frozen the original shared non-rigid branch; experts train from iteration after activation.")
+            print("[PartMoE] mlp_optimizer param groups:")
+            for idx, group in enumerate(self.mlp_optimizer.param_groups):
+                print(f"  {idx}: {group.get('name', 'noname')} lr={group['lr']}")
+        return True
 
     @property
     def get_scaling(self):
