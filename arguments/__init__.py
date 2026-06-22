@@ -77,6 +77,7 @@ class ModelParams(ParamGroup):
         self.part_max_smpl_dist = 0.08
         self.part_grouping_mode = "prior_only"
         self.part_label_path = ""
+        self.smpl_vertex_seg_path = ""
         self.part_log_dir = ""
         super().__init__(parser, "Loading Parameters", sentinel)
 
