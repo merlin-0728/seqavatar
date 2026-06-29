@@ -95,9 +95,14 @@ class Scene:
             self.train_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.train_cameras, resolution_scale, args)
             
             self.test_cameras.setdefault(resolution_scale, {})
-            for key in scene_info.test_cameras.keys():
-                print(f'Loading Test {key} Cameras')
-                self.test_cameras[resolution_scale][key] = cameraList_from_camInfos(scene_info.test_cameras[key], resolution_scale, args)
+            if os.environ.get("SEQAVATAR_SKIP_LOAD_TEST_CAMERAS", "0") == "1":
+                for key in scene_info.test_cameras.keys():
+                    print(f"Skipping Test {key} Cameras")
+                    self.test_cameras[resolution_scale][key] = []
+            else:
+                for key in scene_info.test_cameras.keys():
+                    print(f'Loading Test {key} Cameras')
+                    self.test_cameras[resolution_scale][key] = cameraList_from_camInfos(scene_info.test_cameras[key], resolution_scale, args)
 
         if self.loaded_iter:
             self.gaussians.load_ply(os.path.join(self.model_path, "point_cloud",

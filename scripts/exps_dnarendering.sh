@@ -5,6 +5,9 @@ set -euo pipefail
 #   bash scripts/exps_dnarendering.sh
 #   bash scripts/exps_dnarendering.sh orginal
 #   bash scripts/exps_dnarendering.sh use_part_moe
+#   bash scripts/exps_dnarendering.sh part_moe_leg
+#   bash scripts/exps_dnarendering.sh part_moe_foot
+#   bash scripts/exps_dnarendering.sh part_moe_arm
 #
 # 常用覆盖方式：
 #   GPU_id=3 bash scripts/exps_dnarendering.sh use_part_moe
@@ -12,6 +15,9 @@ set -euo pipefail
 
 # ================= 消融模式 =================
 MODE=${1:-orginal}
+part_label_schema=anatomy5
+num_parts=5
+final_eval_only=0
 case "$MODE" in
     orginal|original)
         experiment_name=orginal
@@ -21,9 +27,30 @@ case "$MODE" in
         experiment_name=part_moe
         part_moe_enabled=1
         ;;
+    use_part_moe_leg|part_moe_leg)
+        experiment_name=part_moe_leg
+        part_moe_enabled=1
+        part_label_schema=part_moe_leg
+        num_parts=7
+        final_eval_only=1
+        ;;
+    use_part_moe_foot|part_moe_foot)
+        experiment_name=part_moe_foot
+        part_moe_enabled=1
+        part_label_schema=part_moe_foot
+        num_parts=7
+        final_eval_only=1
+        ;;
+    use_part_moe_arm|part_moe_arm)
+        experiment_name=part_moe_arm
+        part_moe_enabled=1
+        part_label_schema=part_moe_arm
+        num_parts=7
+        final_eval_only=1
+        ;;
     *)
         echo "[ERROR] Unknown mode: $MODE"
-        echo "        Supported modes: orginal, use_part_moe"
+        echo "        Supported modes: orginal, use_part_moe, part_moe_leg, part_moe_foot, part_moe_arm"
         exit 1
         ;;
 esac
@@ -43,29 +70,42 @@ export WANDB_PROJECT=${WANDB_PROJECT:-SeqAvatar_DNA_Rendering}
 if [ -n "${SEQUENCES_OVERRIDE:-}" ]; then
     read -r -a SEQUENCES <<< "$SEQUENCES_OVERRIDE"
 else
-    SEQUENCES=("0007_04" "0019_10" "0051_09" "0206_04" "0813_05")
+    SEQUENCES=("0044_11" "0051_09" "0206_04" "0813_05" "0007_04" "0019_10")
 fi
 
 SKIP_COMPLETED=${SKIP_COMPLETED:-0}
+skip_load_test_cameras=${SKIP_LOAD_TEST_CAMERAS:-0}
+image_data_device=${IMAGE_DATA_DEVICE:-cuda}
 
 # ================= 训练参数 =================
 iter=25000
-densify_until_iter=1800
+densify_until_iter=1500
 
 seq_len=8
 seq_xyz_knn=8
 time_step_num=3
 max_time_step=3
 minimal_time_step=1
+non_rigid_mlp_depth=${NON_RIGID_MLP_DEPTH:-3}
+non_rigid_mlp_width=${NON_RIGID_MLP_WIDTH:-512}
 
 l1_loss_w=1.0
 ssim_loss_w=0.01
 lpips_loss_w=0.01
 
 # ================= Part-MoE 参数 =================
-part_moe_start_iter=15000
+part_moe_start_iter=10000
 part_moe_warmup=1000
 part_moe_global_keep=0.1
+
+test_iterations=(3000 "$part_moe_start_iter" "$iter")
+save_iterations=(3000 "$part_moe_start_iter" "$iter")
+if [ "$final_eval_only" = "1" ]; then
+    # part_moe_leg on DNA is memory tight during intermediate full-set eval.
+    # Keep label activation at part_moe_start_iter, but only evaluate/save final outputs.
+    test_iterations=("$iter")
+    save_iterations=("$iter")
+fi
 
 # ================= 总日志设置 =================
 if [ "$part_moe_enabled" = "1" ]; then
@@ -97,6 +137,15 @@ echo "[INFO] Run time: $RUN_TIME"
 echo "[INFO] GPU_id: $GPU_id"
 echo "[INFO] PYTHON_BIN: $PYTHON_BIN"
 echo "[INFO] DATA_PATH: $DATA_PATH"
+echo "[INFO] PART_LABEL_SCHEMA: $part_label_schema"
+echo "[INFO] NUM_PARTS: $num_parts"
+echo "[INFO] NON_RIGID_MLP_DEPTH: $non_rigid_mlp_depth"
+echo "[INFO] NON_RIGID_MLP_WIDTH: $non_rigid_mlp_width"
+echo "[INFO] FINAL_EVAL_ONLY: $final_eval_only"
+echo "[INFO] SKIP_LOAD_TEST_CAMERAS: $skip_load_test_cameras"
+echo "[INFO] IMAGE_DATA_DEVICE: $image_data_device"
+echo "[INFO] TEST_ITERATIONS: ${test_iterations[*]}"
+echo "[INFO] SAVE_ITERATIONS: ${save_iterations[*]}"
 echo "[INFO] Sequences: ${SEQUENCES[*]}"
 echo "[INFO] SKIP_COMPLETED: $SKIP_COMPLETED"
 echo "[INFO] Global log file: $GLOBAL_LOG_FILE"
@@ -114,11 +163,13 @@ COMMON_TRAIN_ARGS=(
     --time_step_num "$time_step_num"
     --max_time_step "$max_time_step"
     --minimal_time_step "$minimal_time_step"
+    --non_rigid_mlp_depth "$non_rigid_mlp_depth"
+    --non_rigid_mlp_width "$non_rigid_mlp_width"
     --l1_loss_w "$l1_loss_w"
     --ssim_loss_w "$ssim_loss_w"
     --lpips_loss_w "$lpips_loss_w"
-    --test_iterations 3000 "$part_moe_start_iter" "$iter"
-    --save_iterations 3000 "$part_moe_start_iter" "$iter"
+    --test_iterations "${test_iterations[@]}"
+    --save_iterations "${save_iterations[@]}"
 )
 
 COMMON_RENDER_ARGS=(
@@ -132,6 +183,8 @@ COMMON_RENDER_ARGS=(
     --time_step_num "$time_step_num"
     --max_time_step "$max_time_step"
     --minimal_time_step "$minimal_time_step"
+    --non_rigid_mlp_depth "$non_rigid_mlp_depth"
+    --non_rigid_mlp_width "$non_rigid_mlp_width"
 )
 
 PART_MOE_ARGS=()
@@ -141,6 +194,8 @@ if [ "$part_moe_enabled" = "1" ]; then
         --part_moe_start_iter "$part_moe_start_iter"
         --part_moe_warmup "$part_moe_warmup"
         --part_moe_global_keep "$part_moe_global_keep"
+        --num_parts "$num_parts"
+        --part_label_schema "$part_label_schema"
         --part_log_dir "$AUTO_PART_LOG_DIR"
     )
 fi
@@ -172,6 +227,13 @@ for SEQUENCE in "${SEQUENCES[@]}"; do
     fi
 
     export WANDB_NAME="train_${SEQUENCE}_${experiment_name}_${RUN_TIME}"
+    TRAIN_ENV=(CUDA_VISIBLE_DEVICES="$GPU_id")
+    if [ "$skip_load_test_cameras" = "1" ]; then
+        TRAIN_ENV+=(SEQAVATAR_SKIP_LOAD_TEST_CAMERAS=1)
+    fi
+    if [ "$image_data_device" != "cuda" ]; then
+        TRAIN_ENV+=(SEQAVATAR_IMAGE_DATA_DEVICE="$image_data_device")
+    fi
 
     echo "================================================="
     echo "[INFO] Sequence: $SEQUENCE"
@@ -181,7 +243,7 @@ for SEQUENCE in "${SEQUENCES[@]}"; do
     echo "================================================="
 
     echo "[INFO] Training on GPU $GPU_id for sequence $SEQUENCE"
-    CUDA_VISIBLE_DEVICES=$GPU_id "$PYTHON_BIN" train.py \
+    env "${TRAIN_ENV[@]}" "$PYTHON_BIN" train.py \
         -s "$dataset_path" --eval --exp_name "$exp_name" \
         "${COMMON_TRAIN_ARGS[@]}" \
         "${PART_MOE_ARGS[@]}" \

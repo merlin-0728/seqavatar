@@ -112,7 +112,10 @@ class GaussianModel:
 
             # non-rigid deformer
             if self.non_rigid_flag:
+                non_rigid_mlp_depth = getattr(args, "non_rigid_mlp_depth", 3)
+                non_rigid_mlp_width = getattr(args, "non_rigid_mlp_width", 512)
                 self.non_rigid_deformer = NonrigidDeformer(pos_input_dim=pos_embed_ch,
+                        D=non_rigid_mlp_depth, W=non_rigid_mlp_width,
                         use_pose_cond=self.nonrigid_poseconds_flag, use_seq_pose_cond=self.nonrigid_deltaposeconds_flag, use_seq_xyz_cond=self.nonrigid_deltaxyzconds_flag, 
                         seq_len=args.seq_len, seq_xyz_knn=self.seq_xyz_knn, time_step_num=args.time_step_num, smpl_type=smpl_type,
                         use_part_moe=self.use_part_moe, num_parts=self.num_parts,

@@ -64,6 +64,8 @@ class ModelParams(ParamGroup):
         self.nonrigid_poseconds_flag = True
         self.nonrigid_deltaposeconds_flag = True
         self.nonrigid_deltaxyzconds_flag = True
+        self.non_rigid_mlp_depth = 3
+        self.non_rigid_mlp_width = 512
         self.seq_xyz_knn = 5
         self.time_step_num = 5
         self.seq_len = 8
@@ -74,6 +76,7 @@ class ModelParams(ParamGroup):
         self.part_moe_warmup = 1000
         self.part_moe_global_keep = 0.1
         self.num_parts = 5
+        self.part_label_schema = "anatomy5"
         self.part_max_smpl_dist = 0.08
         self.part_grouping_mode = "prior_only"
         self.part_label_path = ""

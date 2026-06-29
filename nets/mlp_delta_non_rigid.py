@@ -79,7 +79,7 @@ class NonrigidDeformer(nn.Module):
             for _ in range(num_parts)
         ])
         self.part_moe_active = True
-        print("[PartMoE] expert_0: global/unknown; expert_1-4: body/left_hand/right_hand/face.")
+        print(f"[PartMoE] expert_0: global/unknown; expert_1-{num_parts - 1}: routed part experts.")
         return True
 
     def freeze_shared_after_part_moe(self):
@@ -105,23 +105,50 @@ class NonrigidDeformer(nn.Module):
         global_weight = 1.0 - part_weight
 
         global_xyz, global_rotation, global_scaling = self.part_experts[0](features)
-        d_xyz = global_xyz.clone()
-        d_rotation = global_rotation.clone()
-        d_scaling = global_scaling.clone()
 
         if part_weight <= 0.0:
-            return d_xyz, d_rotation, d_scaling
+            return global_xyz, global_rotation, global_scaling
+
+        feature_shape = features.shape
+        flat_features = features.reshape(-1, feature_shape[-1])
+        flat_labels = part_label.reshape(-1)
+
+        d_xyz = global_xyz.reshape(-1, global_xyz.shape[-1])
+        d_rotation = global_rotation.reshape(-1, global_rotation.shape[-1])
+        d_scaling = global_scaling.reshape(-1, global_scaling.shape[-1])
+        flat_global_xyz = d_xyz
+        flat_global_rotation = d_rotation
+        flat_global_scaling = d_scaling
 
         for pid in range(1, self.num_parts):
-            mask = part_label == pid
-            if not torch.any(mask):
+            idx = torch.nonzero(flat_labels == pid, as_tuple=False).flatten()
+            if idx.numel() == 0:
                 continue
-            part_xyz, part_rotation, part_scaling = self.part_experts[pid](features[mask])
-            d_xyz[mask] = global_weight * global_xyz[mask] + part_weight * part_xyz
-            d_rotation[mask] = global_weight * global_rotation[mask] + part_weight * part_rotation
-            d_scaling[mask] = global_weight * global_scaling[mask] + part_weight * part_scaling
+            part_xyz, part_rotation, part_scaling = self.part_experts[pid](flat_features.index_select(0, idx))
+            d_xyz = torch.index_copy(
+                d_xyz,
+                0,
+                idx,
+                global_weight * flat_global_xyz.index_select(0, idx) + part_weight * part_xyz,
+            )
+            d_rotation = torch.index_copy(
+                d_rotation,
+                0,
+                idx,
+                global_weight * flat_global_rotation.index_select(0, idx) + part_weight * part_rotation,
+            )
+            d_scaling = torch.index_copy(
+                d_scaling,
+                0,
+                idx,
+                global_weight * flat_global_scaling.index_select(0, idx) + part_weight * part_scaling,
+            )
 
-        return d_xyz, d_rotation, d_scaling
+        return (
+            d_xyz.reshape_as(global_xyz).contiguous(),
+            d_rotation.reshape_as(global_rotation).contiguous(),
+            d_scaling.reshape_as(global_scaling).contiguous(),
+        )
 
     def forward(self, x_emb, pose_conds=None, seq_pose_conds=None, seq_xyz_conds=None,
                 part_label=None, part_enabled=False, part_moe_alpha=0.0, part_moe_global_keep=None):

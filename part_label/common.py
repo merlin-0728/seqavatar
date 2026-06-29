@@ -41,6 +41,74 @@ LABEL_COLORS = {
     6: (70, 210, 210),
 }
 
+PART_LABEL_SCHEMAS = {
+    "anatomy5": {
+        0: "unknown",
+        1: "body",
+        2: "left_hand",
+        3: "right_hand",
+        4: "face",
+    },
+    "part_moe_leg": {
+        0: "unknown",
+        1: "body",
+        2: "left_hand",
+        3: "right_hand",
+        4: "face",
+        5: "left_leg_foot",
+        6: "right_leg_foot",
+    },
+    "part_moe_foot": {
+        0: "unknown",
+        1: "body",
+        2: "left_hand",
+        3: "right_hand",
+        4: "face",
+        5: "left_foot",
+        6: "right_foot",
+    },
+    "part_moe_arm": {
+        0: "unknown",
+        1: "body",
+        2: "left_arm_hand",
+        3: "right_arm_hand",
+        4: "face",
+        5: "left_leg_foot",
+        6: "right_leg_foot",
+    },
+}
+
+PART_LABEL_COLORS = {
+    "anatomy5": {idx: LABEL_COLORS[idx] for idx in PART_LABEL_SCHEMAS["anatomy5"]},
+    "part_moe_leg": {
+        0: LABEL_COLORS[0],
+        1: LABEL_COLORS[1],
+        2: LABEL_COLORS[2],
+        3: LABEL_COLORS[3],
+        4: LABEL_COLORS[4],
+        5: (255, 165, 0),
+        6: (128, 0, 255),
+    },
+    "part_moe_foot": {
+        0: LABEL_COLORS[0],
+        1: LABEL_COLORS[1],
+        2: LABEL_COLORS[2],
+        3: LABEL_COLORS[3],
+        4: LABEL_COLORS[4],
+        5: (255, 165, 0),
+        6: (128, 0, 255),
+    },
+    "part_moe_arm": {
+        0: LABEL_COLORS[0],
+        1: LABEL_COLORS[1],
+        2: LABEL_COLORS[2],
+        3: LABEL_COLORS[3],
+        4: LABEL_COLORS[4],
+        5: (255, 165, 0),
+        6: (128, 0, 255),
+    },
+}
+
 SOURCE_LABELS = {
     0: "unknown",
     1: "smpl_prior",
@@ -49,6 +117,25 @@ SOURCE_LABELS = {
     4: "semantic_cloth_override",
     5: "hand_split_by_smpl",
 }
+
+
+# 返回当前消融 schema 的 part 名称。
+def get_part_label_names(schema="anatomy5"):
+    if schema not in PART_LABEL_SCHEMAS:
+        raise ValueError(f"Unknown part_label_schema: {schema}")
+    return PART_LABEL_SCHEMAS[schema]
+
+
+# 返回当前消融 schema 的可视化颜色。
+def get_part_label_colors(schema="anatomy5"):
+    if schema not in PART_LABEL_COLORS:
+        raise ValueError(f"Unknown part_label_schema: {schema}")
+    return PART_LABEL_COLORS[schema]
+
+
+# 返回当前 schema 应该使用的 expert 数量。
+def get_num_parts_from_schema(schema="anatomy5"):
+    return len(get_part_label_names(schema))
 
 
 # 简单 tee 输出流：把 stdout/stderr 同时写到终端和 part 日志文件。
@@ -240,12 +327,13 @@ def read_ply_xyz(path):
 
 
 # 按 part label 给点云上色并写出 PLY，方便检查分层结果。
-def write_colored_ply(path, xyz, labels):
+def write_colored_ply(path, xyz, labels, schema="anatomy5"):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     xyz = np.asarray(xyz, dtype=np.float32)
     labels = np.asarray(labels, dtype=np.int32)
-    colors = np.array([LABEL_COLORS.get(int(l), LABEL_COLORS[0]) for l in labels], dtype=np.uint8)
+    label_colors = get_part_label_colors(schema)
+    colors = np.array([label_colors.get(int(l), label_colors[0]) for l in labels], dtype=np.uint8)
     vertex = np.empty(
         xyz.shape[0],
         dtype=[
@@ -285,8 +373,9 @@ def load_smpl_neutral(smpl_type="smplx", actor_gender="neutral"):
         return pickle.load(f, encoding="latin1")
 
 
-# 用 SMPL-X LBS 主导关节把每个 SMPL-X 顶点粗分为 body/left_hand/right_hand/face。
-def smplx_lbs_vertex_labels(smpl_neutral):
+# 用 SMPL-X LBS 主导关节把每个 SMPL-X 顶点粗分为 body/hand/face，可选额外分腿脚、纯脚或手臂手。
+def smplx_lbs_vertex_labels(smpl_neutral, schema="anatomy5"):
+    get_part_label_names(schema)
     weights_obj = smpl_neutral["weights"]
     if hasattr(weights_obj, "detach"):
         weights_obj = weights_obj.detach().cpu().numpy()
@@ -317,21 +406,113 @@ def smplx_lbs_vertex_labels(smpl_neutral):
     left_hand = ids_with_prefix(["L_Hand", "L_Index", "L_Middle", "L_Ring", "L_Pinky", "L_Thumb"])
     right_hand = ids_with_prefix(["R_Hand", "R_Index", "R_Middle", "R_Ring", "R_Pinky", "R_Thumb"])
     face = ids_with_prefix(["Head", "Jaw", "L_Eye", "R_Eye"])
+    left_leg_foot = ids_with_prefix(["L_Hip", "L_Knee", "L_Ankle", "L_Foot", "L_Toes", "L_Thigh", "L_Calf"])
+    right_leg_foot = ids_with_prefix(["R_Hip", "R_Knee", "R_Ankle", "R_Foot", "R_Toes", "R_Thigh", "R_Calf"])
+    left_foot = ids_with_prefix(["L_Foot", "L_Toes", "L_BigToe", "L_SmallToe", "L_Heel"])
+    right_foot = ids_with_prefix(["R_Foot", "R_Toes", "R_BigToe", "R_SmallToe", "R_Heel"])
+    left_arm_hand = ids_with_prefix(
+        [
+            "L_Elbow",
+            "L_Wrist",
+            "L_Arm",
+            "L_ForeArm",
+            "L_UpperArm",
+            "L_LowerArm",
+            "L_Hand",
+            "L_Index",
+            "L_Middle",
+            "L_Ring",
+            "L_Pinky",
+            "L_Thumb",
+        ]
+    )
+    right_arm_hand = ids_with_prefix(
+        [
+            "R_Elbow",
+            "R_Wrist",
+            "R_Arm",
+            "R_ForeArm",
+            "R_UpperArm",
+            "R_LowerArm",
+            "R_Hand",
+            "R_Index",
+            "R_Middle",
+            "R_Ring",
+            "R_Pinky",
+            "R_Thumb",
+        ]
+    )
 
     labels = np.ones(weights.shape[0], dtype=np.uint8)
-    labels[np.isin(dominant, list(left_hand))] = 2
-    labels[np.isin(dominant, list(right_hand))] = 3
+    if schema == "part_moe_leg":
+        labels[np.isin(dominant, list(left_leg_foot))] = 5
+        labels[np.isin(dominant, list(right_leg_foot))] = 6
+    elif schema == "part_moe_foot":
+        labels[np.isin(dominant, list(left_foot))] = 5
+        labels[np.isin(dominant, list(right_foot))] = 6
+    elif schema == "part_moe_arm":
+        labels[np.isin(dominant, list(left_leg_foot))] = 5
+        labels[np.isin(dominant, list(right_leg_foot))] = 6
+        labels[np.isin(dominant, list(left_arm_hand))] = 2
+        labels[np.isin(dominant, list(right_arm_hand))] = 3
+    if schema != "part_moe_arm":
+        labels[np.isin(dominant, list(left_hand))] = 2
+        labels[np.isin(dominant, list(right_hand))] = 3
     labels[np.isin(dominant, list(face))] = 4
     return labels, {
         "method": "smplx_lbs_dominant_part_fallback",
+        "part_label_schema": schema,
         "left_hand_ids": sorted(left_hand),
         "right_hand_ids": sorted(right_hand),
         "face_ids": sorted(face),
+        "left_leg_foot_ids": sorted(left_leg_foot) if schema in {"part_moe_leg", "part_moe_arm"} else [],
+        "right_leg_foot_ids": sorted(right_leg_foot) if schema in {"part_moe_leg", "part_moe_arm"} else [],
+        "left_foot_ids": sorted(left_foot) if schema == "part_moe_foot" else [],
+        "right_foot_ids": sorted(right_foot) if schema == "part_moe_foot" else [],
+        "left_arm_hand_ids": sorted(left_arm_hand) if schema == "part_moe_arm" else [],
+        "right_arm_hand_ids": sorted(right_arm_hand) if schema == "part_moe_arm" else [],
+        "vertex_label_counts": label_counts(labels, schema=schema),
     }
 
 
-# 读取 SMPL 6890 顶点分区 JSON，并映射到当前 Part-MoE 使用的 5 类标签。
-def smpl_vertex_segmentation_labels(seg_path, num_vertices=6890):
+# 把 SMPL 顶点分区名称映射成当前消融使用的 part id。
+def map_smpl_seg_name_to_part_id(name, schema="anatomy5"):
+    get_part_label_names(schema)
+    key = str(name).lower()
+    if schema == "part_moe_arm":
+        if key in {"leftarm", "leftforearm", "lefthand", "lefthandindex1"}:
+            return 2
+        if key in {"rightarm", "rightforearm", "righthand", "righthandindex1"}:
+            return 3
+        if key == "head":
+            return 4
+        if key in {"leftupleg", "leftleg", "leftfoot", "lefttoebase"}:
+            return 5
+        if key in {"rightupleg", "rightleg", "rightfoot", "righttoebase"}:
+            return 6
+        return 1
+    if key in {"lefthand", "lefthandindex1"}:
+        return 2
+    if key in {"righthand", "righthandindex1"}:
+        return 3
+    if key == "head":
+        return 4
+    if schema == "part_moe_leg":
+        if key in {"leftupleg", "leftleg", "leftfoot", "lefttoebase"}:
+            return 5
+        if key in {"rightupleg", "rightleg", "rightfoot", "righttoebase"}:
+            return 6
+    if schema == "part_moe_foot":
+        if key in {"leftfoot", "lefttoebase"}:
+            return 5
+        if key in {"rightfoot", "righttoebase"}:
+            return 6
+    return 1
+
+
+# 读取 SMPL 6890 顶点分区 JSON，并映射到当前 Part-MoE schema 的标签。
+def smpl_vertex_segmentation_labels(seg_path, num_vertices=6890, schema="anatomy5"):
+    label_names = get_part_label_names(schema)
     seg_path = Path(seg_path).expanduser()
     if not seg_path.is_absolute():
         seg_path = REPO_ROOT / seg_path
@@ -344,15 +525,9 @@ def smpl_vertex_segmentation_labels(seg_path, num_vertices=6890):
         raise ValueError(f"SMPL vertex segmentation must be a dict: {seg_path}")
 
     labels = np.ones(int(num_vertices), dtype=np.uint8)
-    left_hand_keys = {"lefthand", "lefthandindex1"}
-    right_hand_keys = {"righthand", "righthandindex1"}
-    head_keys = {"head"}
 
     listed_vids = []
-    left_hand_vids = []
-    right_hand_vids = []
-    head_vids = []
-    part_keys = {"body": [], "left_hand": [], "right_hand": [], "face": []}
+    part_keys = {name: [] for name in label_names.values() if name != "unknown"}
     for name, vids in segmentation.items():
         vids = np.asarray(vids, dtype=np.int64)
         if vids.size == 0:
@@ -363,26 +538,10 @@ def smpl_vertex_segmentation_labels(seg_path, num_vertices=6890):
                 f"min={int(vids.min())}, max={int(vids.max())}, num_vertices={num_vertices}"
             )
 
-        key = str(name).lower()
         listed_vids.append(vids)
-        if key in left_hand_keys:
-            left_hand_vids.append(vids)
-            part_keys["left_hand"].append(str(name))
-        elif key in right_hand_keys:
-            right_hand_vids.append(vids)
-            part_keys["right_hand"].append(str(name))
-        elif key in head_keys:
-            head_vids.append(vids)
-            part_keys["face"].append(str(name))
-        else:
-            part_keys["body"].append(str(name))
-
-    if head_vids:
-        labels[np.concatenate(head_vids, axis=0)] = 4
-    if left_hand_vids:
-        labels[np.concatenate(left_hand_vids, axis=0)] = 2
-    if right_hand_vids:
-        labels[np.concatenate(right_hand_vids, axis=0)] = 3
+        pid = map_smpl_seg_name_to_part_id(name, schema=schema)
+        labels[vids] = pid
+        part_keys[label_names.get(pid, f"part_{pid}")].append(str(name))
 
     if listed_vids:
         all_vids = np.concatenate(listed_vids, axis=0)
@@ -400,6 +559,7 @@ def smpl_vertex_segmentation_labels(seg_path, num_vertices=6890):
     return labels, {
         "method": "smpl_vertex_segmentation_json",
         "path": str(seg_path),
+        "part_label_schema": schema,
         "num_vertices": int(num_vertices),
         "num_keys": int(len(segmentation)),
         "part_keys": part_keys,
@@ -407,16 +567,19 @@ def smpl_vertex_segmentation_labels(seg_path, num_vertices=6890):
         "unique_vertex_count": unique_vertex_count,
         "missing_vertex_count": missing_count,
         "duplicate_vertex_count": duplicate_count,
-        "vertex_label_counts": label_counts(labels),
+        "vertex_label_counts": label_counts(labels, schema=schema),
     }
 
 
 # 统计每个 part label 的高斯点数量。
-def label_counts(labels):
+def label_counts(labels, schema="anatomy5"):
     labels = np.asarray(labels).astype(np.int64)
+    label_names = get_part_label_names(schema)
     counts = {}
-    for idx, name in LABELS.items():
+    for idx, name in label_names.items():
         counts[name] = int(np.sum(labels == idx))
+    for idx in sorted(set(labels.tolist()) - set(label_names.keys())):
+        counts[f"part_{idx}"] = int(np.sum(labels == idx))
     return counts
 
 

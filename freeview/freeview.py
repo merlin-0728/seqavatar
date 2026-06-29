@@ -9,6 +9,7 @@ Edit the settings below, then run:
 from __future__ import annotations
 
 import argparse
+import ast
 import copy
 import json
 import math
@@ -21,12 +22,14 @@ from typing import Iterable
 
 import numpy as np
 
+from visual_effects import compose_torch_render, visual_metadata
+
 
 # ================= User Settings =================
 GPU_ID = "2"
-DEFAULT_SEQUENCES = ["0007", "0019"]
-DEFAULT_EXPERIMENT = "no_depth_no_split"
-DEFAULT_RUN = "auto_best"  # auto_best selects the highest PSNR run.
+DEFAULT_SEQUENCES = ["0019", "0044", "0051", "0206", "0813"]
+DEFAULT_EXPERIMENT = "part_moe_arm"
+DEFAULT_RUN = "latest"
 DEFAULT_ITERATION = 25000
 
 DEFAULT_SPLIT = "train"
@@ -40,9 +43,9 @@ DEFAULT_YAW_START = 0.0
 DEFAULT_YAW_END = 360.0
 DEFAULT_INCLUDE_ENDPOINT = False
 DEFAULT_RADIUS = None
-DEFAULT_RADIUS_SCALE = 1.0
+DEFAULT_RADIUS_SCALE = 0.65 #人物大小
 DEFAULT_HEIGHT = None
-DEFAULT_HEIGHT_OFFSET = 0.0
+DEFAULT_HEIGHT_OFFSET = 0.6
 DEFAULT_BASE_YAW_OFFSET = 0.0
 
 DEFAULT_FPS = 24
@@ -98,6 +101,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timestamp", default=None)
     parser.add_argument("--save_frames", action=argparse.BooleanOptionalAction, default=DEFAULT_SAVE_FRAMES)
     parser.add_argument("--make_video", action=argparse.BooleanOptionalAction, default=DEFAULT_MAKE_VIDEO)
+    parser.add_argument("--visual_background", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--visual_background_path", type=Path, default=None)
+    parser.add_argument("--visual_background_fit", choices=["cover", "contain"], default="cover")
+    parser.add_argument("--visual_shadow", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--visual_shadow_offset", nargs=2, type=int, default=[46, 30])
+    parser.add_argument("--visual_shadow_blur", type=float, default=14.0)
+    parser.add_argument("--visual_shadow_opacity", type=float, default=0.33)
     parser.add_argument("--overwrite", action="store_true", default=DEFAULT_OVERWRITE)
     parser.add_argument("--dry_run", action="store_true")
     parser.add_argument("--quiet", action="store_true")
@@ -208,30 +218,49 @@ def select_run(sequence: str, args: argparse.Namespace) -> Path:
     return sorted(candidates, key=lambda path: (path.name, path.stat().st_mtime))[-1]
 
 
+def load_model_cfg_args(model_path: Path) -> Namespace | None:
+    cfg_path = Path(model_path) / "cfg_args"
+    if not cfg_path.exists():
+        return None
+    text = cfg_path.read_text(encoding="utf-8").strip()
+    if not text:
+        return None
+    expr = ast.parse(text, mode="eval")
+    if not isinstance(expr.body, ast.Call) or getattr(expr.body.func, "id", "") != "Namespace":
+        raise ValueError(f"Unsupported cfg_args format: {cfg_path}")
+    values = {}
+    for keyword in expr.body.keywords:
+        values[keyword.arg] = ast.literal_eval(keyword.value)
+    return Namespace(**values)
+
+
 def build_dataset_args(args: argparse.Namespace, source_path: Path, model_path: Path) -> Namespace:
-    return Namespace(
-        sh_degree=args.sh_degree,
-        source_path=str(source_path.resolve()),
-        model_path=str(model_path),
-        images=args.images,
-        resolution=args.resolution,
-        white_background=args.white_background,
-        data_device=args.data_device,
-        eval=args.eval,
-        exp_name="",
-        smpl_type=args.smpl_type,
-        actor_gender=args.actor_gender,
-        motion_offset_flag=args.motion_offset_flag,
-        non_rigid_flag=args.non_rigid_flag,
-        nonrigid_poseconds_flag=args.nonrigid_poseconds_flag,
-        nonrigid_deltaposeconds_flag=args.nonrigid_deltaposeconds_flag,
-        nonrigid_deltaxyzconds_flag=args.nonrigid_deltaxyzconds_flag,
-        seq_xyz_knn=args.seq_xyz_knn,
-        time_step_num=args.time_step_num,
-        seq_len=args.seq_len,
-        max_time_step=args.max_time_step,
-        minimal_time_step=args.minimal_time_step,
-    )
+    cfg = load_model_cfg_args(model_path)
+    if cfg is None:
+        cfg = Namespace(
+            sh_degree=args.sh_degree,
+            images=args.images,
+            resolution=args.resolution,
+            white_background=args.white_background,
+            data_device=args.data_device,
+            eval=args.eval,
+            exp_name="",
+            smpl_type=args.smpl_type,
+            actor_gender=args.actor_gender,
+            motion_offset_flag=args.motion_offset_flag,
+            non_rigid_flag=args.non_rigid_flag,
+            nonrigid_poseconds_flag=args.nonrigid_poseconds_flag,
+            nonrigid_deltaposeconds_flag=args.nonrigid_deltaposeconds_flag,
+            nonrigid_deltaxyzconds_flag=args.nonrigid_deltaxyzconds_flag,
+            seq_xyz_knn=args.seq_xyz_knn,
+            time_step_num=args.time_step_num,
+            seq_len=args.seq_len,
+            max_time_step=args.max_time_step,
+            minimal_time_step=args.minimal_time_step,
+        )
+    cfg.source_path = str(source_path.resolve())
+    cfg.model_path = str(model_path)
+    return cfg
 
 
 def build_pipeline_args(args: argparse.Namespace) -> Namespace:
@@ -364,6 +393,7 @@ def write_render_info(out_dir: Path, metadata: dict) -> None:
         f"yaw_end: {metadata['yaw_end']}",
         f"base_yaw: {metadata['base_yaw']}",
         f"radius: {metadata['radius']}",
+        f"radius_scale: {metadata.get('radius_scale')}",
         f"height: {metadata['height']}",
         f"height_offset: {metadata['height_offset']}",
         "",
@@ -492,7 +522,17 @@ def render_sequence(
 
             render_pkg = render(view, gaussians, pipeline, background)
             image = torch.clamp(render_pkg["render"], 0.0, 1.0)
-            frame = (image.permute(1, 2, 0).detach().cpu().numpy() * 255.0).astype(np.uint8)
+            frame = compose_torch_render(
+                image,
+                render_pkg.get("render_alpha"),
+                background_path=args.visual_background_path,
+                enable_background=args.visual_background,
+                enable_shadow=args.visual_shadow,
+                background_fit=args.visual_background_fit,
+                shadow_offset=args.visual_shadow_offset,
+                shadow_blur=args.visual_shadow_blur,
+                shadow_opacity=args.visual_shadow_opacity,
+            )
 
             if args.save_frames:
                 imageio.imwrite(str(frames_dir / f"{view.image_name}.png"), frame)
@@ -515,6 +555,7 @@ def render_sequence(
         "target_mode": args.target_mode,
         "target": list(args.target),
         "radius": radius,
+        "radius_scale": args.radius_scale,
         "base_yaw": base_yaw,
         "yaw_start": args.yaw_start,
         "yaw_end": args.yaw_end,
@@ -525,6 +566,7 @@ def render_sequence(
         "video": str(video_path) if args.make_video else None,
         "frames_dir": str(frames_dir) if args.save_frames else None,
         "metric": metric,
+        "visual_effects": visual_metadata(args),
         "command": " ".join([Path(sys.executable).name] + sys.argv),
     }
     with (out_dir / "metadata.json").open("w", encoding="utf-8") as handle:

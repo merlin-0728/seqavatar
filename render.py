@@ -35,9 +35,13 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
     makedirs(render_path, exist_ok=True)
     makedirs(gts_path, exist_ok=True)
 
-    # Load data (deserialize)
-    with open(model_path + '/smpl_rot/' + f'iteration_{iteration}/' + 'smpl_rot.pickle', 'rb') as handle:
-        smpl_rot = pickle.load(handle)
+    smpl_rot = {}
+    smpl_rot_path = model_path + '/smpl_rot/' + f'iteration_{iteration}/' + 'smpl_rot.pickle'
+    if os.path.exists(smpl_rot_path):
+        with open(smpl_rot_path, 'rb') as handle:
+            smpl_rot = pickle.load(handle)
+    else:
+        print(f"[Render] Missing cached SMPL rotations: {smpl_rot_path}. Recomputing during render.")
 
     rgbs = []
     rgbs_gt = []
@@ -47,12 +51,24 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
         gt = view.original_image[0:3, :, :].cuda()
         bound_mask = view.bound_mask
 
-        d_nonrigid = smpl_rot[name][view.pose_id]['d_nonrigid']
-        transforms, translation = smpl_rot[name][view.pose_id]['transforms'], smpl_rot[name][view.pose_id]['translation']
-
         # Start timer
         start_time = time.time() 
-        render_output = render(view, gaussians, pipeline, background, transforms=transforms, translation=translation, d_nonrigid=d_nonrigid)
+        cached_pose = smpl_rot.get(name, {}).get(view.pose_id)
+        if cached_pose is not None:
+            d_nonrigid = cached_pose['d_nonrigid']
+            transforms = cached_pose['transforms']
+            translation = cached_pose['translation']
+            render_output = render(
+                view,
+                gaussians,
+                pipeline,
+                background,
+                transforms=transforms,
+                translation=translation,
+                d_nonrigid=d_nonrigid,
+            )
+        else:
+            render_output = render(view, gaussians, pipeline, background)
         # end time
         end_time = time.time()
         rendering = render_output["render"]

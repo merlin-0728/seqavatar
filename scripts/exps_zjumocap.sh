@@ -5,6 +5,9 @@ set -euo pipefail
 #   bash scripts/exps_zjumocap.sh
 #   bash scripts/exps_zjumocap.sh orginal
 #   bash scripts/exps_zjumocap.sh use_part_moe
+#   bash scripts/exps_zjumocap.sh part_moe_leg
+#   bash scripts/exps_zjumocap.sh part_moe_foot
+#   bash scripts/exps_zjumocap.sh part_moe_arm
 #
 # 常用覆盖方式：
 #   GPU_id=3 bash scripts/exps_zjumocap.sh use_part_moe
@@ -12,6 +15,8 @@ set -euo pipefail
 
 # ================= 消融模式 =================
 MODE=${1:-orginal}
+part_label_schema=anatomy5
+num_parts=5
 case "$MODE" in
     orginal|original)
         experiment_name=orginal
@@ -21,9 +26,27 @@ case "$MODE" in
         experiment_name=part_moe
         part_moe_enabled=1
         ;;
+    use_part_moe_leg|part_moe_leg)
+        experiment_name=part_moe_leg
+        part_moe_enabled=1
+        part_label_schema=part_moe_leg
+        num_parts=7
+        ;;
+    use_part_moe_foot|part_moe_foot)
+        experiment_name=part_moe_foot
+        part_moe_enabled=1
+        part_label_schema=part_moe_foot
+        num_parts=7
+        ;;
+    use_part_moe_arm|part_moe_arm)
+        experiment_name=part_moe_arm
+        part_moe_enabled=1
+        part_label_schema=part_moe_arm
+        num_parts=7
+        ;;
     *)
         echo "[ERROR] Unknown mode: $MODE"
-        echo "        Supported modes: orginal, use_part_moe"
+        echo "        Supported modes: orginal, use_part_moe, part_moe_leg, part_moe_foot, part_moe_arm"
         exit 1
         ;;
 esac
@@ -31,7 +54,7 @@ esac
 # ================= 路径和基础设置 =================
 REPO_ROOT=${REPO_ROOT:-/media/image/mxz/human/SeqAvatar}
 RUN_TIME=${RUN_TIME:-$(date +%Y%m%d_%H%M%S)}
-GPU_id=${GPU_id:-2}
+GPU_id=${GPU_id:-3}
 PYTHON_BIN=${PYTHON_BIN:-/media/image/mxz/.conda/envs/seqavatar/bin/python}
 DATA_PATH=${DATA_PATH:-/media/image/mxz/human/SeqAvatar/ZJU-MoCap}
 PART_LOG_DIR=${PART_LOG_DIR:-/media/image/mxz/human/SeqAvatar/logs/part}
@@ -50,7 +73,7 @@ fi
 SKIP_COMPLETED=${SKIP_COMPLETED:-0}
 
 # ================= 训练参数 =================
-iter=${ITERATIONS:-10000}
+iter=${ITERATIONS:-3000}
 base_densify_until_iter=${DENSIFY_UNTIL_ITER:-1200}
 
 seq_len=${SEQ_LEN:-3}
@@ -58,13 +81,15 @@ seq_xyz_knn=${SEQ_XYZ_KNN:-6}
 time_step_num=${TIME_STEP_NUM:-2}
 max_time_step=${MAX_TIME_STEP:-6}
 minimal_time_step=${MINIMAL_TIME_STEP:-3}
+non_rigid_mlp_depth=${NON_RIGID_MLP_DEPTH:-3}
+non_rigid_mlp_width=${NON_RIGID_MLP_WIDTH:-512}
 
 l1_loss_w=${L1_LOSS_W:-1.0}
 ssim_loss_w=${SSIM_LOSS_W:-0.1}
 lpips_loss_w=${LPIPS_LOSS_W:-0.1}
 
-# ZJU 总训练 10000 步；Part-MoE 在 3000 步分层，并要求分层后不再增密。
-part_moe_start_iter=${PART_MOE_START_ITER:-3000}
+# ZJU 总训练 3000 步；Part-MoE 在 1000 步分层，并要求分层后不再增密。
+part_moe_start_iter=${PART_MOE_START_ITER:-1000}
 part_moe_warmup=${PART_MOE_WARMUP:-500}
 part_moe_global_keep=${PART_MOE_GLOBAL_KEEP:-0.1}
 
@@ -115,6 +140,10 @@ echo "[INFO] Densify until iter: $densify_until_iter"
 echo "[INFO] PART_MOE_START_ITER: $part_moe_start_iter"
 echo "[INFO] PART_MOE_WARMUP: $part_moe_warmup"
 echo "[INFO] PART_MOE_GLOBAL_KEEP: $part_moe_global_keep"
+echo "[INFO] PART_LABEL_SCHEMA: $part_label_schema"
+echo "[INFO] NUM_PARTS: $num_parts"
+echo "[INFO] NON_RIGID_MLP_DEPTH: $non_rigid_mlp_depth"
+echo "[INFO] NON_RIGID_MLP_WIDTH: $non_rigid_mlp_width"
 echo "[INFO] Sequences: ${SEQUENCES[*]}"
 echo "[INFO] SKIP_COMPLETED: $SKIP_COMPLETED"
 echo "[INFO] Global log file: $GLOBAL_LOG_FILE"
@@ -132,6 +161,8 @@ COMMON_TRAIN_ARGS=(
     --time_step_num "$time_step_num"
     --max_time_step "$max_time_step"
     --minimal_time_step "$minimal_time_step"
+    --non_rigid_mlp_depth "$non_rigid_mlp_depth"
+    --non_rigid_mlp_width "$non_rigid_mlp_width"
     --l1_loss_w "$l1_loss_w"
     --ssim_loss_w "$ssim_loss_w"
     --lpips_loss_w "$lpips_loss_w"
@@ -150,6 +181,8 @@ COMMON_RENDER_ARGS=(
     --time_step_num "$time_step_num"
     --max_time_step "$max_time_step"
     --minimal_time_step "$minimal_time_step"
+    --non_rigid_mlp_depth "$non_rigid_mlp_depth"
+    --non_rigid_mlp_width "$non_rigid_mlp_width"
 )
 
 PART_MOE_ARGS=()
@@ -165,6 +198,8 @@ if [ "$part_moe_enabled" = "1" ]; then
         --part_moe_global_keep "$part_moe_global_keep"
         --part_grouping_mode smpl_vertex_seg
         --smpl_vertex_seg_path "$SMPL_VERTEX_SEG_PATH"
+        --num_parts "$num_parts"
+        --part_label_schema "$part_label_schema"
         --part_log_dir "$AUTO_PART_LOG_DIR"
     )
 fi

@@ -15,6 +15,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_DIR = Path(__file__).resolve().parent
+os.chdir(PROJECT_ROOT)
 # ================= User Settings =================
 # Change this value when you want to use a different physical GPU.
 GPU_ID = "3"
@@ -47,6 +48,7 @@ from gaussian_renderer import GaussianModel
 from utils.graphics_utils import getWorld2View2, getProjectionMatrix_refine
 from PIL import Image
 import imageio
+from visual_effects import alpha_to_l_pil, compose_pil, visual_metadata
 
 from freeview import (
     DEFAULT_DATASET_ROOT,
@@ -62,7 +64,7 @@ from freeview import (
 )
 
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "freeview" / "DNA-Rendering"
-DEFAULT_SEQUENCES = ["0813"]
+DEFAULT_SEQUENCES = ["0007", "0019", "0044", "0051", "0206", "0813"]
 
 # ================= Camera Extrinsic Defaults =================
 # 相机整体绕人体水平旋转的偏移角度，单位是度。
@@ -106,7 +108,9 @@ def write_metadata(out_dir, metadata):
         f"angle_start: {metadata.get('angle_start')}",
         f"angle_end: {metadata.get('angle_end')}",
         f"radius: {metadata.get('radius')}",
+        f"radius_scale: {metadata.get('radius_scale')}",
         f"height: {metadata.get('height')}",
+        f"height_offset: {metadata.get('height_offset')}",
         f"base_yaw: {metadata.get('base_yaw')}",
         f"base_yaw_offset: {metadata.get('base_yaw_offset')}",
         f"grid_rows: {metadata.get('grid_rows')}",
@@ -290,6 +294,13 @@ def create_grid_image(
     crop_margin=0.12,
     crop_threshold=0.03,
     tile_fit_mode="contain",
+    visual_background=True,
+    visual_background_path=None,
+    visual_background_fit="cover",
+    visual_shadow=True,
+    visual_shadow_offset=(46, 30),
+    visual_shadow_blur=14.0,
+    visual_shadow_opacity=0.33,
 ):
     """
     在内存中将 tensor 列表拼接成 PIL Grid 图片。
@@ -329,6 +340,7 @@ def create_grid_image(
         col = idx % grid_cols
         
         pil_img = tensor_to_pil(tensor_img)
+        alpha_pil = alpha_to_l_pil(alpha_list[idx], pil_img.size) if alpha_list[idx] is not None else None
         if crop_mode == "fixed_aspect":
             bbox = fixed_aspect_bbox(
                 pil_img.size[0],
@@ -337,10 +349,27 @@ def create_grid_image(
                 aspect_height=tile_aspect_height,
             )
             pil_img = pil_img.crop(bbox)
+            if alpha_pil is not None:
+                alpha_pil = alpha_pil.crop(bbox)
         elif crop_mode == "dynamic_foreground" or (crop_mode is None and crop_foreground):
             bbox = foreground_bbox(pil_img, alpha=alpha_list[idx], threshold=crop_threshold)
             pil_img = crop_with_margin(pil_img, bbox, margin=crop_margin)
+            if alpha_pil is not None:
+                alpha_pil = crop_with_margin(alpha_pil, bbox, margin=crop_margin)
         pil_img = resize_to_tile(pil_img, (tile_w, tile_h), fit_mode=tile_fit_mode)
+        if alpha_pil is not None:
+            alpha_pil = resize_to_tile(alpha_pil.convert("RGB"), (tile_w, tile_h), fit_mode=tile_fit_mode).convert("L")
+        pil_img = compose_pil(
+            pil_img,
+            alpha_pil,
+            background_path=visual_background_path,
+            enable_background=visual_background,
+            enable_shadow=visual_shadow,
+            background_fit=visual_background_fit,
+            shadow_offset=visual_shadow_offset,
+            shadow_blur=visual_shadow_blur,
+            shadow_opacity=visual_shadow_opacity,
+        )
         grid.paste(pil_img, (col * tile_w, row * tile_h))
 
     if output_width is not None and output_height is not None:
@@ -407,6 +436,13 @@ def render_dynamic_grid_video(dataset, iteration, pipeline, background, scene, g
     crop_margin = getattr(dataset, "render_crop_margin", 0.12)
     crop_threshold = getattr(dataset, "render_crop_threshold", 0.03)
     tile_fit_mode = getattr(dataset, "render_tile_fit_mode", "contain")
+    visual_background = getattr(dataset, "visual_background", True)
+    visual_background_path = getattr(dataset, "visual_background_path", None)
+    visual_background_fit = getattr(dataset, "visual_background_fit", "cover")
+    visual_shadow = getattr(dataset, "visual_shadow", True)
+    visual_shadow_offset = getattr(dataset, "visual_shadow_offset", [46, 30])
+    visual_shadow_blur = getattr(dataset, "visual_shadow_blur", 14.0)
+    visual_shadow_opacity = getattr(dataset, "visual_shadow_opacity", 0.33)
     
     print(f"[Grid Video] Output directory: {output_dir}")
     if save_frames:
@@ -478,7 +514,66 @@ def render_dynamic_grid_video(dataset, iteration, pipeline, background, scene, g
             seen_poses.add(cam.pose_id)
     
     processing_frames = unique_pose_frames
-    print(f"Filtered to {len(processing_frames)} unique temporal frames (Should be around 100).")
+    available_frame_count = len(processing_frames)
+    print(f"Filtered to {available_frame_count} unique temporal frames (Should be around 100).")
+
+    first_frame_only = bool(getattr(dataset, "render_first_frame_only", False))
+    if first_frame_only:
+        processing_frames = processing_frames[:1]
+        print("[Grid Video] first_frame_only enabled: rendering only grid_frame_0000 for fast preview.")
+
+    def build_metadata(rendered_count, status):
+        return {
+            "sequence": getattr(dataset, "render_sequence", None),
+            "dataset": dataset.source_path,
+            "model": dataset.model_path,
+            "experiment": getattr(dataset, "render_experiment", None),
+            "run": getattr(dataset, "render_run", None),
+            "iteration": iteration,
+            "renderer": "render_grid_video",
+            "status": status,
+            "split": data_name,
+            "reference_camera": ref_cam.image_name,
+            "reference_index": reference_index,
+            "target_mode": getattr(dataset, "target_mode", None),
+            "target": list(getattr(dataset, "target", [])),
+            "frame_count": len(processing_frames),
+            "available_frame_count": available_frame_count,
+            "rendered_count": rendered_count,
+            "first_frame_only": first_frame_only,
+            "motion_mode": "renderer_on_the_fly",
+            "num_views": num_views,
+            "angle_start": float(angles[0]),
+            "angle_end": float(angles[-1]),
+            "radius": float(radius),
+            "radius_scale": getattr(dataset, "render_radius_scale", 1.0),
+            "height": getattr(dataset, "render_height", None),
+            "height_offset": getattr(dataset, "render_height_offset", 0.0),
+            "base_yaw": float(base_yaw),
+            "base_yaw_offset": getattr(dataset, "render_base_yaw_offset", 0.0),
+            "grid_rows": grid_rows,
+            "grid_cols": grid_cols,
+            "output_width": int(final_output_width),
+            "output_height": int(final_output_height),
+            "tile_width": int(tile_w),
+            "tile_height": int(tile_h),
+            "tile_aspect": f"{tile_aspect_width}:{tile_aspect_height}",
+            "crop_mode": crop_mode,
+            "crop_foreground": bool(crop_foreground),
+            "crop_margin": float(crop_margin),
+            "crop_threshold": float(crop_threshold),
+            "tile_fit_mode": tile_fit_mode,
+            "fps": fps,
+            "video": video_path if make_video else None,
+            "frames_dir": images_dir if save_frames else None,
+            "metric": getattr(dataset, "render_metric", None),
+            "parameters": getattr(dataset, "render_parameters", None),
+            "visual_effects": getattr(dataset, "visual_effects", None),
+            "command": getattr(dataset, "render_command", " ".join([Path(sys.executable).name] + sys.argv)),
+        }
+
+    rendered_count = 0
+    write_metadata(output_dir, build_metadata(rendered_count, "started"))
 
     # 4. 初始化视频写入器
     # 帧数增多到100帧，FPS 建议设为 24 或 30 以获得流畅的 3-4 秒视频
@@ -489,7 +584,6 @@ def render_dynamic_grid_video(dataset, iteration, pipeline, background, scene, g
     # 5. 双重循环：时间 (Frames) -> 空间 (72 Views)
     print(f"Start rendering {len(processing_frames)} frames. Each frame contains {num_views} sub-views.")
     
-    rendered_count = 0
     for frame_idx, current_cam in enumerate(tqdm(processing_frames, desc="Rendering Sequence")):
         
         # === A. 获取当前帧的目标点，保持和 freeview.py 一样围绕运动人体中心 ===
@@ -571,6 +665,13 @@ def render_dynamic_grid_video(dataset, iteration, pipeline, background, scene, g
             crop_margin=crop_margin,
             crop_threshold=crop_threshold,
             tile_fit_mode=tile_fit_mode,
+            visual_background=visual_background,
+            visual_background_path=visual_background_path,
+            visual_background_fit=visual_background_fit,
+            visual_shadow=visual_shadow,
+            visual_shadow_offset=visual_shadow_offset,
+            visual_shadow_blur=visual_shadow_blur,
+            visual_shadow_opacity=visual_shadow_opacity,
         )
         
         # === D. 保存单帧图片 (新增需求) ===
@@ -587,50 +688,7 @@ def render_dynamic_grid_video(dataset, iteration, pipeline, background, scene, g
     if writer is not None:
         writer.close()
 
-    metadata = {
-        "sequence": getattr(dataset, "render_sequence", None),
-        "dataset": dataset.source_path,
-        "model": dataset.model_path,
-        "experiment": getattr(dataset, "render_experiment", None),
-        "run": getattr(dataset, "render_run", None),
-        "iteration": iteration,
-        "renderer": "render_grid_video",
-        "split": data_name,
-        "reference_camera": ref_cam.image_name,
-        "reference_index": reference_index,
-        "target_mode": getattr(dataset, "target_mode", None),
-        "target": list(getattr(dataset, "target", [])),
-        "frame_count": len(processing_frames),
-        "rendered_count": rendered_count,
-        "motion_mode": "renderer_on_the_fly",
-        "num_views": num_views,
-        "angle_start": float(angles[0]),
-        "angle_end": float(angles[-1]),
-        "radius": float(radius),
-        "height": getattr(dataset, "render_height", None),
-        "height_offset": getattr(dataset, "render_height_offset", 0.0),
-        "base_yaw": float(base_yaw),
-        "base_yaw_offset": getattr(dataset, "render_base_yaw_offset", 0.0),
-        "grid_rows": grid_rows,
-        "grid_cols": grid_cols,
-        "output_width": int(final_output_width),
-        "output_height": int(final_output_height),
-        "tile_width": int(tile_w),
-        "tile_height": int(tile_h),
-        "tile_aspect": f"{tile_aspect_width}:{tile_aspect_height}",
-        "crop_mode": crop_mode,
-        "crop_foreground": bool(crop_foreground),
-        "crop_margin": float(crop_margin),
-        "crop_threshold": float(crop_threshold),
-        "tile_fit_mode": tile_fit_mode,
-        "fps": fps,
-        "video": video_path if make_video else None,
-        "frames_dir": images_dir if save_frames else None,
-        "metric": getattr(dataset, "render_metric", None),
-        "parameters": getattr(dataset, "render_parameters", None),
-        "command": getattr(dataset, "render_command", " ".join([Path(sys.executable).name] + sys.argv)),
-    }
-    write_metadata(output_dir, metadata)
+    write_metadata(output_dir, build_metadata(rendered_count, "complete"))
 
     print(f"\nDone! Output saved to: {output_dir}")
     if make_video:
@@ -765,6 +823,7 @@ def run_sequence_mode(args, model, pipeline):
         dataset.render_quality = args.quality
         dataset.render_save_frames = args.save_frames
         dataset.render_make_video = args.make_video
+        dataset.render_first_frame_only = args.first_frame_only
         dataset.render_output_width = args.output_width
         dataset.render_output_height = args.output_height
         dataset.render_tile_width = args.tile_width
@@ -776,6 +835,14 @@ def run_sequence_mode(args, model, pipeline):
         dataset.render_crop_margin = args.crop_margin
         dataset.render_crop_threshold = args.crop_threshold
         dataset.render_tile_fit_mode = args.tile_fit_mode
+        dataset.visual_background = args.visual_background
+        dataset.visual_background_path = str(args.visual_background_path) if args.visual_background_path else None
+        dataset.visual_background_fit = args.visual_background_fit
+        dataset.visual_shadow = args.visual_shadow
+        dataset.visual_shadow_offset = args.visual_shadow_offset
+        dataset.visual_shadow_blur = args.visual_shadow_blur
+        dataset.visual_shadow_opacity = args.visual_shadow_opacity
+        dataset.visual_effects = visual_metadata(args)
         dataset.render_num_views = args.num_views
         dataset.render_grid_rows = args.grid_rows
         dataset.render_grid_cols = args.grid_cols
@@ -818,8 +885,8 @@ if __name__ == "__main__":
     parser.add_argument("--model_root", type=Path, default=DEFAULT_MODEL_ROOT)
     parser.add_argument("--output_root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--output_subdir", default="render_grid_video")
-    parser.add_argument("--experiment", default="no_depth_no_split")
-    parser.add_argument("--run", default="auto_best")
+    parser.add_argument("--experiment", default="part_moe_arm")
+    parser.add_argument("--run", default="latest")
     parser.add_argument("--timestamp", default=None)
     parser.add_argument("--gpu", default=GPU_ID)
     parser.add_argument("--fps", type=int, default=24)
@@ -827,6 +894,12 @@ if __name__ == "__main__":
     parser.add_argument("--video_name", default="render_grid_video.mp4")
     parser.add_argument("--save_frames", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--make_video", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--first_frame_only",
+        "--preview_first_frame",
+        action="store_true",
+        help="Render only the first temporal grid frame for quick camera/composition preview.",
+    )
     # ===== 输出分辨率/裁剪参数 =====
     # output_width/output_height 固定整张宫格帧尺寸。默认 None 表示不固定整图，
     # 而是用下面的 tile_width/tile_height 控制每个小视角的尺寸和比例。
@@ -847,6 +920,13 @@ if __name__ == "__main__":
     parser.add_argument("--crop_threshold", type=float, default=0.03)
     # contain 保留完整人体并可能有少量左右黑边；cover 铺满 tile 但可能裁到人体边缘。
     parser.add_argument("--tile_fit_mode", choices=["contain", "cover"], default="contain")
+    parser.add_argument("--visual_background", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--visual_background_path", type=Path, default=None)
+    parser.add_argument("--visual_background_fit", choices=["cover", "contain"], default="cover")
+    parser.add_argument("--visual_shadow", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--visual_shadow_offset", nargs=2, type=int, default=[46, 30])
+    parser.add_argument("--visual_shadow_blur", type=float, default=14.0)
+    parser.add_argument("--visual_shadow_opacity", type=float, default=0.33)
     # ===== 相机外参/宫格参数：直接改 default 就能改变每次默认输出 =====
     # 每一帧渲染多少个相机视角；例如 30 表示每个动作帧有 30 个相邻相机。
     parser.add_argument("--num_views", type=int, default=30)
@@ -863,10 +943,11 @@ if __name__ == "__main__":
     parser.add_argument("--base_yaw_offset", type=float, default=DEFAULT_BASE_YAW_OFFSET)
     # 相机到人体中心的水平距离。None 表示用参考相机距离；radius_scale 可以缩放默认距离。
     parser.add_argument("--radius", type=float, default=None)
-    parser.add_argument("--radius_scale", type=float, default=1) # 调小后相机离得近点
+    parser.add_argument("--radius_scale", type=float, default=0.8) # 调小后相机离得近点
     # 相机高度。None 表示沿用参考相机高度；height_offset 用于整体抬高/降低。
+    # 负数会让所有相机整体向下平移，减少从头顶往下看的感觉。
     parser.add_argument("--height", type=float, default=None)
-    parser.add_argument("--height_offset", type=float, default=1)
+    parser.add_argument("--height_offset", type=float, default=2)# 调大相机往下
     parser.add_argument("--target", nargs=3, type=float, default=[0.0, 0.0, 0.0])
     parser.add_argument("--target_mode", choices=["origin", "smpl_center"], default="smpl_center")
     parser.add_argument("--overwrite", action="store_true")

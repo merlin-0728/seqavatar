@@ -46,6 +46,7 @@ from argparse import ArgumentParser
 from arguments import ModelParams, PipelineParams, get_combined_args
 from gaussian_renderer import GaussianModel
 from utils.graphics_utils import getWorld2View2, getProjectionMatrix_refine
+from visual_effects import compose_torch_render, visual_metadata
 
 from freeview import (
     DEFAULT_DATASET_ROOT,
@@ -59,7 +60,7 @@ from freeview import (
 )
 
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "freeview" / "DNA-Rendering"
-DEFAULT_SEQUENCES = ["0007", "0019", "0044"]
+DEFAULT_SEQUENCES = ["0007", "0019", "0044", "0051", "0206", "0813"]
 
 
 def serializable_args(args):
@@ -93,7 +94,9 @@ def write_metadata(out_dir, metadata):
         f"angle_start: {metadata.get('angle_start')}",
         f"angle_end: {metadata.get('angle_end')}",
         f"radius: {metadata.get('radius')}",
+        f"radius_scale: {metadata.get('radius_scale')}",
         f"height: {metadata.get('height')}",
+        f"height_offset: {metadata.get('height_offset')}",
         f"base_angle: {metadata.get('base_angle')}",
         "",
         f"video: {metadata.get('video')}",
@@ -157,9 +160,10 @@ def render_circle_path(dataset, iteration, pipeline, background, scene, gaussian
     # 获取坐标信息
     cam_center = base_cam.camera_center.cpu().numpy()
     # 计算水平半径 (XZ平面)
-    radius = np.linalg.norm(np.array([cam_center[0], cam_center[2]]))
-    # 保持高度 (Y轴)
-    height = cam_center[1]
+    radius = np.linalg.norm(np.array([cam_center[0], cam_center[2]])) * getattr(dataset, "render_radius_scale", 1.0)
+    # 保持参考高度，并允许整体上下平移相机。
+    # 负数会让相机整体向下，减少从头顶往下看的视角。
+    height = cam_center[1] + getattr(dataset, "render_height_offset", 0.0)
     
     # 2. 设置保存路径
     output_dir = getattr(dataset, "render_output_dir", None)
@@ -253,10 +257,20 @@ def render_circle_path(dataset, iteration, pipeline, background, scene, gaussian
         
         rendering = render_output["render"]
         rendering = torch.clamp(rendering, 0.0, 1.0)
+        frame = compose_torch_render(
+            rendering,
+            render_output.get("render_alpha"),
+            background_path=getattr(dataset, "visual_background_path", None),
+            enable_background=getattr(dataset, "visual_background", True),
+            enable_shadow=getattr(dataset, "visual_shadow", True),
+            background_fit=getattr(dataset, "visual_background_fit", "cover"),
+            shadow_offset=getattr(dataset, "visual_shadow_offset", [46, 30]),
+            shadow_blur=getattr(dataset, "visual_shadow_blur", 14.0),
+            shadow_opacity=getattr(dataset, "visual_shadow_opacity", 0.33),
+        )
         if save_frames:
-            torchvision.utils.save_image(rendering, os.path.join(render_path, view.image_name + ".png"))
+            imageio.imwrite(os.path.join(render_path, view.image_name + ".png"), frame)
         if writer is not None:
-            frame = (rendering.permute(1, 2, 0).detach().cpu().numpy() * 255.0).astype(np.uint8)
             writer.append_data(frame)
 
     if writer is not None:
@@ -277,13 +291,16 @@ def render_circle_path(dataset, iteration, pipeline, background, scene, gaussian
         "angle_start": float(angles[0]),
         "angle_end": float(angles[-1]),
         "radius": float(radius),
+        "radius_scale": getattr(dataset, "render_radius_scale", 1.0),
         "height": float(height),
+        "height_offset": getattr(dataset, "render_height_offset", 0.0),
         "base_angle": float(base_angle),
         "fps": fps,
         "video": video_path if make_video else None,
         "frames_dir": render_path if save_frames else None,
         "metric": getattr(dataset, "render_metric", None),
         "parameters": getattr(dataset, "render_parameters", None),
+        "visual_effects": getattr(dataset, "visual_effects", None),
         "command": getattr(dataset, "render_command", " ".join([Path(sys.executable).name] + sys.argv)),
     }
     write_metadata(output_dir, metadata)
@@ -434,6 +451,16 @@ def run_sequence_mode(args, model, pipeline):
         dataset.render_quality = args.quality
         dataset.render_save_frames = args.save_frames
         dataset.render_make_video = args.make_video
+        dataset.render_radius_scale = args.radius_scale
+        dataset.render_height_offset = args.height_offset
+        dataset.visual_background = args.visual_background
+        dataset.visual_background_path = str(args.visual_background_path) if args.visual_background_path else None
+        dataset.visual_background_fit = args.visual_background_fit
+        dataset.visual_shadow = args.visual_shadow
+        dataset.visual_shadow_offset = args.visual_shadow_offset
+        dataset.visual_shadow_blur = args.visual_shadow_blur
+        dataset.visual_shadow_opacity = args.visual_shadow_opacity
+        dataset.visual_effects = visual_metadata(args)
         dataset.render_sequence = sequence
         dataset.render_experiment = args.experiment
         dataset.render_run = run_dir.name
@@ -464,8 +491,8 @@ if __name__ == "__main__":
     parser.add_argument("--model_root", type=Path, default=DEFAULT_MODEL_ROOT)
     parser.add_argument("--output_root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--output_subdir", default="render_circle")
-    parser.add_argument("--experiment", default="no_depth_no_split")
-    parser.add_argument("--run", default="auto_best")
+    parser.add_argument("--experiment", default="part_moe_arm")
+    parser.add_argument("--run", default="latest")
     parser.add_argument("--timestamp", default=None)
     parser.add_argument("--gpu", default=GPU_ID)
     parser.add_argument("--fps", type=int, default=24)
@@ -473,6 +500,15 @@ if __name__ == "__main__":
     parser.add_argument("--video_name", default="render_circle.mp4")
     parser.add_argument("--save_frames", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--make_video", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--radius_scale", type=float, default=0.75)
+    parser.add_argument("--height_offset", type=float, default=-0.6)
+    parser.add_argument("--visual_background", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--visual_background_path", type=Path, default=None)
+    parser.add_argument("--visual_background_fit", choices=["cover", "contain"], default="cover")
+    parser.add_argument("--visual_shadow", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--visual_shadow_offset", nargs=2, type=int, default=[46, 30])
+    parser.add_argument("--visual_shadow_blur", type=float, default=14.0)
+    parser.add_argument("--visual_shadow_opacity", type=float, default=0.33)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--dry_run", action="store_true")
 

@@ -12,6 +12,7 @@
 import torch
 from torch import nn
 import numpy as np
+import os
 from utils.graphics_utils import getWorld2View2, getProjectionMatrix_refine
 
 class Camera(nn.Module):
@@ -36,8 +37,9 @@ class Camera(nn.Module):
         self.FoVx = FoVx
         self.FoVy = FoVy
         self.image_name = image_name
-        self.bkgd_mask = bkgd_mask.to(self.data_device) if bkgd_mask is not None else None
-        self.bound_mask = bound_mask.to(self.data_device) if bound_mask is not None else None
+        image_device = torch.device(os.environ.get("SEQAVATAR_IMAGE_DATA_DEVICE", str(self.data_device)))
+        self.bkgd_mask = bkgd_mask.to(image_device) if bkgd_mask is not None else None
+        self.bound_mask = bound_mask.to(image_device) if bound_mask is not None else None
 
         try:
             self.data_device = torch.device(data_device)
@@ -46,14 +48,14 @@ class Camera(nn.Module):
             print(f"[Warning] Custom device {data_device} failed, fallback to default cuda device" )
             self.data_device = torch.device("cuda")
 
-        self.original_image = image.clamp(0.0, 1.0).to(data_device)
+        self.original_image = image.clamp(0.0, 1.0).to(image_device)
         self.image_width = self.original_image.shape[2]
         self.image_height = self.original_image.shape[1]
 
         if gt_alpha_mask is not None:
-            self.original_image *= gt_alpha_mask.to(data_device)
+            self.original_image *= gt_alpha_mask.to(image_device)
         else:
-            self.original_image *= torch.ones((1, self.image_height, self.image_width), device=data_device)
+            self.original_image *= torch.ones((1, self.image_height, self.image_width), device=image_device)
 
         self.zfar = 1000 #100.0
         self.znear = 0.001 #0.01
