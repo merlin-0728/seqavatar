@@ -46,16 +46,22 @@ class Scene:
 
         # generate multiple time steps
         time_steps = generate_time_steps(args.minimal_time_step, args.max_time_step, 1, args.time_step_num, args.seq_len)
+        motion_cond_options = {
+            "use_msti": getattr(args, "use_msti", False),
+            "msti_mode": getattr(args, "msti_mode", "none"),
+            "msti_mid_type": getattr(args, "msti_mid_type", "real"),
+            "motion_cond_time_step_num": int(getattr(args, "motion_cond_time_step_num", args.time_step_num)),
+        }
 
         if 'ZJU-MoCap' in args.source_path: 
             print("Assuming ZJU-MoCap dataset!")
-            scene_info = sceneLoadTypeCallbacks["ZJU_MoCap"](args.source_path, args.white_background, args.eval, time_steps)
+            scene_info = sceneLoadTypeCallbacks["ZJU_MoCap"](args.source_path, args.white_background, args.eval, time_steps, motion_cond_options=motion_cond_options)
         elif 'I3D-Human' in args.source_path: 
             print("Assuming I3D-Human dataset!")
-            scene_info = sceneLoadTypeCallbacks["I3DHuman"](args.source_path, args.white_background, args.eval, time_steps)
+            scene_info = sceneLoadTypeCallbacks["I3DHuman"](args.source_path, args.white_background, args.eval, time_steps, motion_cond_options=motion_cond_options)
         elif 'DNA-Rendering' in args.source_path:
             print("Assuming DNA-Rendering dataset!")
-            scene_info = sceneLoadTypeCallbacks["DNARendering"](args.source_path, args.white_background, args.eval, time_steps)
+            scene_info = sceneLoadTypeCallbacks["DNARendering"](args.source_path, args.white_background, args.eval, time_steps, motion_cond_options=motion_cond_options)
         else:
             assert False, "Could not recognize scene type!"
         

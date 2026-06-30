@@ -8,20 +8,35 @@ set -euo pipefail
 #   bash scripts/exps_dnarendering.sh part_moe_leg
 #   bash scripts/exps_dnarendering.sh part_moe_foot
 #   bash scripts/exps_dnarendering.sh part_moe_arm
+#   bash scripts/exps_dnarendering.sh msti
+#   bash scripts/exps_dnarendering.sh part_moe_leg_msti
 #
 # 常用覆盖方式：
 #   GPU_id=3 bash scripts/exps_dnarendering.sh use_part_moe
 #   SEQUENCES_OVERRIDE="0007_04 0019_10" GPU_id=3 bash scripts/exps_dnarendering.sh use_part_moe
+#   SEQUENCES_OVERRIDE="0044_11 0051_09 0206_04" GPU_id=2 bash scripts/exps_dnarendering.sh msti
+#   SEQUENCES_OVERRIDE="0051_09 0206_04 0813_05 0007_04 0019_10" GPU_id=2 bash scripts/exps_dnarendering.sh part_moe_leg_msti
 
 # ================= 消融模式 =================
 MODE=${1:-orginal}
 part_label_schema=anatomy5
 num_parts=5
 final_eval_only=0
+use_msti=0
+msti_mode=none
+msti_mid_type=real
 case "$MODE" in
     orginal|original)
         experiment_name=orginal
         part_moe_enabled=0
+        ;;
+    msti|msti_lite|real_mid_msti_lite)
+        experiment_name=msti_lite
+        part_moe_enabled=0
+        use_msti=1
+        msti_mode=lite
+        msti_mid_type=real
+        final_eval_only=1
         ;;
     use_part_moe|part_moe)
         experiment_name=part_moe
@@ -32,6 +47,16 @@ case "$MODE" in
         part_moe_enabled=1
         part_label_schema=part_moe_leg
         num_parts=7
+        final_eval_only=1
+        ;;
+    use_part_moe_leg_msti|part_moe_leg_msti|msti_part_moe_leg)
+        experiment_name=part_moe_leg_msti
+        part_moe_enabled=1
+        part_label_schema=part_moe_leg
+        num_parts=7
+        use_msti=1
+        msti_mode=lite
+        msti_mid_type=real
         final_eval_only=1
         ;;
     use_part_moe_foot|part_moe_foot)
@@ -50,7 +75,7 @@ case "$MODE" in
         ;;
     *)
         echo "[ERROR] Unknown mode: $MODE"
-        echo "        Supported modes: orginal, use_part_moe, part_moe_leg, part_moe_foot, part_moe_arm"
+        echo "        Supported modes: orginal, msti, use_part_moe, part_moe_leg, part_moe_leg_msti, part_moe_foot, part_moe_arm"
         exit 1
         ;;
 esac
@@ -62,6 +87,7 @@ GPU_id=${GPU_id:-2}
 PYTHON_BIN=${PYTHON_BIN:-/media/image/mxz/.conda/envs/seqavatar/bin/python}
 DATA_PATH=${DATA_PATH:-/media/image/mxz/human/SeqAvatar/DNA-Rendering}
 PART_LOG_DIR=${PART_LOG_DIR:-/media/image/mxz/human/SeqAvatar/logs/part}
+MSTI_LOG_DIR=${MSTI_LOG_DIR:-/media/image/mxz/human/SeqAvatar/logs/msti}
 
 cd "$REPO_ROOT"
 export PATH="$(dirname "$PYTHON_BIN"):$PATH"
@@ -70,7 +96,7 @@ export WANDB_PROJECT=${WANDB_PROJECT:-SeqAvatar_DNA_Rendering}
 if [ -n "${SEQUENCES_OVERRIDE:-}" ]; then
     read -r -a SEQUENCES <<< "$SEQUENCES_OVERRIDE"
 else
-    SEQUENCES=("0044_11" "0051_09" "0206_04" "0813_05" "0007_04" "0019_10")
+    SEQUENCES=("0051_09" "0206_04" "0813_05" "0007_04" "0019_10")
 fi
 
 SKIP_COMPLETED=${SKIP_COMPLETED:-0}
@@ -79,13 +105,25 @@ image_data_device=${IMAGE_DATA_DEVICE:-cuda}
 
 # ================= 训练参数 =================
 iter=25000
-densify_until_iter=1500
+densify_until_iter=1800
 
 seq_len=8
 seq_xyz_knn=8
 time_step_num=3
 max_time_step=3
 minimal_time_step=1
+if [ "$use_msti" = "1" ]; then
+    if [ "$msti_mode" = "lite" ]; then
+        motion_cond_time_step_num=$((time_step_num + 2))
+    elif [ "$msti_mode" = "full" ]; then
+        motion_cond_time_step_num=$((time_step_num * 3))
+    else
+        echo "[ERROR] Unsupported MSTI mode: $msti_mode"
+        exit 1
+    fi
+else
+    motion_cond_time_step_num=$time_step_num
+fi
 non_rigid_mlp_depth=${NON_RIGID_MLP_DEPTH:-3}
 non_rigid_mlp_width=${NON_RIGID_MLP_WIDTH:-512}
 
@@ -111,6 +149,9 @@ fi
 if [ "$part_moe_enabled" = "1" ]; then
     GLOBAL_LOG_DIR="$PART_LOG_DIR"
     GLOBAL_LOG_FILE="$GLOBAL_LOG_DIR/${RUN_TIME}_DNA-Rendering_${experiment_name}.log"
+elif [ "$use_msti" = "1" ]; then
+    GLOBAL_LOG_DIR="$MSTI_LOG_DIR"
+    GLOBAL_LOG_FILE="$GLOBAL_LOG_DIR/${RUN_TIME}_DNA-Rendering_msti.log"
 else
     GLOBAL_LOG_DIR="$REPO_ROOT/logs"
     GLOBAL_LOG_FILE="$GLOBAL_LOG_DIR/${RUN_TIME}_DNA-Rendering_${experiment_name}.log"
@@ -141,6 +182,12 @@ echo "[INFO] PART_LABEL_SCHEMA: $part_label_schema"
 echo "[INFO] NUM_PARTS: $num_parts"
 echo "[INFO] NON_RIGID_MLP_DEPTH: $non_rigid_mlp_depth"
 echo "[INFO] NON_RIGID_MLP_WIDTH: $non_rigid_mlp_width"
+echo "[INFO] USE_MSTI: $use_msti"
+echo "[INFO] MSTI_MODE: $msti_mode"
+echo "[INFO] MSTI_MID_TYPE: $msti_mid_type"
+echo "[INFO] TIME_STEP_NUM(base): $time_step_num"
+echo "[INFO] MOTION_COND_TIME_STEP_NUM: $motion_cond_time_step_num"
+echo "[INFO] DENSIFY_UNTIL_ITER: $densify_until_iter"
 echo "[INFO] FINAL_EVAL_ONLY: $final_eval_only"
 echo "[INFO] SKIP_LOAD_TEST_CAMERAS: $skip_load_test_cameras"
 echo "[INFO] IMAGE_DATA_DEVICE: $image_data_device"
@@ -161,6 +208,7 @@ COMMON_TRAIN_ARGS=(
     --seq_len "$seq_len"
     --seq_xyz_knn "$seq_xyz_knn"
     --time_step_num "$time_step_num"
+    --motion_cond_time_step_num "$motion_cond_time_step_num"
     --max_time_step "$max_time_step"
     --minimal_time_step "$minimal_time_step"
     --non_rigid_mlp_depth "$non_rigid_mlp_depth"
@@ -181,11 +229,21 @@ COMMON_RENDER_ARGS=(
     --seq_len "$seq_len"
     --seq_xyz_knn "$seq_xyz_knn"
     --time_step_num "$time_step_num"
+    --motion_cond_time_step_num "$motion_cond_time_step_num"
     --max_time_step "$max_time_step"
     --minimal_time_step "$minimal_time_step"
     --non_rigid_mlp_depth "$non_rigid_mlp_depth"
     --non_rigid_mlp_width "$non_rigid_mlp_width"
 )
+
+MSTI_ARGS=()
+if [ "$use_msti" = "1" ]; then
+    MSTI_ARGS=(
+        --use_msti
+        --msti_mode "$msti_mode"
+        --msti_mid_type "$msti_mid_type"
+    )
+fi
 
 PART_MOE_ARGS=()
 if [ "$part_moe_enabled" = "1" ]; then
@@ -218,7 +276,9 @@ for SEQUENCE in "${SEQUENCES[@]}"; do
         fi
     fi
 
-    mkdir -p "$model_path/logs"
+    if [ "$use_msti" != "1" ]; then
+        mkdir -p "$model_path/logs"
+    fi
 
     smc_file="${dataset_path}/${SEQUENCE}.smc"
     if [ ! -f "$smc_file" ]; then
@@ -243,18 +303,36 @@ for SEQUENCE in "${SEQUENCES[@]}"; do
     echo "================================================="
 
     echo "[INFO] Training on GPU $GPU_id for sequence $SEQUENCE"
-    env "${TRAIN_ENV[@]}" "$PYTHON_BIN" train.py \
-        -s "$dataset_path" --eval --exp_name "$exp_name" \
-        "${COMMON_TRAIN_ARGS[@]}" \
-        "${PART_MOE_ARGS[@]}" \
-        2>&1 | tee "$model_path/logs/train_${SEQUENCE}_${experiment_name}.log"
+    if [ "$use_msti" = "1" ]; then
+        env "${TRAIN_ENV[@]}" "$PYTHON_BIN" train.py \
+            -s "$dataset_path" --eval --exp_name "$exp_name" \
+            "${COMMON_TRAIN_ARGS[@]}" \
+            "${MSTI_ARGS[@]}" \
+            "${PART_MOE_ARGS[@]}"
+    else
+        env "${TRAIN_ENV[@]}" "$PYTHON_BIN" train.py \
+            -s "$dataset_path" --eval --exp_name "$exp_name" \
+            "${COMMON_TRAIN_ARGS[@]}" \
+            "${MSTI_ARGS[@]}" \
+            "${PART_MOE_ARGS[@]}" \
+            2>&1 | tee "$model_path/logs/train_${SEQUENCE}_${experiment_name}.log"
+    fi
 
     echo "[INFO] Evaluating on GPU $GPU_id for sequence $SEQUENCE"
-    CUDA_VISIBLE_DEVICES=$GPU_id "$PYTHON_BIN" render.py \
-        -s "$dataset_path" -m "$model_path" \
-        "${COMMON_RENDER_ARGS[@]}" \
-        "${PART_MOE_ARGS[@]}" \
-        2>&1 | tee "$model_path/logs/render_${SEQUENCE}_${experiment_name}.log"
+    if [ "$use_msti" = "1" ]; then
+        CUDA_VISIBLE_DEVICES=$GPU_id "$PYTHON_BIN" render.py \
+            -s "$dataset_path" -m "$model_path" \
+            "${COMMON_RENDER_ARGS[@]}" \
+            "${MSTI_ARGS[@]}" \
+            "${PART_MOE_ARGS[@]}"
+    else
+        CUDA_VISIBLE_DEVICES=$GPU_id "$PYTHON_BIN" render.py \
+            -s "$dataset_path" -m "$model_path" \
+            "${COMMON_RENDER_ARGS[@]}" \
+            "${MSTI_ARGS[@]}" \
+            "${PART_MOE_ARGS[@]}" \
+            2>&1 | tee "$model_path/logs/render_${SEQUENCE}_${experiment_name}.log"
+    fi
 
     echo "[INFO] Finished sequence: $SEQUENCE"
 done

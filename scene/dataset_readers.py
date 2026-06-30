@@ -62,7 +62,7 @@ ID3HUMAN_CFG = {
     'ID3_2': {'train_view': [1, 3, 5, 7, 9], 'test_view': [2, 4, 6, 8, 10], 'interval': 3},
 }
 
-def readID3HumanInfo(path, white_background, eval, time_steps):
+def readID3HumanInfo(path, white_background, eval, time_steps, motion_cond_options=None):
     scene_name = os.path.basename(path).split('-')[0]
     if scene_name not in ID3HUMAN_CFG.keys():
         raise ValueError('Unknown dataset')
@@ -85,19 +85,22 @@ def readID3HumanInfo(path, white_background, eval, time_steps):
     train_cam_infos = readCamerasI3DHuman(path, smpl_model, train_view, white_background, split='train', 
                         interval=interval, time_steps=time_steps, 
                         smpl_params_dict=smpl_params_dict, cond_dict=cond_dict,
-                        delta_pose_xyz_cache=delta_pose_xyz_cache)
+                        delta_pose_xyz_cache=delta_pose_xyz_cache,
+                        motion_cond_options=motion_cond_options)
 
     print("Reading Test Novelview Transforms")
     test_cam_infos['novelview'] = readCamerasI3DHuman(path, smpl_model, test_view, white_background, split='novelview', 
                                     interval=interval, time_steps=time_steps, 
                                     smpl_params_dict=smpl_params_dict, cond_dict=cond_dict,
-                                    delta_pose_xyz_cache=delta_pose_xyz_cache)
+                                    delta_pose_xyz_cache=delta_pose_xyz_cache,
+                                    motion_cond_options=motion_cond_options)
     
     print("Reading Test Novelpose Transforms")
     test_cam_infos['novelpose'] = readCamerasI3DHuman(path, smpl_model, test_view, white_background, split='novelpose', 
                                     interval=interval, time_steps=time_steps, 
                                     smpl_params_dict=smpl_params_dict, cond_dict=cond_dict,
-                                    delta_pose_xyz_cache=delta_pose_xyz_cache)
+                                    delta_pose_xyz_cache=delta_pose_xyz_cache,
+                                    motion_cond_options=motion_cond_options)
 
     if not eval:
         for key in test_cam_infos.keys():
@@ -128,7 +131,7 @@ def readID3HumanInfo(path, white_background, eval, time_steps):
                            smpl_params_dict=smpl_params_dict, cond_dict=cond_dict)
     return scene_info
 
-def readCamerasI3DHuman(path, smpl_model, output_view, white_background, image_scaling=1.0, split='train', interval=1, time_steps=None, smpl_params_dict=None, cond_dict=None, delta_pose_xyz_cache=None, multi=300.0):
+def readCamerasI3DHuman(path, smpl_model, output_view, white_background, image_scaling=1.0, split='train', interval=1, time_steps=None, smpl_params_dict=None, cond_dict=None, delta_pose_xyz_cache=None, multi=300.0, motion_cond_options=None):
     cam_infos = []
     scene_name = os.path.basename(path).split('-')[0]
     scene_dir = os.path.join(os.path.dirname(path), scene_name + '-' + split)
@@ -180,7 +183,7 @@ def readCamerasI3DHuman(path, smpl_model, output_view, white_background, image_s
         # load conditions
         if smpl_id not in cond_dict.keys():
             pose_conds = torch.from_numpy(frameid_pose[smpl_id]['poses']).unsqueeze(0)
-            seq_pose_conds, seq_xyz_conds = get_seq_pose_xyz_cond(pose_index, time_steps, interval, get_pose_xyz_func, delta_pose_xyz_cache, multi=multi)
+            seq_pose_conds, seq_xyz_conds = get_seq_pose_xyz_cond(pose_index, time_steps, interval, get_pose_xyz_func, delta_pose_xyz_cache, multi=multi, motion_cond_options=motion_cond_options)
             cond_dict[smpl_id] = {'pose_conds': pose_conds, 'seq_pose_conds': seq_pose_conds, 'seq_xyz_conds': seq_xyz_conds}
 
         conds = cond_dict[smpl_id]
@@ -235,7 +238,7 @@ def readCamerasI3DHuman(path, smpl_model, output_view, white_background, image_s
     return cam_infos
 
 ##################################   DNA-Rendering   ##################################
-def readDNARenderingInfo(path, white_background, eval, time_steps):
+def readDNARenderingInfo(path, white_background, eval, time_steps, motion_cond_options=None):
     scene_name = os.path.basename(path)
     main_path = os.path.join(path, scene_name + '.smc')
     smc_reader = SMCReader(main_path)
@@ -261,13 +264,15 @@ def readDNARenderingInfo(path, white_background, eval, time_steps):
     print("Reading Training Transforms")
     train_cam_infos = readCamerasDNARendering(path, train_view, white_background, split='train', time_steps=time_steps,
                         smpl_params_dict=smpl_params_dict, cond_dict=cond_dict, 
-                        delta_pose_xyz_cache=delta_pose_xyz_cache)
+                        delta_pose_xyz_cache=delta_pose_xyz_cache,
+                        motion_cond_options=motion_cond_options)
 
     print("Reading Novel View Transforms")
     test_cam_infos['novelview'] = readCamerasDNARendering(path, test_view, white_background, 
                                     split='novelview', time_steps=time_steps, 
                                     smpl_params_dict=smpl_params_dict, cond_dict=cond_dict,
-                                    delta_pose_xyz_cache=delta_pose_xyz_cache)
+                                    delta_pose_xyz_cache=delta_pose_xyz_cache,
+                                    motion_cond_options=motion_cond_options)
     
     if not eval:
         for key in test_cam_infos.keys():
@@ -298,7 +303,7 @@ def readDNARenderingInfo(path, white_background, eval, time_steps):
                            smpl_params_dict=smpl_params_dict, cond_dict=cond_dict)
     return scene_info
 
-def readCamerasDNARendering(path, output_view, white_background, split='train', interval=1, time_steps=None, smpl_params_dict=None, cond_dict=None, delta_pose_xyz_cache=None, multi=300.0):
+def readCamerasDNARendering(path, output_view, white_background, split='train', interval=1, time_steps=None, smpl_params_dict=None, cond_dict=None, delta_pose_xyz_cache=None, multi=300.0, motion_cond_options=None):
     cam_infos = []
     if split == 'train':
         pose_start, pose_interval, pose_num = 0, 1, 100
@@ -332,7 +337,7 @@ def readCamerasDNARendering(path, output_view, white_background, split='train', 
             if not isinstance(pose_conds, torch.Tensor):
                 pose_conds = torch.from_numpy(pose_conds).unsqueeze(0)
 
-            seq_pose_conds, seq_xyz_conds = get_seq_pose_xyz_cond(pose_index, time_steps, interval, get_pose_xyz_func, delta_pose_xyz_cache, multi=multi)
+            seq_pose_conds, seq_xyz_conds = get_seq_pose_xyz_cond(pose_index, time_steps, interval, get_pose_xyz_func, delta_pose_xyz_cache, multi=multi, motion_cond_options=motion_cond_options)
             cond_dict[pose_index] = {'pose_conds': pose_conds, 'seq_pose_conds': seq_pose_conds, 'seq_xyz_conds': seq_xyz_conds}
 
         conds = cond_dict[pose_index]
@@ -385,7 +390,7 @@ ZJUMOCAP_CFG = {
     'CoreView_394': {'train': {'interval': 1, 'num': 475},
                      'test':  {'interval': 30, 'num': 16}}
     }
-def readZJUMoCapInfo(path, white_background, eval, time_steps):
+def readZJUMoCapInfo(path, white_background, eval, time_steps, motion_cond_options=None):
     # camera view splitting
     train_view = [0]
     test_view = [i for i in range(1, 23)]
@@ -405,12 +410,14 @@ def readZJUMoCapInfo(path, white_background, eval, time_steps):
     print("Reading Training Transforms")
     train_cam_infos = readCamerasZJUMoCap(path, train_view, white_background, split='train', time_steps=time_steps, 
                                           smpl_params_dict=smpl_params_dict, cond_dict=cond_dict,
-                                          delta_pose_xyz_cache=delta_pose_xyz_cache)
+                                          delta_pose_xyz_cache=delta_pose_xyz_cache,
+                                          motion_cond_options=motion_cond_options)
     
     print("Reading Test Transforms")
     test_cam_infos['test'] = readCamerasZJUMoCap(path, test_view, white_background, split='test', time_steps=time_steps, 
                                             smpl_params_dict=smpl_params_dict, cond_dict=cond_dict,
-                                            delta_pose_xyz_cache=delta_pose_xyz_cache)
+                                            delta_pose_xyz_cache=delta_pose_xyz_cache,
+                                            motion_cond_options=motion_cond_options)
     
     if not eval:
         for key in test_cam_infos.keys():
@@ -441,7 +448,7 @@ def readZJUMoCapInfo(path, white_background, eval, time_steps):
                            smpl_params_dict=smpl_params_dict, cond_dict=cond_dict)
     return scene_info
 
-def readCamerasZJUMoCap(path, output_view, white_background, image_scaling=0.5, split='train', interval=1, time_steps=None, smpl_params_dict=None, cond_dict=None, delta_pose_xyz_cache=None):
+def readCamerasZJUMoCap(path, output_view, white_background, image_scaling=0.5, split='train', interval=1, time_steps=None, smpl_params_dict=None, cond_dict=None, delta_pose_xyz_cache=None, motion_cond_options=None):
     cam_infos = []
     pose_start = 0
     scene_name = os.path.basename(path)
@@ -489,7 +496,7 @@ def readCamerasZJUMoCap(path, output_view, white_background, image_scaling=0.5, 
 
         if pose_index not in cond_dict.keys():
             pose_conds = torch.from_numpy(smpl_param['poses'][:, 3:].reshape(-1, 3)).unsqueeze(0)
-            seq_pose_conds, seq_xyz_conds = get_seq_pose_xyz_cond(pose_index, time_steps, interval, get_pose_xyz_func, delta_pose_xyz_cache)
+            seq_pose_conds, seq_xyz_conds = get_seq_pose_xyz_cond(pose_index, time_steps, interval, get_pose_xyz_func, delta_pose_xyz_cache, motion_cond_options=motion_cond_options)
             cond_dict[pose_index] = {'pose_conds': pose_conds, 'seq_pose_conds': seq_pose_conds, 'seq_xyz_conds': seq_xyz_conds}
 
         conds = cond_dict[pose_index]
@@ -528,7 +535,32 @@ def readCamerasZJUMoCap(path, output_view, white_background, image_scaling=0.5, 
     
     return cam_infos
 
-def get_seq_pose_xyz_cond(pose_index, time_steps, interval, get_pose_xyz_func, delta_pose_xyz_cache, multi=1.0):
+def _relative_pose_delta(cur_pose_mat, former_pose_mat):
+    delta_pose_mat = torch.matmul(cur_pose_mat, torch.linalg.inv(former_pose_mat))
+    return matrix_to_axis_angle(delta_pose_mat)
+
+
+def get_seq_pose_xyz_cond(pose_index, time_steps, interval, get_pose_xyz_func, delta_pose_xyz_cache, multi=1.0, motion_cond_options=None):
+    motion_cond_options = motion_cond_options or {}
+    use_msti = bool(motion_cond_options.get("use_msti", False))
+    msti_mode = str(motion_cond_options.get("msti_mode", "none")).lower()
+    msti_mid_type = str(motion_cond_options.get("msti_mid_type", "real")).lower()
+    expected_channels = int(motion_cond_options.get("motion_cond_time_step_num", len(time_steps)))
+
+    if use_msti and msti_mode != "none":
+        if msti_mid_type != "real":
+            raise ValueError(f"Only real-mid MSTI is implemented, got msti_mid_type={msti_mid_type}")
+        return get_seq_pose_xyz_cond_msti(
+            pose_index,
+            time_steps,
+            interval,
+            get_pose_xyz_func,
+            delta_pose_xyz_cache,
+            multi=multi,
+            msti_mode=msti_mode,
+            expected_channels=expected_channels,
+        )
+
     seq_pose_conds, seq_xyz_conds = {}, {}
     for time_step, seq_len in time_steps.items():
         seq_pose_cond, seq_xyz_cond = [], []
@@ -539,11 +571,6 @@ def get_seq_pose_xyz_cond(pose_index, time_steps, interval, get_pose_xyz_func, d
 
             if delta_key not in delta_pose_xyz_cache.keys():
                 cur_pose_mat, cur_obs_xyz = get_pose_xyz_func(cur_id)
-                former_pose_mat, former_pose_xyz = get_pose_xyz_func(former_id) # Typo correction: should use former_id, check logic if needed but assuming context
-
-                # Re-reading logic to be safe, original code:
-                # former_pose_mat, former_obs_xyz = get_pose_xyz_func(former_id)
-                # It was correct in your provided snippet. I'll stick to your logic.
                 former_pose_mat, former_obs_xyz = get_pose_xyz_func(former_id)
 
                 delta_pose_mat = torch.matmul(cur_pose_mat, torch.linalg.inv(former_pose_mat))
@@ -562,6 +589,94 @@ def get_seq_pose_xyz_cond(pose_index, time_steps, interval, get_pose_xyz_func, d
     seq_pose_conds = torch.stack([seq_pose_conds[time_step] for time_step in time_steps], axis=1).unsqueeze(0)
     seq_xyz_conds = (torch.stack([seq_xyz_conds[time_step] for time_step in time_steps], axis=2) * multi) / float(time_step / interval) 
     
+    return seq_pose_conds, seq_xyz_conds
+
+
+def get_seq_pose_xyz_cond_msti(
+    pose_index,
+    time_steps,
+    interval,
+    get_pose_xyz_func,
+    delta_pose_xyz_cache,
+    multi=1.0,
+    msti_mode="lite",
+    expected_channels=None,
+):
+    if msti_mode not in {"lite", "full"}:
+        raise ValueError(f"MSTI mode must be 'lite' or 'full', got {msti_mode}")
+
+    time_step_items = list(time_steps.items())
+    if not time_step_items:
+        raise ValueError("time_steps must not be empty")
+    seq_lens = {int(seq_len) for _, seq_len in time_step_items}
+    if len(seq_lens) != 1:
+        raise ValueError(f"MSTI expects a single seq_len across time steps, got {sorted(seq_lens)}")
+    seq_len = seq_lens.pop()
+
+    max_step = max(time_steps.keys())
+    if msti_mode == "lite":
+        ordered_steps = [(max_step, time_steps[max_step])]
+        ordered_steps += [(step, step_len) for step, step_len in time_step_items if step != max_step]
+        expected = len(time_step_items) + 2
+    else:
+        ordered_steps = time_step_items
+        expected = len(time_step_items) * 3
+
+    if expected_channels is not None and int(expected_channels) != expected:
+        raise ValueError(
+            f"MSTI condition channel mismatch: expected_channels={expected_channels}, "
+            f"computed={expected}, mode={msti_mode}, base_steps={len(time_step_items)}"
+        )
+
+    def get_pair_delta(cur_id, former_id):
+        delta_key = f"msti_real_dt_v1:{cur_id}-{former_id}"
+        if delta_key not in delta_pose_xyz_cache:
+            cur_pose_mat, cur_obs_xyz = get_pose_xyz_func(cur_id)
+            former_pose_mat, former_obs_xyz = get_pose_xyz_func(former_id)
+            posedelta = _relative_pose_delta(cur_pose_mat, former_pose_mat)
+            dt = max(int(cur_id) - int(former_id), 1)
+            xyz_delta = ((cur_obs_xyz - former_obs_xyz) * multi) / float(dt)
+            delta_pose_xyz_cache[delta_key] = {
+                "pose_delta": posedelta,
+                "xyz_delta": xyz_delta.astype(np.float32, copy=False),
+            }
+        return (
+            delta_pose_xyz_cache[delta_key]["pose_delta"],
+            delta_pose_xyz_cache[delta_key]["xyz_delta"],
+        )
+
+    seq_pose_cond_by_i, seq_xyz_cond_by_i = [], []
+    for i in range(seq_len):
+        pose_channels, xyz_channels = [], []
+        for time_step, _ in ordered_steps:
+            cur_id = max((pose_index - i * time_step) // interval, 0)
+            former_id = max((pose_index - (i + 1) * time_step) // interval, 0)
+
+            d_pose_full, d_xyz_full = get_pair_delta(cur_id, former_id)
+            expand_step = msti_mode == "full" or (msti_mode == "lite" and time_step == max_step)
+            if expand_step:
+                mid_id = former_id + (cur_id - former_id) // 2
+                d_pose_sub1, d_xyz_sub1 = get_pair_delta(mid_id, former_id)
+                d_pose_sub2, d_xyz_sub2 = get_pair_delta(cur_id, mid_id)
+                pose_channels.extend([d_pose_full, d_pose_sub1, d_pose_sub2])
+                xyz_channels.extend([d_xyz_full, d_xyz_sub1, d_xyz_sub2])
+            else:
+                pose_channels.append(d_pose_full)
+                xyz_channels.append(d_xyz_full)
+
+        if len(pose_channels) != expected:
+            raise RuntimeError(f"MSTI produced {len(pose_channels)} pose channels, expected {expected}")
+        seq_pose_cond_by_i.append(torch.stack(pose_channels, dim=0))
+        seq_xyz_cond_by_i.append(torch.from_numpy(np.stack(xyz_channels, axis=1)))
+
+    seq_pose_conds = torch.stack(seq_pose_cond_by_i, dim=0).unsqueeze(0)
+    seq_xyz_conds = torch.stack(seq_xyz_cond_by_i, dim=1)
+
+    if seq_pose_conds.shape[2] != expected:
+        raise RuntimeError(f"seq_pose_conds channel dim {seq_pose_conds.shape[2]} != expected {expected}")
+    if seq_xyz_conds.shape[2] != expected:
+        raise RuntimeError(f"seq_xyz_conds channel dim {seq_xyz_conds.shape[2]} != expected {expected}")
+
     return seq_pose_conds, seq_xyz_conds
 
 sceneLoadTypeCallbacks = {

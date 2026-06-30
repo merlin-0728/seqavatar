@@ -68,9 +68,13 @@ class ModelParams(ParamGroup):
         self.non_rigid_mlp_width = 512
         self.seq_xyz_knn = 5
         self.time_step_num = 5
+        self.motion_cond_time_step_num = 0
         self.seq_len = 8
         self.max_time_step = 6
         self.minimal_time_step = 2
+        self.use_msti = False
+        self.msti_mode = "none"
+        self.msti_mid_type = "real"
         self.use_part_moe = False
         self.part_moe_start_iter = 15000
         self.part_moe_warmup = 1000
@@ -87,7 +91,53 @@ class ModelParams(ParamGroup):
     def extract(self, args):
         g = super().extract(args)
         g.source_path = os.path.abspath(g.source_path)
+        resolve_motion_condition_args(g)
         return g
+
+def resolve_motion_condition_args(args):
+    time_step_num = int(getattr(args, "time_step_num", 0))
+    if time_step_num <= 0:
+        raise ValueError(f"time_step_num must be positive, got {time_step_num}")
+
+    msti_mode = getattr(args, "msti_mode", "none") or "none"
+    msti_mode = str(msti_mode).lower()
+    valid_modes = {"none", "lite", "full"}
+    if msti_mode not in valid_modes:
+        raise ValueError(f"msti_mode must be one of {sorted(valid_modes)}, got {msti_mode}")
+
+    use_msti = bool(getattr(args, "use_msti", False)) or msti_mode != "none"
+    if not use_msti:
+        msti_mode = "none"
+
+    msti_mid_type = getattr(args, "msti_mid_type", "real") or "real"
+    msti_mid_type = str(msti_mid_type).lower()
+    valid_mid_types = {"real"}
+    if use_msti and msti_mid_type not in valid_mid_types:
+        raise ValueError(
+            f"msti_mid_type={msti_mid_type} is not implemented yet; "
+            f"supported types: {sorted(valid_mid_types)}"
+        )
+
+    if msti_mode == "none":
+        expected_cond_steps = time_step_num
+    elif msti_mode == "lite":
+        expected_cond_steps = time_step_num + 2
+    else:
+        expected_cond_steps = time_step_num * 3
+
+    requested_cond_steps = int(getattr(args, "motion_cond_time_step_num", 0) or 0)
+    if requested_cond_steps > 0 and requested_cond_steps != expected_cond_steps:
+        raise ValueError(
+            "motion_cond_time_step_num mismatch: "
+            f"requested={requested_cond_steps}, expected={expected_cond_steps} "
+            f"for time_step_num={time_step_num}, msti_mode={msti_mode}"
+        )
+
+    args.use_msti = use_msti
+    args.msti_mode = msti_mode
+    args.msti_mid_type = msti_mid_type
+    args.motion_cond_time_step_num = expected_cond_steps
+    return args
 
 class PipelineParams(ParamGroup):
     def __init__(self, parser):

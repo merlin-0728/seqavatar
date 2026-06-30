@@ -91,6 +91,10 @@ class GaussianModel:
         self.nonrigid_poseconds_flag = args.nonrigid_poseconds_flag
         self.nonrigid_deltaposeconds_flag = args.nonrigid_deltaposeconds_flag
         self.nonrigid_deltaxyzconds_flag = args.nonrigid_deltaxyzconds_flag
+        self.use_msti = getattr(args, "use_msti", False)
+        self.msti_mode = getattr(args, "msti_mode", "none")
+        self.msti_mid_type = getattr(args, "msti_mid_type", "real")
+        self.motion_cond_time_step_num = int(getattr(args, "motion_cond_time_step_num", getattr(args, "time_step_num", 1)))
         self.use_part_moe = getattr(args, "use_part_moe", False)
         self.part_moe_start_iter = getattr(args, "part_moe_start_iter", 15000)
         self.part_moe_warmup = getattr(args, "part_moe_warmup", 1000)
@@ -117,7 +121,7 @@ class GaussianModel:
                 self.non_rigid_deformer = NonrigidDeformer(pos_input_dim=pos_embed_ch,
                         D=non_rigid_mlp_depth, W=non_rigid_mlp_width,
                         use_pose_cond=self.nonrigid_poseconds_flag, use_seq_pose_cond=self.nonrigid_deltaposeconds_flag, use_seq_xyz_cond=self.nonrigid_deltaxyzconds_flag, 
-                        seq_len=args.seq_len, seq_xyz_knn=self.seq_xyz_knn, time_step_num=args.time_step_num, smpl_type=smpl_type,
+                        seq_len=args.seq_len, seq_xyz_knn=self.seq_xyz_knn, time_step_num=self.motion_cond_time_step_num, smpl_type=smpl_type,
                         use_part_moe=self.use_part_moe, num_parts=self.num_parts,
                         part_moe_global_keep=self.part_moe_global_keep).to(self.device)
                             

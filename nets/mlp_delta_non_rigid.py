@@ -215,6 +215,7 @@ class SeqPoseEncoder(nn.Module):
         super(SeqPoseEncoder, self).__init__()
 
         self.input_dim = 3 * (N_JOINT[smpl_type] + 1) # axis-angle form, + global orientation
+        self.time_step_num = time_step_num
         self.mlp1 = nn.Sequential(nn.Linear(self.input_dim*time_step_num,D1), nn.ReLU())
         self.mlp2 = nn.Sequential(nn.Linear(D1*length, D2), nn.ReLU())
 
@@ -222,6 +223,11 @@ class SeqPoseEncoder(nn.Module):
         # x: (B, N, T, J, DeltaStep, C)
 
         bs, T = x.shape[0], x.shape[1]
+        if x.shape[2] != self.time_step_num:
+            raise RuntimeError(
+                f"SeqPoseEncoder expected {self.time_step_num} motion channels, "
+                f"got {x.shape[2]} with shape {tuple(x.shape)}"
+            )
         x = self.mlp1(x.view(bs, T, -1))
         x = self.mlp2(x.view(bs, -1))
 
@@ -233,6 +239,7 @@ class SeqXYZEncoder(nn.Module):
                  time_step_num=1, seq_len=6, seq_xyz_knn=5):
         super(SeqXYZEncoder, self).__init__()
 
+        self.time_step_num = time_step_num
         self.vel_encoder = nn.Sequential(nn.Linear(vel_dim*seq_xyz_knn*time_step_num, vel_emb_dim), nn.ReLU())
         self.pos_emb_proj = nn.Sequential(nn.Linear(pos_emb_dim, pos_emb_proj_dim), nn.ReLU())
         
@@ -242,6 +249,11 @@ class SeqXYZEncoder(nn.Module):
     def forward(self, x, x_emb):
         # x -> B, N, T, KNN, DeltaStep, C
         B, N, T = x.shape[0], x.shape[1], x.shape[2]
+        if x.shape[4] != self.time_step_num:
+            raise RuntimeError(
+                f"SeqXYZEncoder expected {self.time_step_num} motion channels, "
+                f"got {x.shape[4]} with shape {tuple(x.shape)}"
+            )
 
         pos_feat = self.pos_emb_proj(x_emb)
         pos_feat = pos_feat.unsqueeze(2).expand(-1, -1, T, -1)
