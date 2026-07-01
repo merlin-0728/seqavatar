@@ -10,12 +10,16 @@ set -euo pipefail
 #   bash scripts/exps_dnarendering.sh part_moe_arm
 #   bash scripts/exps_dnarendering.sh msti
 #   bash scripts/exps_dnarendering.sh part_moe_leg_msti
+#   bash scripts/exps_dnarendering.sh amc_pair
+#   bash scripts/exps_dnarendering.sh amc_causal
 #
 # 常用覆盖方式：
 #   GPU_id=3 bash scripts/exps_dnarendering.sh use_part_moe
 #   SEQUENCES_OVERRIDE="0007_04 0019_10" GPU_id=3 bash scripts/exps_dnarendering.sh use_part_moe
 #   SEQUENCES_OVERRIDE="0044_11 0051_09 0206_04" GPU_id=2 bash scripts/exps_dnarendering.sh msti
 #   SEQUENCES_OVERRIDE="0051_09 0206_04 0813_05 0007_04 0019_10" GPU_id=2 bash scripts/exps_dnarendering.sh part_moe_leg_msti
+#   SEQUENCES_OVERRIDE="0044_11 0051_09 0206_04" GPU_id=2 bash scripts/exps_dnarendering.sh amc_pair
+#   SEQUENCES_OVERRIDE="0044_11 0051_09 0206_04" GPU_id=2 bash scripts/exps_dnarendering.sh amc_causal
 
 # ================= 消融模式 =================
 MODE=${1:-orginal}
@@ -25,6 +29,10 @@ final_eval_only=0
 use_msti=0
 msti_mode=none
 msti_mid_type=real
+use_amc_pair=0
+amc_pair_mode=baseline_full
+use_amc_causal=0
+amc_causal_mode=gated_residual
 case "$MODE" in
     orginal|original)
         experiment_name=orginal
@@ -36,6 +44,20 @@ case "$MODE" in
         use_msti=1
         msti_mode=lite
         msti_mid_type=real
+        final_eval_only=1
+        ;;
+    amc_pair)
+        experiment_name=amc_pair
+        part_moe_enabled=0
+        use_amc_pair=1
+        amc_pair_mode=baseline_full
+        final_eval_only=1
+        ;;
+    amc|amc_causal|causal_amc)
+        experiment_name=amc_causal
+        part_moe_enabled=0
+        use_amc_causal=1
+        amc_causal_mode=gated_residual
         final_eval_only=1
         ;;
     use_part_moe|part_moe)
@@ -75,7 +97,7 @@ case "$MODE" in
         ;;
     *)
         echo "[ERROR] Unknown mode: $MODE"
-        echo "        Supported modes: orginal, msti, use_part_moe, part_moe_leg, part_moe_leg_msti, part_moe_foot, part_moe_arm"
+        echo "        Supported modes: orginal, msti, amc_pair, amc_causal, use_part_moe, part_moe_leg, part_moe_leg_msti, part_moe_foot, part_moe_arm"
         exit 1
         ;;
 esac
@@ -88,6 +110,7 @@ PYTHON_BIN=${PYTHON_BIN:-/media/image/mxz/.conda/envs/seqavatar/bin/python}
 DATA_PATH=${DATA_PATH:-/media/image/mxz/human/SeqAvatar/DNA-Rendering}
 PART_LOG_DIR=${PART_LOG_DIR:-/media/image/mxz/human/SeqAvatar/logs/part}
 MSTI_LOG_DIR=${MSTI_LOG_DIR:-/media/image/mxz/human/SeqAvatar/logs/msti}
+AMC_LOG_DIR=${AMC_LOG_DIR:-/media/image/mxz/human/SeqAvatar/logs/AMC}
 
 cd "$REPO_ROOT"
 export PATH="$(dirname "$PYTHON_BIN"):$PATH"
@@ -96,7 +119,7 @@ export WANDB_PROJECT=${WANDB_PROJECT:-SeqAvatar_DNA_Rendering}
 if [ -n "${SEQUENCES_OVERRIDE:-}" ]; then
     read -r -a SEQUENCES <<< "$SEQUENCES_OVERRIDE"
 else
-    SEQUENCES=("0051_09" "0206_04" "0813_05" "0007_04" "0019_10")
+    SEQUENCES=("0044_11")
 fi
 
 SKIP_COMPLETED=${SKIP_COMPLETED:-0}
@@ -105,14 +128,18 @@ image_data_device=${IMAGE_DATA_DEVICE:-cuda}
 
 # ================= 训练参数 =================
 iter=25000
-densify_until_iter=1800
+densify_until_iter=1500
+
 
 seq_len=8
 seq_xyz_knn=8
 time_step_num=3
 max_time_step=3
 minimal_time_step=1
-if [ "$use_msti" = "1" ]; then
+if [ $((use_msti + use_amc_pair + use_amc_causal)) -gt 1 ]; then
+    echo "[ERROR] use_msti, use_amc_pair, and use_amc_causal are mutually exclusive."
+    exit 1
+elif [ "$use_msti" = "1" ]; then
     if [ "$msti_mode" = "lite" ]; then
         motion_cond_time_step_num=$((time_step_num + 2))
     elif [ "$msti_mode" = "full" ]; then
@@ -121,9 +148,16 @@ if [ "$use_msti" = "1" ]; then
         echo "[ERROR] Unsupported MSTI mode: $msti_mode"
         exit 1
     fi
+elif [ "$use_amc_pair" = "1" ]; then
+    motion_cond_time_step_num=$((time_step_num + time_step_num * (time_step_num - 1) / 2))
+elif [ "$use_amc_causal" = "1" ]; then
+    motion_cond_time_step_num=$time_step_num
 else
     motion_cond_time_step_num=$time_step_num
 fi
+amc_causal_window=${AMC_CAUSAL_WINDOW:-3}
+amc_motion_gate_alpha=${AMC_MOTION_GATE_ALPHA:-1.0}
+amc_motion_gate_temp=${AMC_MOTION_GATE_TEMP:-0.5}
 non_rigid_mlp_depth=${NON_RIGID_MLP_DEPTH:-3}
 non_rigid_mlp_width=${NON_RIGID_MLP_WIDTH:-512}
 
@@ -152,6 +186,9 @@ if [ "$part_moe_enabled" = "1" ]; then
 elif [ "$use_msti" = "1" ]; then
     GLOBAL_LOG_DIR="$MSTI_LOG_DIR"
     GLOBAL_LOG_FILE="$GLOBAL_LOG_DIR/${RUN_TIME}_DNA-Rendering_msti.log"
+elif [ "$use_amc_pair" = "1" ] || [ "$use_amc_causal" = "1" ]; then
+    GLOBAL_LOG_DIR="$AMC_LOG_DIR"
+    GLOBAL_LOG_FILE="$GLOBAL_LOG_DIR/${RUN_TIME}_DNA-Rendering_${experiment_name}.log"
 else
     GLOBAL_LOG_DIR="$REPO_ROOT/logs"
     GLOBAL_LOG_FILE="$GLOBAL_LOG_DIR/${RUN_TIME}_DNA-Rendering_${experiment_name}.log"
@@ -185,6 +222,13 @@ echo "[INFO] NON_RIGID_MLP_WIDTH: $non_rigid_mlp_width"
 echo "[INFO] USE_MSTI: $use_msti"
 echo "[INFO] MSTI_MODE: $msti_mode"
 echo "[INFO] MSTI_MID_TYPE: $msti_mid_type"
+echo "[INFO] USE_AMC_PAIR: $use_amc_pair"
+echo "[INFO] AMC_PAIR_MODE: $amc_pair_mode"
+echo "[INFO] USE_AMC_CAUSAL: $use_amc_causal"
+echo "[INFO] AMC_CAUSAL_MODE: $amc_causal_mode"
+echo "[INFO] AMC_CAUSAL_WINDOW: $amc_causal_window"
+echo "[INFO] AMC_MOTION_GATE_ALPHA: $amc_motion_gate_alpha"
+echo "[INFO] AMC_MOTION_GATE_TEMP: $amc_motion_gate_temp"
 echo "[INFO] TIME_STEP_NUM(base): $time_step_num"
 echo "[INFO] MOTION_COND_TIME_STEP_NUM: $motion_cond_time_step_num"
 echo "[INFO] DENSIFY_UNTIL_ITER: $densify_until_iter"
@@ -245,6 +289,22 @@ if [ "$use_msti" = "1" ]; then
     )
 fi
 
+AMC_ARGS=()
+if [ "$use_amc_pair" = "1" ]; then
+    AMC_ARGS=(
+        --use_amc_pair
+        --amc_pair_mode "$amc_pair_mode"
+    )
+elif [ "$use_amc_causal" = "1" ]; then
+    AMC_ARGS=(
+        --use_amc_causal
+        --amc_causal_mode "$amc_causal_mode"
+        --amc_causal_window "$amc_causal_window"
+        --amc_motion_gate_alpha "$amc_motion_gate_alpha"
+        --amc_motion_gate_temp "$amc_motion_gate_temp"
+    )
+fi
+
 PART_MOE_ARGS=()
 if [ "$part_moe_enabled" = "1" ]; then
     PART_MOE_ARGS=(
@@ -276,7 +336,7 @@ for SEQUENCE in "${SEQUENCES[@]}"; do
         fi
     fi
 
-    if [ "$use_msti" != "1" ]; then
+    if [ "$use_msti" != "1" ] && [ "$use_amc_pair" != "1" ]; then
         mkdir -p "$model_path/logs"
     fi
 
@@ -303,33 +363,59 @@ for SEQUENCE in "${SEQUENCES[@]}"; do
     echo "================================================="
 
     echo "[INFO] Training on GPU $GPU_id for sequence $SEQUENCE"
-    if [ "$use_msti" = "1" ]; then
-        env "${TRAIN_ENV[@]}" "$PYTHON_BIN" train.py \
+    if [ "$use_msti" = "1" ] || [ "$use_amc_pair" = "1" ] || [ "$use_amc_causal" = "1" ]; then
+        if env "${TRAIN_ENV[@]}" "$PYTHON_BIN" train.py \
             -s "$dataset_path" --eval --exp_name "$exp_name" \
             "${COMMON_TRAIN_ARGS[@]}" \
             "${MSTI_ARGS[@]}" \
+            "${AMC_ARGS[@]}" \
             "${PART_MOE_ARGS[@]}"
+        then
+            :
+        else
+            train_status=$?
+            echo "[WARN] Training failed for sequence $SEQUENCE with status $train_status."
+            if [ "$use_amc_pair" = "1" ] || [ "$use_amc_causal" = "1" ]; then
+                echo "[WARN] AMC mode: skip failed sequence and continue."
+                continue
+            fi
+            exit "$train_status"
+        fi
     else
         env "${TRAIN_ENV[@]}" "$PYTHON_BIN" train.py \
             -s "$dataset_path" --eval --exp_name "$exp_name" \
             "${COMMON_TRAIN_ARGS[@]}" \
             "${MSTI_ARGS[@]}" \
+            "${AMC_ARGS[@]}" \
             "${PART_MOE_ARGS[@]}" \
             2>&1 | tee "$model_path/logs/train_${SEQUENCE}_${experiment_name}.log"
     fi
 
     echo "[INFO] Evaluating on GPU $GPU_id for sequence $SEQUENCE"
-    if [ "$use_msti" = "1" ]; then
-        CUDA_VISIBLE_DEVICES=$GPU_id "$PYTHON_BIN" render.py \
+    if [ "$use_msti" = "1" ] || [ "$use_amc_pair" = "1" ] || [ "$use_amc_causal" = "1" ]; then
+        if CUDA_VISIBLE_DEVICES=$GPU_id "$PYTHON_BIN" render.py \
             -s "$dataset_path" -m "$model_path" \
             "${COMMON_RENDER_ARGS[@]}" \
             "${MSTI_ARGS[@]}" \
+            "${AMC_ARGS[@]}" \
             "${PART_MOE_ARGS[@]}"
+        then
+            :
+        else
+            render_status=$?
+            echo "[WARN] Render failed for sequence $SEQUENCE with status $render_status."
+            if [ "$use_amc_pair" = "1" ] || [ "$use_amc_causal" = "1" ]; then
+                echo "[WARN] AMC mode: skip failed render and continue."
+                continue
+            fi
+            exit "$render_status"
+        fi
     else
         CUDA_VISIBLE_DEVICES=$GPU_id "$PYTHON_BIN" render.py \
             -s "$dataset_path" -m "$model_path" \
             "${COMMON_RENDER_ARGS[@]}" \
             "${MSTI_ARGS[@]}" \
+            "${AMC_ARGS[@]}" \
             "${PART_MOE_ARGS[@]}" \
             2>&1 | tee "$model_path/logs/render_${SEQUENCE}_${experiment_name}.log"
     fi

@@ -75,6 +75,13 @@ class ModelParams(ParamGroup):
         self.use_msti = False
         self.msti_mode = "none"
         self.msti_mid_type = "real"
+        self.use_amc_pair = False
+        self.amc_pair_mode = "baseline_full"
+        self.use_amc_causal = False
+        self.amc_causal_mode = "gated_residual"
+        self.amc_causal_window = 3
+        self.amc_motion_gate_alpha = 1.0
+        self.amc_motion_gate_temp = 0.5
         self.use_part_moe = False
         self.part_moe_start_iter = 15000
         self.part_moe_warmup = 1000
@@ -109,6 +116,31 @@ def resolve_motion_condition_args(args):
     if not use_msti:
         msti_mode = "none"
 
+    use_amc_pair = bool(getattr(args, "use_amc_pair", False))
+    amc_pair_mode = getattr(args, "amc_pair_mode", "baseline_full") or "baseline_full"
+    amc_pair_mode = str(amc_pair_mode).lower()
+    valid_amc_pair_modes = {"baseline_full"}
+    if use_amc_pair and amc_pair_mode not in valid_amc_pair_modes:
+        raise ValueError(
+            f"amc_pair_mode must be one of {sorted(valid_amc_pair_modes)}, got {amc_pair_mode}"
+        )
+
+    use_amc_causal = bool(getattr(args, "use_amc_causal", False))
+    amc_causal_mode = getattr(args, "amc_causal_mode", "gated_residual") or "gated_residual"
+    amc_causal_mode = str(amc_causal_mode).lower()
+    valid_amc_causal_modes = {"gated_residual"}
+    if use_amc_causal and amc_causal_mode not in valid_amc_causal_modes:
+        raise ValueError(
+            f"amc_causal_mode must be one of {sorted(valid_amc_causal_modes)}, got {amc_causal_mode}"
+        )
+    if sum([use_msti, use_amc_pair, use_amc_causal]) > 1:
+        raise ValueError("use_msti, use_amc_pair, and use_amc_causal are mutually exclusive in these ablations.")
+
+    amc_causal_window = int(getattr(args, "amc_causal_window", 3) or 3)
+    if use_amc_causal and amc_causal_window <= 0:
+        raise ValueError(f"amc_causal_window must be positive, got {amc_causal_window}")
+    args.amc_causal_window = amc_causal_window
+
     msti_mid_type = getattr(args, "msti_mid_type", "real") or "real"
     msti_mid_type = str(msti_mid_type).lower()
     valid_mid_types = {"real"}
@@ -118,7 +150,11 @@ def resolve_motion_condition_args(args):
             f"supported types: {sorted(valid_mid_types)}"
         )
 
-    if msti_mode == "none":
+    if use_amc_pair:
+        expected_cond_steps = time_step_num + time_step_num * (time_step_num - 1) // 2
+    elif use_amc_causal:
+        expected_cond_steps = time_step_num
+    elif msti_mode == "none":
         expected_cond_steps = time_step_num
     elif msti_mode == "lite":
         expected_cond_steps = time_step_num + 2
@@ -130,12 +166,17 @@ def resolve_motion_condition_args(args):
         raise ValueError(
             "motion_cond_time_step_num mismatch: "
             f"requested={requested_cond_steps}, expected={expected_cond_steps} "
-            f"for time_step_num={time_step_num}, msti_mode={msti_mode}"
+            f"for time_step_num={time_step_num}, msti_mode={msti_mode}, "
+            f"use_amc_pair={use_amc_pair}, use_amc_causal={use_amc_causal}"
         )
 
     args.use_msti = use_msti
     args.msti_mode = msti_mode
     args.msti_mid_type = msti_mid_type
+    args.use_amc_pair = use_amc_pair
+    args.amc_pair_mode = amc_pair_mode
+    args.use_amc_causal = use_amc_causal
+    args.amc_causal_mode = amc_causal_mode
     args.motion_cond_time_step_num = expected_cond_steps
     return args
 

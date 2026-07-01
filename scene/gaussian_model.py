@@ -94,6 +94,11 @@ class GaussianModel:
         self.use_msti = getattr(args, "use_msti", False)
         self.msti_mode = getattr(args, "msti_mode", "none")
         self.msti_mid_type = getattr(args, "msti_mid_type", "real")
+        self.use_amc_causal = getattr(args, "use_amc_causal", False)
+        self.amc_causal_mode = getattr(args, "amc_causal_mode", "gated_residual")
+        self.amc_causal_window = getattr(args, "amc_causal_window", 3)
+        self.amc_motion_gate_alpha = getattr(args, "amc_motion_gate_alpha", 1.0)
+        self.amc_motion_gate_temp = getattr(args, "amc_motion_gate_temp", 0.5)
         self.motion_cond_time_step_num = int(getattr(args, "motion_cond_time_step_num", getattr(args, "time_step_num", 1)))
         self.use_part_moe = getattr(args, "use_part_moe", False)
         self.part_moe_start_iter = getattr(args, "part_moe_start_iter", 15000)
@@ -123,7 +128,12 @@ class GaussianModel:
                         use_pose_cond=self.nonrigid_poseconds_flag, use_seq_pose_cond=self.nonrigid_deltaposeconds_flag, use_seq_xyz_cond=self.nonrigid_deltaxyzconds_flag, 
                         seq_len=args.seq_len, seq_xyz_knn=self.seq_xyz_knn, time_step_num=self.motion_cond_time_step_num, smpl_type=smpl_type,
                         use_part_moe=self.use_part_moe, num_parts=self.num_parts,
-                        part_moe_global_keep=self.part_moe_global_keep).to(self.device)
+                        part_moe_global_keep=self.part_moe_global_keep,
+                        use_amc_causal=self.use_amc_causal,
+                        amc_causal_mode=self.amc_causal_mode,
+                        amc_causal_window=self.amc_causal_window,
+                        amc_motion_gate_alpha=self.amc_motion_gate_alpha,
+                        amc_motion_gate_temp=self.amc_motion_gate_temp).to(self.device)
                             
     def capture(self):
         return (

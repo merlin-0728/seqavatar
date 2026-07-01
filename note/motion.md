@@ -2174,3 +2174,1540 @@ h3: 100 基于 97、98、99 的最终 motion context
 先做 AMC-pair 验证方向；
 如果有效，再做 AMC causal encoder 作为正式版本。
 ```
+
+### 命名规范：`amc_pair` vs 正式 `amc`
+
+后续实验命名建议固定为：
+
+```text
+amc_pair:
+  第一阶段低风险消融。
+  只扩展 motion condition channel。
+  不改 SeqPoseEncoder / SeqXYZEncoder 的基本融合方式。
+  本质是 autoregressive-inspired pairwise context。
+
+amc:
+  正式 Autoregressive Motion Context。
+  不只增加 pairwise delta，还要改变 motion encoder 的融合结构。
+  需要显式按历史状态递推或因果聚合，例如 h1 -> h2 -> h3。
+```
+
+核心判断：
+
+```text
+amc_pair 证明“历史内部 pairwise motion 是否有用”；
+amc 证明“结构化自回归 motion context 是否有用”。
+```
+
+论文中如果只实现 `amc_pair`，建议不要把方法主张写成严格自回归；可以写成：
+
+```text
+autoregressive-inspired pairwise motion context
+```
+
+只有实现 causal encoder 后，才更适合把正式方法称为：
+
+```text
+Autoregressive Motion Context, AMC
+```
+
+## 2026-06-30 AMC 三数据集适配分析
+
+当前 AMC 方案不能简单把 DNA 的 `[97, 98, 99, 100]` 连续窗口解释直接套到 I3D / ZJU。原因是当前 `generate_time_steps()` 会按脚本里的 `minimal_time_step / max_time_step / time_step_num` 生成原始历史尺度，不同数据集的尺度语义不同。
+
+当前脚本默认设置：
+
+```text
+DNA-Rendering:
+  seq_len = 8
+  time_step_num = 3
+  time_steps = [3, 2, 1]
+
+I3D-Human:
+  seq_len = 8
+  time_step_num = 3
+  time_steps = [42, 33, 24]
+
+ZJU-MoCap:
+  seq_len = 3
+  time_step_num = 2
+  time_steps = [6, 3]
+```
+
+### 1. AMC-pair 的统一定义
+
+给定原始历史点：
+
+```text
+h_i = t - s_i
+```
+
+baseline 原始 motion channel 是：
+
+```text
+h_i -> t
+```
+
+AMC-pair 额外加入历史点之间的 pairwise motion：
+
+```text
+h_i -> h_j, where h_i is older than h_j
+```
+
+如果原始历史点数量是 `N = time_step_num`，则：
+
+```text
+motion_cond_time_step_num = N + C(N, 2)
+```
+
+例如 `N=3` 时为 6 个 channel：
+
+```text
+[h1->t, h2->t, h3->t, h1->h2, h1->h3, h2->h3]
+```
+
+注意：这只是 autoregressive-inspired pairwise context。若 encoder 仍然是当前 flatten + MLP，它不会严格执行 `h1 -> h2 -> h3 -> t` 的递推。
+
+### 1.1 `amc_pair` 和 `amc_scale` 的命名区别
+
+这两个名字不是两个完全不同的代码模块，更准确地说是同一类第一版 AMC 的两个侧重点：
+
+```text
+amc_pair:
+  强调新增的 condition 类型。
+  即在原始 h_i -> t 之外，加入 h_i -> h_j 的历史内部 pairwise motion。
+
+amc_scale:
+  强调跨数据集适配策略。
+  即不强行统一成连续 [t-3,t-2,t-1,t]，而是复用各数据集原始 time_steps。
+```
+
+因此第一版实现时，实验名建议用：
+
+```text
+amc_pair
+```
+
+论文/方法描述里可以写成：
+
+```text
+scale-adaptive AMC-pair
+```
+
+含义是：
+
+```text
+用 pairwise motion context，
+但历史点来自每个数据集自己的原始 motion scales。
+```
+
+避免误解：
+
+```text
+amc_pair 不是 causal encoder；
+amc_scale 也不是单独的新网络，只是 time_steps 选择策略。
+```
+
+### 2. DNA-Rendering 适配
+
+DNA 当前 `[3,2,1]` 最适合 AMC-pair，因为它自然对应短期连续窗口：
+
+```text
+t-3, t-2, t-1, t
+```
+
+以 `t=100` 为例：
+
+```text
+baseline:
+  97->100, 98->100, 99->100
+
+AMC-pair:
+  97->100, 98->100, 99->100,
+  97->98, 97->99, 98->99
+```
+
+这版可以作为 AMC 第一阶段最低风险实验：
+
+```text
+motion_cond_mode = amc_pair
+time_step_num = 3
+motion_cond_time_step_num = 6
+renderer/loss 不动
+```
+
+但要记住一个解释风险：baseline 的 `full_1` 在 `seq_len` 维度里已经包含一部分相邻短期运动，例如 `99->100 / 98->99 / 97->98`。AMC-pair 的价值不是凭空新增这些 delta，而是把同一个局部窗口内的历史内部运动显式放到同一个 condition slot 中。
+
+### 3. I3D-Human 适配
+
+I3D 当前 `[42,33,24]` 不是连续短期窗口。以 `t=100` 为例，历史点是：
+
+```text
+58, 67, 76, 100
+```
+
+AMC-pair 会变成：
+
+```text
+58->100, 67->100, 76->100,
+58->67, 58->76, 67->76
+```
+
+这表达的是“多尺度历史状态之间的运动趋势”，不是 DNA 那种 `97->98->99->100` 短期自回归。论文里如果三数据集统一叫 AMC，需要把 I3D 表述为：
+
+```text
+multi-scale autoregressive motion context
+```
+
+而不是逐帧短期 autoregression。
+
+如果想让 I3D 也做短期连续 AMC，就必须新增独立于原始 `time_steps` 的局部窗口参数，例如：
+
+```text
+amc_local_window = 3
+amc_local_step = 1 或数据集帧间隔
+```
+
+这会改变 baseline 的 motion sampling 语义，风险更高，不建议作为第一版。
+
+### 4. ZJU-MoCap 适配
+
+ZJU 当前只有两个历史尺度 `[6,3]`，因此统一 AMC-pair 只有：
+
+```text
+t-6->t, t-3->t, t-6->t-3
+```
+
+通道数为：
+
+```text
+2 + C(2,2) = 3
+```
+
+这比 DNA/I3D 的 6 channel 弱很多。不要为了强行对齐 6 channel 直接把 ZJU 的 `time_step_num` 从 2 改成 3；那会改变原始采样尺度，baseline 公平性变差。
+
+ZJU 第一版建议保持：
+
+```text
+time_step_num = 2
+motion_cond_time_step_num = 3
+```
+
+论文和实验表述中说明：AMC 根据各数据集原始历史尺度自适应扩展，ZJU 因原始尺度为 2，所以 pairwise channel 较少。
+
+### 5. 两种可选路线
+
+低风险统一路线：
+
+```text
+AMC-scale / AMC-pair:
+  使用每个数据集原始 time_steps。
+  DNA: [3,2,1] -> 6 channels
+  I3D: [42,33,24] -> 6 channels
+  ZJU: [6,3] -> 3 channels
+```
+
+优点是公平、隔离、实现风险低；缺点是三数据集语义不完全一致，I3D 不是短期连续自回归，ZJU 增量较弱。
+
+更强但风险更高的路线：
+
+```text
+AMC-local:
+  每个数据集额外定义局部连续窗口。
+  尽量都构造 [t-3, t-2, t-1, t] 或等价局部点。
+```
+
+优点是 AMC 语义统一；缺点是会改变原始 SeqAvatar 的 motion scale 设计，并引入更多边界帧、缺帧、split 内查找和公平性问题。
+
+### 6. 当前建议
+
+如果接下来替换 MSTI，建议不要一开始做三数据集统一局部窗口，而是：
+
+```text
+第一阶段:
+  实现 AMC-pair / AMC-scale。
+  复用现有 time_steps。
+  自动推导 motion_cond_time_step_num = N + C(N,2)。
+  pose/xyz 同时扩展。
+  renderer/loss/Part-MoE 不动。
+
+第二阶段:
+  如果 AMC-pair 有提升，再实现 AMC causal encoder。
+  用结构化 h1 -> h2 -> h3 聚合支撑 Autoregressive Motion Context 的正式命名。
+```
+
+实验命名建议：
+
+```text
+amc_pair:
+  低风险 pairwise channel 版本。
+
+amc:
+  后续 causal encoder 正式版本。
+```
+
+不要把第一版简单 concat 的 `amc_pair` 过度表述成严格自回归。
+
+## 2026-06-30 AMC-pair 方案补充问题
+
+用户提供的 AMC-pair checklist 基本覆盖了实现隔离、`time_step_num`、train/render 一致、pose/xyz 同步扩展、channel 顺序、per-pair dt、cache、日志和输出目录等主要风险。除此之外，还需要特别注意以下补充问题。
+
+### 1. `seq_len` 下 baseline 并不存在统一 anchor
+
+这是当前最容易被忽略的问题。
+
+原始 `get_seq_pose_xyz_cond()` 对每个 `time_step=s` 和 `seq_i=i` 使用：
+
+```text
+cur_id    = t - i * s
+former_id = t - (i + 1) * s
+```
+
+因此以 DNA `time_steps=[3,2,1]`、`t=100` 为例：
+
+```text
+i=0:
+  s=3: 97->100
+  s=2: 98->100
+  s=1: 99->100
+
+i=1:
+  s=3: 94->97
+  s=2: 96->98
+  s=1: 98->99
+```
+
+只有 `i=0` 时三个尺度共享同一个 target `t=100`。到 `i=1` 后，三个尺度的 `cur_id` 分别是 97、98、99，并不是同一个 anchor。
+
+所以 AMC-pair 不能简单写成：
+
+```text
+for seq_i:
+  anchor_id = 当前 slot 的帧
+  hist_ids = anchor_id - [3,2,1]
+```
+
+除非明确接受它改变 baseline 的 `seq_len` 时间网格。
+
+### 2. 必须先决定两种语义之一
+
+方案 A：保持 baseline full channel 完全不变。
+
+```text
+优点:
+  可以说 AMC-pair 是在 baseline condition 上额外加 pairwise channel。
+
+问题:
+  i>0 时不同 time_step 没有共同 anchor，history-history pair 的定义不自然。
+  需要明确 pairwise 是围绕哪个 target/window 构造。
+```
+
+方案 B：改成局部 causal window。
+
+例如以最大跨度为 anchor stride：
+
+```text
+i=0: [97,98,99,100]
+i=1: [94,95,96,97]
+i=2: [91,92,93,94]
+```
+
+每个 slot 都构造：
+
+```text
+[h1->anchor, h2->anchor, h3->anchor, h1->h2, h1->h3, h2->h3]
+```
+
+优点是 AMC 语义最清楚；缺点是这不再严格保留 baseline 的 `full_2/full_1` 序列，因为 baseline 的 `i=1` 中 `full_2/full_1` 是 `96->98 / 98->99`，不是 `95->97 / 96->97`。
+
+结论：实现前必须选定方案，并在实验命名和论文表述中说明。若声称“只新增 pairwise motion，不改变原始 full channel”，就必须做单元测试确认 AMC 输出的前 `N` 个 channel 与 baseline 完全一致。
+
+### 3. 三数据集脚本需要统一接入方式
+
+当前 DNA 脚本已经有 MSTI 相关的 `motion_cond_time_step_num` 推导，但 I3D / ZJU 脚本还没有同等的 motion-condition 分支。AMC-pair 如果要跑三数据集，需要三个脚本都显式支持：
+
+```text
+amc_pair mode
+use_amc_pair
+motion_cond_time_step_num 自动推导
+logs/amc_pair
+output/<dataset>/<seq>/amc_pair/<RUN_TIME>
+```
+
+不要只在 DNA 中实现，否则后续三数据集实验会出现配置不一致。
+
+### 4. `resolve_motion_condition_args()` 需要处理互斥关系
+
+当前参数解析主要围绕 MSTI：
+
+```text
+use_msti
+msti_mode
+motion_cond_time_step_num
+```
+
+加入 AMC-pair 后不能让这些开关互相叠加成未定义状态。第一版建议显式禁止：
+
+```text
+use_msti == 1 and use_amc_pair == 1
+```
+
+除非后续专门做 `msti_amc_pair` 组合实验。
+
+更稳的长期形式是统一成：
+
+```text
+motion_cond_mode = none / msti_lite / msti_full / amc_pair
+```
+
+但为了不影响已有 MSTI 实验，第一版也可以保留旧参数，同时加严格 assert。
+
+### 5. I3D 的 pairwise dt 尺度会很特殊
+
+I3D 当前 `[42,33,24]` 下，history-history pair 的间隔是：
+
+```text
+t-42 -> t-33: dt=9
+t-42 -> t-24: dt=18
+t-33 -> t-24: dt=9
+```
+
+而 history-current 是：
+
+```text
+dt=42,33,24
+```
+
+如果 xyz 按 dt 归一化，I3D 新增 pairwise channel 的数值分布可能明显不同于原始 full channel。需要打印统计：
+
+```text
+mean/std/max of pose delta per channel
+mean/std/max of xyz delta per channel
+```
+
+否则可能出现提升或下降来自数值尺度，而不是 AMC 结构。
+
+### 6. 边界退化比例需要统计
+
+序列开头 clamp 后可能出现大量重复 id：
+
+```text
+from_id == to_id
+```
+
+尤其 I3D 最大跨度 42、ZJU 最大跨度 6 时，早期帧会有更多退化 pair。实现后建议输出：
+
+```text
+degenerate_pair_count / total_pair_count
+```
+
+如果比例较高，需要确认这些帧是否进入训练、是否影响训练早期分布。
+
+### 7. cache key 建议独立命名并记录版本
+
+不要复用 baseline 的：
+
+```text
+cur-former
+```
+
+也不要复用 MSTI 的：
+
+```text
+msti_real_dt_v1:cur-former
+```
+
+AMC-pair 建议使用：
+
+```text
+amc_pair_dt_v1:to_id-from_id
+```
+
+如果后续改变 anchor 策略、dt 归一化或 channel 顺序，需要升级版本号，避免旧 cache 混入。
+
+### 8. 公平性需要区分“新增信息”和“重排信息”
+
+DNA 中 `97->98`、`98->99` 这类短期运动并非完全新信息，因为 baseline 的 `full_1` 在 `seq_len` 维度中已经包含它们。AMC-pair 更准确的创新点是：
+
+```text
+把历史内部运动重排到同一个局部窗口的 condition channel 中，
+让 encoder 在同一个 seq slot 内看到 history-history relation。
+```
+
+因此对比时最好加一个轻量消融：
+
+```text
+amc_adjacent:
+  只加相邻历史 pair，例如 h1->h2, h2->h3
+
+amc_pair:
+  加全部 pair，例如 h1->h2, h1->h3, h2->h3
+```
+
+这样可以回答 `h1->h3` 是否只是冗余通道。
+
+## 2026-06-30 DNA AMC-pair 方案 A 实现记录
+
+本次按用户要求先选择方案 A：
+
+```text
+AMC-pair / baseline_full
+```
+
+核心含义：
+
+```text
+前 N 个 full channel 保持 baseline 的原始 time_step / seq_len 时间网格不变；
+后面追加由这些 full channel 的 former endpoints 构造的 history-history pairwise channel。
+```
+
+以 DNA `time_steps=[3,2,1]`、`t=100` 为例，`i=0`：
+
+```text
+baseline full:
+  97->100, 98->100, 99->100
+
+AMC-pair additional:
+  97->98, 97->99, 98->99
+```
+
+对 `i>0`，不改 baseline full channel；新增 pairwise channel 使用该 `seq_i` 下各 full channel 的 `former_id`。例如：
+
+```text
+i=1 baseline full:
+  94->97, 96->98, 98->99
+
+i=1 AMC-pair additional:
+  94->96, 94->98, 96->98
+```
+
+这保留了方案 A 的“full channel 不改”，但也意味着 AMC-pair 第一版仍然不是严格的局部 causal window。
+
+### 修改文件
+
+```text
+arguments/__init__.py
+  新增 use_amc_pair / amc_pair_mode。
+  默认关闭。
+  与 MSTI 互斥。
+  自动推导:
+    motion_cond_time_step_num = N + N * (N - 1) // 2
+
+scene/__init__.py
+  将 use_amc_pair / amc_pair_mode 传入 motion_cond_options。
+
+scene/dataset_readers.py
+  新增 get_seq_pose_xyz_cond_amc_pair()。
+  baseline / MSTI 分支保持独立。
+  AMC cache key 使用:
+    amc_pair_scheme_a_raw_v1:cur-former
+
+scripts/exps_dnarendering.sh
+  新增 amc_pair 模式。
+  日志目录:
+    logs/AMC
+  DNA AMC 默认六序列:
+    0044_11 0051_09 0206_04 0813_05 0007_04 0019_10
+  AMC 模式下 train/render 失败会记录 warning 并跳过当前序列继续下一个。
+```
+
+### 验证
+
+已通过：
+
+```text
+/media/image/mxz/.conda/envs/seqavatar/bin/python -m py_compile arguments/__init__.py scene/__init__.py scene/dataset_readers.py
+bash -n scripts/exps_dnarendering.sh
+git diff --check
+```
+
+DNA-like dummy shape test：
+
+```text
+time_steps = {3: 8, 2: 8, 1: 8}
+baseline pose/xyz = (1, 8, 3, 24, 3) / (5, 8, 3, 3)
+AMC-pair pose/xyz = (1, 8, 6, 24, 3) / (5, 8, 6, 3)
+front_channels_match_baseline = True
+```
+
+参数解析验证：
+
+```text
+use_amc_pair=True, time_step_num=3 -> motion_cond_time_step_num=6
+use_msti=True and use_amc_pair=True -> ValueError
+```
+
+### DNA 六序列启动记录
+
+使用 tmux 在 GPU 2 / GPU 3 启动：
+
+```text
+GPU 2:
+  session = seqavatar_amc_pair_gpu2_20260630_213132
+  sequences = 0044_11 0051_09 0206_04
+  log = logs/AMC/20260630_213132_DNA-Rendering_amc_pair.log
+
+GPU 3:
+  session = seqavatar_amc_pair_gpu3_20260630_213134
+  sequences = 0813_05 0007_04 0019_10
+  log = logs/AMC/20260630_213134_DNA-Rendering_amc_pair.log
+```
+
+启动日志已确认：
+
+```text
+Mode = amc_pair
+USE_AMC_PAIR = 1
+AMC_PAIR_MODE = baseline_full
+TIME_STEP_NUM(base) = 3
+MOTION_COND_TIME_STEP_NUM = 6
+DENSIFY_UNTIL_ITER = 1800
+FINAL_EVAL_ONLY = 1
+```
+
+启动后状态：
+
+```text
+GPU 2:
+  0044_11 已进入训练进度。
+
+GPU 3:
+  0813_05 在 Loading Training Cameras 阶段 CUDA OOM。
+  脚本按 AMC-pair 规则跳过该序列，继续运行 0007_04。
+```
+
+## 2026-06-30 DNA AMC-pair OOM 诊断
+
+本次 `amc_pair` 首轮 DNA 六序列并不是全部同一种失败。
+
+GPU 3 日志：
+
+```text
+0813_05 / 0007_04 / 0019_10 都在 Loading Training Cameras 阶段 OOM。
+```
+
+原因不是 AMC condition shape 错，而是物理 GPU 3 上已有其它任务占用显存。日志中虽然写 `GPU 0`，但这是因为 `CUDA_VISIBLE_DEVICES=3` 后，物理 GPU 3 在进程内部被重编号为 local GPU 0。
+
+典型日志：
+
+```text
+Tried to allocate 20.00 MiB
+only 7-18 MiB free
+Process 1458222 has 13.21 GiB memory in use
+```
+
+也就是说，相机图片还没完全搬到 CUDA，就已经没有足够显存。
+
+GPU 2 日志：
+
+```text
+0044_11 / 0051_09 进入训练后 OOM。
+```
+
+原因是 AMC-pair 把 motion condition channel 从 3 扩到 6，`SeqPoseEncoder / SeqXYZEncoder` 输入和 `cond_dict` 显存都会增加；再加上 DNA 图片默认加载到 CUDA，0044/0051 训练峰值已经接近 21GB，后续还需要一次 2.6-3.0GB 的大块分配，因此 OOM。
+
+典型日志：
+
+```text
+process has 20.78-21.01 GiB memory in use
+Tried to allocate 2.62-2.96 GiB
+only 2.48-2.72 GiB free
+```
+
+当前建议：
+
+```text
+1. GPU 3 的失败序列不是代码问题，等 GPU 3 空出来后单独重跑。
+2. GPU 2 的 0044/0051 需要降显存重跑，优先尝试 IMAGE_DATA_DEVICE=cpu 或 SKIP_LOAD_TEST_CAMERAS=1。
+3. 如果仍 OOM，再考虑降低 seq_xyz_knn 或增加显存更空的卡。
+```
+
+## 2026-06-30 DNA AMC-pair densify_until_iter=1500 重跑
+
+用户要求将 `amc_pair` 的 `densify_until_iter` 改为 1500 后重跑 DNA 六序列。
+
+脚本修改：
+
+```text
+scripts/exps_dnarendering.sh
+  原全局 densify_until_iter=1800 保持不变。
+  仅在 use_amc_pair=1 时默认:
+    densify_until_iter=${AMC_DENSIFY_UNTIL_ITER:-1500}
+```
+
+这样只影响 `amc_pair`，不改变 baseline / MSTI / Part-MoE / Part-MoE+MSTI 的默认 densify 设置。
+
+已验证：
+
+```text
+bash -n scripts/exps_dnarendering.sh
+```
+
+由于 GPU 3 仍被其它 `src/trainer.py` 占用约 13.5GB，继续使用 GPU 3 会重复 Loading Cameras 阶段 OOM。本次改用空闲的 GPU 1 和 GPU 2 重跑六序列：
+
+```text
+GPU 2:
+  session = seqavatar_amc_pair_d1500_gpu2_20260630_222432
+  sequences = 0044_11 0051_09 0206_04
+  log = logs/AMC/20260630_222432_DNA-Rendering_amc_pair.log
+
+GPU 1:
+  session = seqavatar_amc_pair_d1500_gpu1_20260630_222434
+  sequences = 0813_05 0007_04 0019_10
+  log = logs/AMC/20260630_222434_DNA-Rendering_amc_pair.log
+```
+
+启动日志已确认：
+
+```text
+DENSIFY_UNTIL_ITER = 1500
+MOTION_COND_TIME_STEP_NUM = 6
+USE_AMC_PAIR = 1
+AMC_PAIR_MODE = baseline_full
+```
+
+启动后状态：
+
+```text
+GPU 2:
+  0044_11 已进入训练。
+
+GPU 1:
+  0813_05 已进入训练。
+```
+
+## 2026-07-01 DNA AMC-pair densify_until_iter=1500 指标
+
+本次汇总使用最终 render/eval 阶段的测试行：
+
+```text
+[ITER 25000] Evaluating novelview #120: PSNR ... SSIM ... LPIPS ...
+```
+
+对应日志：
+
+```text
+logs/AMC/20260630_222432_DNA-Rendering_amc_pair.log
+logs/AMC/20260630_222434_DNA-Rendering_amc_pair.log
+```
+
+六个序列均完成。
+
+| Sequence | PSNR | SSIM | LPIPS*1000 |
+|---|---:|---:|---:|
+| 0044_11 | 32.9405 | 0.977879 | 21.3269 |
+| 0051_09 | 28.6317 | 0.971326 | 31.1716 |
+| 0206_04 | 31.3774 | 0.969677 | 34.1438 |
+| 0813_05 | 36.0377 | 0.986744 | 18.8930 |
+| 0007_04 | 29.4856 | 0.958052 | 45.2343 |
+| 0019_10 | 35.2100 | 0.980821 | 21.3176 |
+| Mean | 32.2805 | 0.974083 | 28.6812 |
+
+## 2026-07-01 DNA 脚本序列选择约定
+
+用户明确不需要按实验模式自动选择不同序列。后续 DNA 脚本统一使用一套默认序列；如果某次实验要跑其它序列，手动改这一处或使用 `SEQUENCES_OVERRIDE`。
+
+当前 `scripts/exps_dnarendering.sh` 逻辑：
+
+```text
+if SEQUENCES_OVERRIDE is set:
+  使用 SEQUENCES_OVERRIDE
+else:
+  使用统一默认列表
+```
+
+已删除此前 `amc_pair` 专属的六序列分支，避免出现“某个实验自动对应某些序列”的隐式行为。
+
+更正确认：
+
+```text
+2026-07-01 用户发现脚本中仍残留 amc_pair 专属序列分支。
+已再次检查并删除该分支。
+当前实际文件中只保留:
+  if SEQUENCES_OVERRIDE is set -> 使用覆盖序列
+  else -> 使用统一默认序列
+```
+
+同时确认 `densify_until_iter=1500` 只在 `use_amc_pair=1` 时生效，默认其它 DNA 实验仍为 1800。
+
+## 2026-07-01 AMC-pair 代码改动总结
+
+AMC-pair 目标：
+
+```text
+在不改 renderer / loss / CameraInfo / Part-MoE / MSTI 默认路径的前提下，
+给 SeqAvatar 的 motion condition 增加 history-history pairwise motion。
+```
+
+第一版采用方案 A `baseline_full`：
+
+```text
+前 N 个 full channel 完全保持 baseline 的原始 time_step / seq_len 时间网格；
+后面追加由这些 full channel 的 former endpoints 构造的 pairwise channel。
+```
+
+以 DNA `time_steps=[3,2,1]`、`t=100`、`i=0` 为例：
+
+```text
+baseline full:
+  97->100, 98->100, 99->100
+
+AMC-pair:
+  97->100, 98->100, 99->100,
+  97->98, 97->99, 98->99
+```
+
+### 1. `arguments/__init__.py`
+
+改动：
+
+```text
+新增参数:
+  use_amc_pair
+  amc_pair_mode = baseline_full
+
+新增规则:
+  use_amc_pair 和 use_msti 互斥
+  amc_pair 自动推导 motion_cond_time_step_num
+```
+
+推导公式：
+
+```text
+N_cond = N + C(N, 2)
+```
+
+DNA 中：
+
+```text
+time_step_num = 3
+motion_cond_time_step_num = 3 + 3 = 6
+```
+
+目的：
+
+```text
+不用手填 channel 数，避免 train/render 维度不一致；
+默认关闭，隔离 baseline / MSTI / Part-MoE；
+禁止 AMC-pair 和 MSTI 同时打开，避免未定义的混合通道语义。
+```
+
+### 2. `scene/__init__.py`
+
+改动：
+
+```text
+把 use_amc_pair / amc_pair_mode 放进 motion_cond_options，
+传给 dataset reader。
+```
+
+目的：
+
+```text
+Scene 构建 cond_dict 时能选择 AMC-pair 分支；
+train 和 render 都走同一套参数，保持 condition 构造一致。
+```
+
+### 3. `scene/dataset_readers.py`
+
+改动：
+
+```text
+在 get_seq_pose_xyz_cond() 中新增 AMC-pair 分支；
+新增 get_seq_pose_xyz_cond_amc_pair()；
+baseline 分支和 MSTI 分支保持独立。
+```
+
+AMC-pair 分支做的事：
+
+```text
+1. 先按 baseline 原逻辑构造前 N 个 full channel；
+2. 记录每个 full channel 的 former_id；
+3. 对 former_id 两两组合，追加 history-history pairwise delta；
+4. pose 和 xyz 同步扩展；
+5. assert 输出 channel 数等于 N + C(N,2)。
+```
+
+cache key：
+
+```text
+amc_pair_scheme_a_raw_v1:cur-former
+```
+
+目的：
+
+```text
+让 encoder 在同一个 seq slot 中看到历史帧之间的运动关系；
+同时保证前 N 个 channel 与 baseline 保持一致，便于公平消融。
+```
+
+注意：
+
+```text
+当前 AMC-pair 仍然使用原 SeqPoseEncoder / SeqXYZEncoder 的 flatten + MLP。
+它不是正式 causal encoder，也不是严格自回归结构。
+```
+
+### 4. `scripts/exps_dnarendering.sh`
+
+改动：
+
+```text
+新增运行模式:
+  amc_pair
+
+新增日志目录:
+  logs/AMC
+
+新增命令行参数:
+  --use_amc_pair
+  --amc_pair_mode baseline_full
+
+新增自动 channel:
+  motion_cond_time_step_num = time_step_num + time_step_num * (time_step_num - 1) / 2
+
+仅 AMC-pair 默认:
+  densify_until_iter = ${AMC_DENSIFY_UNTIL_ITER:-1500}
+```
+
+当前序列选择：
+
+```text
+不按实验模式自动切序列。
+如果 SEQUENCES_OVERRIDE 存在，使用覆盖序列；
+否则使用统一默认序列。
+```
+
+目的：
+
+```text
+让 AMC-pair 可以用同一个 DNA 脚本启动；
+日志与 baseline / MSTI / Part-MoE 隔离；
+降低 AMC-pair 显存峰值；
+避免不同实验隐式绑定不同序列。
+```
+
+### 5. 没有改的部分
+
+AMC-pair 没有改：
+
+```text
+renderer
+loss
+CameraInfo
+RGB / mask / camera 数据
+Part-MoE 路由和专家逻辑
+MSTI 现有分支
+SeqPoseEncoder / SeqXYZEncoder 结构
+```
+
+因此它是一个 condition-level 消融：
+
+```text
+只改变输入给 motion encoder 的条件通道；
+不改变监督目标和渲染流程。
+```
+
+## 2026-07-01 DNA-Rendering baseline rerun metrics
+
+日志：
+
+```text
+/media/image/mxz/human/SeqAvatar/logs/20260701_005912_DNA-Rendering_orginal.log
+```
+
+说明：
+
+```text
+该日志完整结束，包含 5 个默认序列：
+0051_09, 0206_04, 0813_05, 0007_04, 0019_10
+未包含 0044_11。
+日志头部记录 DENSIFY_UNTIL_ITER: 1800。
+下面采用 render.py 最终 novelview 评价行，而不是训练结束时的中间评价行。
+```
+
+| Sequence | PSNR | SSIM | LPIPS*1000 |
+|---|---:|---:|---:|
+| 0051_09 | 28.6849 | 0.971489 | 31.1649 |
+| 0206_04 | 31.3086 | 0.969506 | 33.9268 |
+| 0813_05 | 36.0529 | 0.986883 | 18.4098 |
+| 0007_04 | 29.5087 | 0.958475 | 44.2631 |
+| 0019_10 | 35.1483 | 0.980624 | 21.5088 |
+| Mean | 32.1407 | 0.973395 | 29.8547 |
+
+## 2026-07-01 DNA-Rendering baseline rerun metrics, densify 1500
+
+日志：
+
+```text
+/media/image/mxz/human/SeqAvatar/logs/20260701_130518_DNA-Rendering_orginal.log
+```
+
+说明：
+
+```text
+该日志完整结束，包含 5 个默认序列：
+0051_09, 0206_04, 0813_05, 0007_04, 0019_10
+未包含 0044_11。
+日志头部记录 DENSIFY_UNTIL_ITER: 1500。
+下面采用 render.py 最终 novelview 评价行，而不是训练结束时的中间评价行。
+```
+
+| Sequence | PSNR | SSIM | LPIPS*1000 |
+|---|---:|---:|---:|
+| 0051_09 | 28.6714 | 0.971448 | 31.0921 |
+| 0206_04 | 31.3799 | 0.969798 | 34.0235 |
+| 0813_05 | 36.0867 | 0.986893 | 18.4637 |
+| 0007_04 | 29.5336 | 0.958335 | 45.3894 |
+| 0019_10 | 35.2209 | 0.980696 | 21.2649 |
+| Mean | 32.1785 | 0.973434 | 30.0467 |
+
+### densify 1500 vs 1800 baseline observation
+
+对比：
+
+```text
+1500 - 1800 mean:
+PSNR  +0.0378
+SSIM  +0.000039
+LPIPS*1000 +0.1920
+```
+
+解释：
+
+```text
+1500 在 PSNR / SSIM 上略高，但 LPIPS*1000 略差，因此不能简单说 1500 全面更好。
+差值很小，可能包含随机初始化、训练采样、CUDA 非确定性带来的波动。
+```
+
+代码行为：
+
+```text
+train.py 中只有 iteration < densify_until_iter 时才继续统计并执行 densify_and_prune。
+densification_interval=100，densify_from_iter=400。
+因此 1500 相比 1800 少了约 3 轮 densify/prune 机会。
+```
+
+最终日志中的 #pts：
+
+| Sequence | d1800 #pts | d1500 #pts |
+|---|---:|---:|
+| 0051_09 | 67545 | 50516 |
+| 0206_04 | 58631 | 42792 |
+| 0813_05 | 50717 | 39653 |
+| 0007_04 | 35497 | 27199 |
+| 0019_10 | 43261 | 34400 |
+
+判断：
+
+```text
+1500 的 Gaussian 数量更少，模型容量更小，可能减少对训练视角/训练 mask 边界/局部噪声的过拟合；
+但这也可能损失细节，所以 LPIPS 没有同步变好。
+如果论文对比 AMC-pair 使用 densify 1500，baseline 也应该使用 densify 1500 才公平。
+```
+
+## 2026-07-01 DNA-Rendering baseline 0044_11 metrics, densify 1500
+
+日志：
+
+```text
+/media/image/mxz/human/SeqAvatar/logs/20260701_162750_DNA-Rendering_orginal.log
+```
+
+说明：
+
+```text
+该日志完整结束，只包含序列 0044_11。
+日志头部记录 DENSIFY_UNTIL_ITER: 1500。
+下面采用 render.py 最终 novelview 评价行，而不是训练结束时的中间评价行。
+```
+
+| Sequence | PSNR | SSIM | LPIPS*1000 |
+|---|---:|---:|---:|
+| 0044_11 | 32.9741 | 0.977915 | 21.3970 |
+
+## 2026-07-01 AMC-pair vs baseline, densify 1500 analysis
+
+公平对比设置：
+
+```text
+baseline: original, densify_until_iter=1500
+AMC-pair: amc_pair, densify_until_iter=1500
+DNA-Rendering six sequences
+```
+
+逐序列差值，AMC-pair - baseline：
+
+| Sequence | dPSNR | dSSIM | dLPIPS*1000 |
+|---|---:|---:|---:|
+| 0044_11 | -0.0336 | -0.000036 | -0.0701 |
+| 0051_09 | -0.0397 | -0.000122 | +0.0795 |
+| 0206_04 | -0.0025 | -0.000121 | +0.1203 |
+| 0813_05 | -0.0490 | -0.000149 | +0.4293 |
+| 0007_04 | -0.0480 | -0.000283 | -0.1551 |
+| 0019_10 | -0.0109 | +0.000125 | +0.0527 |
+| Mean | -0.0306 | -0.000098 | +0.0761 |
+
+判断：
+
+```text
+AMC-pair 当前没有带来稳定收益。
+差值很小，不能证明运动上下文方向失败，但说明当前“追加历史-历史 pair channel + 原 flatten MLP encoder”的形式不够有效。
+```
+
+可能原因：
+
+```text
+1. 额外 pair channel 与原 full channel 信息高度冗余。
+2. pair channel 的语义不是 former -> current，而是 history -> history，和 baseline channel 混在同一个 encoder 输入维度里可能造成语义不一致。
+3. SeqPoseEncoder / SeqXYZEncoder 仍是 flatten + MLP，没有真正的 causal / autoregressive 结构，不能强制 97 -> 98 -> 99 -> 100 的递进建模。
+4. DNA 原始 time_steps=[3,2,1] 已经很密，full_1/full_2/full_3 可能足够覆盖局部运动。
+5. 新增 channel 增加输入维度和噪声，模型可能学会忽略，或者轻微过拟合。
+```
+
+后续优化优先级：
+
+```text
+1. 不要继续只堆 pair channel，优先做带归纳偏置的版本。
+2. 加 learnable gate / attention，让模型自动决定 pair channel 权重，并观察 gate 是否接近 0。
+3. 将 full motion 和 pair motion 分两个 encoder，再 late fusion，避免语义混在一个 flatten 输入里。
+4. 尝试 adjacent chain：97->98, 98->99, 99->100，而不是所有 pair。
+5. 尝试二阶运动/加速度：比较相邻 motion velocity 的变化，比 pair delta 更直接表达运动趋势。
+6. 最终如果要称 AMC，建议做 causal encoder：h97 -> h98 -> h99 -> h100，而不是 AMC-pair。
+```
+
+## 2026-07-01 AMC-causal implementation on DNA-Rendering
+
+目标：
+
+```text
+实现正式 AMC causal encoder；
+只对高运动关节 / 高运动区间启用 causal residual；
+低运动区域保持 baseline motion encoder 输出；
+先只在 DNA-Rendering 脚本中暴露消融模式；
+不影响 baseline / MSTI / AMC-pair / Part-MoE。
+```
+
+实验名：
+
+```text
+amc_causal
+```
+
+日志目录：
+
+```text
+/media/image/mxz/human/SeqAvatar/logs/AMC
+```
+
+核心设计：
+
+```text
+motion_cond_time_step_num 仍为 time_step_num。
+DNA 中 time_step_num=3，因此 AMC-causal 输入仍是 3 个 baseline channel:
+  [full_3, full_2, full_1]
+
+AMC-causal 不再像 AMC-pair 一样把 channel 扩成 6。
+它使用 baseline 已有的 full_1 短步运动在 seq_len 维度上的相邻片段：
+  97->98, 98->99, 99->100
+
+做 old-to-current causal GRU：
+  h98 = f(97->98)
+  h99 = f(h98, 98->99)
+  h100 = f(h99, 99->100)
+```
+
+高运动启用策略：
+
+```text
+SeqPoseEncoder:
+  对最近 amc_causal_window=3 个 full_1 短步 pose delta 计算每个 joint 的运动幅度；
+  用 mean + alpha * std 得到自适应高运动阈值；
+  只把高运动 joint 的 causal residual 加到 baseline pose feature 上。
+
+SeqXYZEncoder:
+  对每个 Gaussian 附近 KNN 顶点的最近 full_1 短步 xyz delta 计算运动幅度；
+  用同样的自适应 gate；
+  只把高运动 point/interval 的 causal residual 加到 baseline xyz feature 上。
+
+输出形式：
+  final_feature = baseline_feature + motion_gate * causal_delta
+```
+
+默认超参数：
+
+```text
+amc_causal_mode = gated_residual
+amc_causal_window = 3
+amc_motion_gate_alpha = 1.0
+amc_motion_gate_temp = 0.5
+motion_cond_time_step_num = 3
+densify_until_iter = 1500
+```
+
+已修改文件：
+
+```text
+arguments/__init__.py
+scene/__init__.py
+scene/dataset_readers.py
+scene/gaussian_model.py
+nets/mlp_delta_non_rigid.py
+scripts/exps_dnarendering.sh
+```
+
+隔离规则：
+
+```text
+use_msti / use_amc_pair / use_amc_causal 三者互斥。
+baseline 不开 use_amc_causal 时不会创建 causal residual 参数。
+MSTI 和 AMC-pair 仍走原来的分支。
+Part-MoE 路由不变，AMC-causal 只影响 non-rigid deformer 前面的 motion feature 编码。
+```
+
+验证：
+
+```text
+bash -n scripts/exps_dnarendering.sh 通过。
+py_compile: arguments / scene / dataset_readers / gaussian_model / mlp_delta_non_rigid 通过。
+dummy shape test:
+  baseline cond steps = 3
+  causal cond steps = 3
+  SeqPoseEncoder baseline/amc output = (1, 32)
+  SeqXYZEncoder baseline/amc output = (1, 4, 96)
+  NonrigidDeformer output = [(1, 4, 3), (1, 4, 4), (1, 4, 3)]
+```
+
+启动实验：
+
+```text
+时间: 20260701_180553
+日志: /media/image/mxz/human/SeqAvatar/logs/AMC/20260701_180553_DNA-Rendering_amc_causal.log
+
+GPU 1:
+  0044_11, 0051_09, 0206_04
+
+GPU 2:
+  0813_05, 0007_04, 0019_10
+```
+
+备注：
+
+```text
+两个 tmux 在同一秒启动，因此共享同一个 RUN_TIME 和同一个全局日志文件。
+输出目录按序列隔离：
+  output/DNA-Rendering/<sequence>/amc_causal/20260701_180553/
+
+启动后已确认：
+  USE_AMC_CAUSAL=1
+  MOTION_COND_TIME_STEP_NUM=3
+  DENSIFY_UNTIL_ITER=1500
+  两个首个序列均进入 Training 进度，无初始 OOM。
+```
+
+### AMC-causal metrics, 20260701_180553
+
+日志：
+
+```text
+/media/image/mxz/human/SeqAvatar/logs/AMC/20260701_180553_DNA-Rendering_amc_causal.log
+```
+
+说明：
+
+```text
+六个 DNA-Rendering 序列全部完成。
+两个 tmux 进程共享同一个日志文件，因此日志中训练进度有交错。
+下面采用每个 Finished sequence 前最近一条 render.py 最终 novelview 评价行。
+```
+
+| Sequence | PSNR | SSIM | LPIPS*1000 |
+|---|---:|---:|---:|
+| 0044_11 | 32.9390 | 0.977826 | 21.5267 |
+| 0051_09 | 28.6215 | 0.971177 | 31.1707 |
+| 0206_04 | 31.3885 | 0.970309 | 33.2033 |
+| 0813_05 | 36.0316 | 0.986819 | 18.6497 |
+| 0007_04 | 29.5400 | 0.958471 | 45.2457 |
+| 0019_10 | 35.2663 | 0.980813 | 21.3089 |
+| Mean | 32.2978 | 0.974236 | 28.5175 |
+
+与同 densify_until_iter=1500 baseline 的差值，AMC-causal - baseline：
+
+| Sequence | dPSNR | dSSIM | dLPIPS*1000 |
+|---|---:|---:|---:|
+| 0044_11 | -0.0351 | -0.000089 | +0.1297 |
+| 0051_09 | -0.0499 | -0.000271 | +0.0786 |
+| 0206_04 | +0.0086 | +0.000510 | -0.8201 |
+| 0813_05 | -0.0551 | -0.000074 | +0.1860 |
+| 0007_04 | +0.0064 | +0.000136 | -0.1437 |
+| 0019_10 | +0.0454 | +0.000117 | +0.0440 |
+| Mean | -0.0133 | +0.000055 | -0.0876 |
+
+初步判断：
+
+```text
+AMC-causal 相比 AMC-pair 更接近有效：mean SSIM 和 LPIPS*1000 略优于 baseline，PSNR 略低。
+提升幅度仍很小，不能算稳定明显收益。
+下一步应检查 gate 是否真的只在高运动区域激活；如果 gate 过小或过大，需要调 amc_motion_gate_alpha / temp。
+```
+
+### AMC-causal result analysis and optimization plan
+
+当前结果：
+
+```text
+AMC-causal - baseline, densify 1500:
+PSNR        -0.0133
+SSIM        +0.000055
+LPIPS*1000  -0.0876
+```
+
+判断：
+
+```text
+当前 AMC-causal 不是失败，但收益太小。
+它说明 causal residual 比 AMC-pair 更有希望，但当前 gate / residual / causal 信息量都偏保守。
+```
+
+主要原因：
+
+```text
+1. 差值本身接近训练随机波动。
+   PSNR -0.0133、SSIM +0.000055 都非常小，不足以证明稳定提升。
+
+2. 当前 causal 分支只用 full_1 的最近 3 段短步运动。
+   DNA baseline 已经有 [full_3, full_2, full_1]，并且 seq_len=8。
+   因此 97->98, 98->99, 99->100 并不是全新数据，只是换了一种编码方式。
+
+3. residual 是安全保守设计。
+   amc_out 采用 zero init，初始完全等于 baseline。
+   这能避免伤 baseline，但也会让 causal 分支学习较慢、影响幅度较小。
+
+4. pose gate 最后被平均成一个全局标量。
+   代码中 joint_gate 先按 joint 计算，但最后 motion_gate = mean(joint_gate)。
+   如果只有手臂/腿部少数关节高运动，平均后 residual 会被稀释。
+
+5. 当前高运动判断是 mean + alpha * std。
+   alpha=1.0 可能过严，导致 gate 激活很少；
+   也可能在不同序列上阈值不稳定。
+
+6. 训练目标仍是全帧平均 loss。
+   如果高运动帧/高运动区域占比不大，causal 分支获得的监督信号会被低运动区域冲淡。
+
+7. 没有 gate 统计输出。
+   目前无法判断是 gate 没开、residual 太小，还是 causal 特征本身没有贡献。
+```
+
+优先优化：
+
+```text
+第一步先加诊断，不急着继续换结构：
+  gate mean / max / active ratio
+  causal_delta norm
+  baseline_feature norm
+  residual / baseline norm
+  pose gate 与 xyz gate 分开统计
+
+如果 gate active ratio 很低：
+  扫 amc_motion_gate_alpha = 0.0 / 0.5 / 1.0
+  扫 amc_motion_gate_temp = 0.25 / 0.5 / 1.0
+
+如果 residual / baseline norm 很低：
+  把 amc_out 从 zero init 改为 small init；
+  或者增加 learnable residual scale，并初始化为小正数。
+
+如果 pose 分支伤害、xyz 分支有效：
+  做 amc_causal_xyz_only / amc_causal_pose_only 消融。
+
+如果 full_1 causal 信息冗余：
+  加入 acceleration / second-order motion:
+    a1 = v98_99 - v97_98
+    a2 = v99_100 - v98_99
+  让 AMC 提供 baseline 不直接具备的运动趋势信息。
+
+如果全局平均掩盖高运动收益：
+  增加 high-motion subset 评价；
+  或训练时对高运动帧/高运动区域加采样权重。
+
+如果要更强正式 AMC：
+  做 part-aware causal gate。
+  用 SMPL joint/vertex part mask 让 arms/legs/hand 等局部高运动 residual 只影响对应高斯，而不是 pose feature 全局平均。
+```
+
+下一轮最小风险实验建议：
+
+```text
+1. 先不改核心结构，只加 gate/residual 统计输出。
+2. 跑一个短 debug 或单序列 0044_11 / 0206_04，确认 gate 是否有效。
+3. 再跑 alpha/temp 小网格：
+   alpha=0.5,temp=0.5
+   alpha=0.0,temp=0.5
+   alpha=0.5,temp=1.0
+4. 同时做 xyz_only / pose_only，确定主要收益来自哪一路。
+```
+
+## 2026-07-01 AMC 是否继续推进的阶段性判断
+
+结论：
+
+```text
+AMC 方向可以继续，但不建议现在作为强第二创新点主打。
+当前更适合作为候选分支继续验证，优先做高运动/局部区域评估，而不是继续直接改模型结构。
+```
+
+原因：
+
+```text
+AMC-pair 三项平均指标均弱于 baseline，说明简单追加 history-history pair channel 基本无效。
+AMC-causal 比 AMC-pair 更合理，SSIM / LPIPS*1000 略优于同 densify=1500 baseline，但 PSNR 略低，收益太小。
+当前结果只能说明 structured temporal modeling 有弱正信号，不足以支撑强主贡献。
+```
+
+下一步决策树：
+
+```text
+1. 先做 high-motion subset 评价。
+   如果 top motion frames 上 LPIPS/SSIM 明显提升，则 AMC-causal 继续保留。
+   如果 high-motion subset 也没有提升，则不建议继续主推 AMC。
+
+2. 再做局部区域评价。
+   优先看 arms / legs / silhouette boundary。
+   如果局部动态区域明显改善，可以把 AMC 定位为 dynamic-region motion module。
+
+3. 再做 Part-MoE + AMC-causal 组合。
+   如果组合稳定提升，AMC 可作为 Part-MoE 的时间增强补充。
+   如果组合仍弱，则放弃 AMC 作为第二创新点主线。
+```
+
+隔离要求：
+
+```text
+当前阶段不改 baseline / MSTI / Part-MoE / AMC 已有训练流程。
+优先新增独立 evaluation 脚本读取已有输出结果，计算 high-motion subset 和局部区域指标。
+如果后续必须改训练代码，必须通过新开关和新 experiment_name 隔离：
+  amc_causal_debug
+  amc_causal_xyz_only
+  amc_causal_pose_only
+  amc_accel
+  part_moe_leg_amc_causal
+
+所有新开关默认关闭。
+不能改变 original / msti / amc_pair / amc_causal / part_moe_leg 的默认行为。
+```
+
+## 2026-07-01 AMC 继续/放弃评估脚本
+
+按当前决策树新增只读评估脚本：
+
+```text
+scripts/evaluate_amc_decision.py
+```
+
+脚本用途：
+
+```text
+比较 baseline 与 AMC-causal 的:
+  1. overall 指标
+  2. top-motion pose subset 指标
+  3. low-motion subset 指标
+  4. motion score 与逐图指标变化的相关性
+  5. 可选 silhouette-boundary PSNR
+
+根据阈值输出:
+  CONTINUE_AS_CANDIDATE
+  HOLD_AND_DIAGNOSE
+  STOP_AS_MAIN
+```
+
+隔离原则：
+
+```text
+脚本只读 output/、DNA-Rendering/model/ 和可选 render/mask 图片。
+不改 train.py / render.py / dataset reader / model / checkpoint。
+不启动训练，不启动渲染，不改变 original / MSTI / AMC / Part-MoE 默认流程。
+```
+
+默认运行命令：
+
+```bash
+cd /media/image/mxz/human/SeqAvatar
+/media/image/mxz/.conda/envs/seqavatar/bin/python scripts/evaluate_amc_decision.py
+```
+
+当前默认比较口径：
+
+```text
+baseline exp = orginal
+baseline run:
+  0044_11 -> 20260701_162750
+  其它五个序列 -> 20260701_130518
+
+candidate exp = amc_causal
+candidate run = 20260701_180553
+iteration = 25000
+split = novelview
+top_motion_ratio = 0.2
+motion_step = 5
+motion_score = pose
+```
+
+重要口径说明：
+
+```text
+high-motion subset 必须依赖逐视角指标。
+当前 render.py 最终复评日志只打印总指标，不保存 per-view JSON。
+因此该脚本默认使用 metrics/results_novelview_25000.json 和
+metrics/per_viewnovelview_25000.json，也就是 training eval 落盘口径。
+不要把脚本输出误写成 render-log 总指标口径。
+```
+
+本次默认六序列评估已生成：
+
+```text
+logs/AMC/amc_decision_20260701_204852.md
+logs/AMC/amc_decision_20260701_204852.json
+```
+
+报告主结论：
+
+```text
+Decision = STOP_AS_MAIN
+```
+
+关键聚合结果，AMC-causal - baseline：
+
+```text
+overall:
+  dPSNR = -0.0134
+  dSSIM = +0.000055
+  dLPIPS*1000 = -0.0745
+
+high-motion subset:
+  dPSNR = +0.0046
+  dSSIM = +0.000070
+  dLPIPS*1000 = -0.1903
+
+low-motion subset:
+  dPSNR = -0.0109
+  dSSIM = +0.000163
+  dLPIPS*1000 = -0.2566
+
+boundary_all:
+  dPSNR = +0.0039
+
+boundary_high_motion:
+  dPSNR = +0.0532
+```
+
+判断：
+
+```text
+high-motion subset 上没有达到预设的有效提升阈值:
+  LPIPS*1000 改善阈值 = -0.5
+  SSIM 改善阈值 = +0.0002
+  boundary PSNR 改善阈值 = +0.10 dB
+
+因此当前 AMC-causal 不建议继续作为强第二创新点主线推进。
+如果继续保留，只应作为候选支线，后续需要更强局部/part-aware gate、
+acceleration/second-order motion 或 Part-MoE 组合实验提供新证据。
+```

@@ -50,6 +50,10 @@ class Scene:
             "use_msti": getattr(args, "use_msti", False),
             "msti_mode": getattr(args, "msti_mode", "none"),
             "msti_mid_type": getattr(args, "msti_mid_type", "real"),
+            "use_amc_pair": getattr(args, "use_amc_pair", False),
+            "amc_pair_mode": getattr(args, "amc_pair_mode", "baseline_full"),
+            "use_amc_causal": getattr(args, "use_amc_causal", False),
+            "amc_causal_mode": getattr(args, "amc_causal_mode", "gated_residual"),
             "motion_cond_time_step_num": int(getattr(args, "motion_cond_time_step_num", args.time_step_num)),
         }
 

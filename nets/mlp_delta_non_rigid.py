@@ -4,6 +4,19 @@ import torch
 import torch.nn as nn
 
 
+def _adaptive_motion_gate(score, alpha=1.0, temp=0.5, reduce_dims=None):
+    if reduce_dims is None:
+        reduce_dims = tuple(range(1, score.dim()))
+    alpha = float(alpha)
+    temp = max(float(temp), 1e-6)
+    score_ref = score.detach()
+    mean = score_ref.mean(dim=reduce_dims, keepdim=True)
+    std = score_ref.std(dim=reduce_dims, unbiased=False, keepdim=True)
+    threshold = mean + alpha * std
+    denom = (std * temp).clamp_min(1e-6)
+    return torch.sigmoid((score - threshold) / denom)
+
+
 class PartNonrigidExpert(nn.Module):
     def __init__(self, mlp, gaussian_warp, gaussian_rotation, gaussian_scaling):
         super().__init__()
@@ -21,7 +34,9 @@ class NonrigidDeformer(nn.Module):
     def __init__(self, D=3, W=512, use_pose_cond=0, use_seq_pose_cond=0, use_seq_xyz_cond=0, 
                  pos_input_dim=63, pose_cond_dim=32, seq_pose_cond_dim=32, seq_xyz_cond_dim=96,
                  seq_len=6, seq_xyz_knn=1, time_step_num=1, smpl_type='smpl',
-                 use_part_moe=False, num_parts=5, part_moe_global_keep=0.1):
+                 use_part_moe=False, num_parts=5, part_moe_global_keep=0.1,
+                 use_amc_causal=False, amc_causal_mode="gated_residual", amc_causal_window=3,
+                 amc_motion_gate_alpha=1.0, amc_motion_gate_temp=0.5):
         super(NonrigidDeformer, self).__init__()
 
         self.use_pose_cond = use_pose_cond
@@ -32,6 +47,7 @@ class NonrigidDeformer(nn.Module):
         self.part_moe_global_keep = part_moe_global_keep
         self.part_moe_active = False
         self.part_experts = None
+        self.use_amc_causal = bool(use_amc_causal)
 
         self.input_ch = pos_input_dim
         self.pose_cond_dim, self.seq_pose_cond_dim, self.seq_xyz_cond_dim = 0, 0, 0
@@ -41,12 +57,28 @@ class NonrigidDeformer(nn.Module):
             self.input_ch += pose_cond_dim
             
         if self.use_seq_pose_cond:
-            self.SeqPoseEncoder = SeqPoseEncoder(seq_len, 16, seq_pose_cond_dim, time_step_num, smpl_type)
+            self.SeqPoseEncoder = SeqPoseEncoder(
+                seq_len,
+                16,
+                seq_pose_cond_dim,
+                time_step_num,
+                smpl_type,
+                use_amc_causal=self.use_amc_causal,
+                amc_causal_mode=amc_causal_mode,
+                amc_causal_window=amc_causal_window,
+                amc_motion_gate_alpha=amc_motion_gate_alpha,
+                amc_motion_gate_temp=amc_motion_gate_temp,
+            )
             self.input_ch += seq_pose_cond_dim
 
         if self.use_seq_xyz_cond:
             self.SeqXYZEncoder = SeqXYZEncoder(pos_emb_dim=pos_input_dim, hidden_dim1=96, hidden_dim2=256, output_dim=seq_xyz_cond_dim, 
-                                        time_step_num=time_step_num, seq_len=seq_len, seq_xyz_knn=seq_xyz_knn)
+                                        time_step_num=time_step_num, seq_len=seq_len, seq_xyz_knn=seq_xyz_knn,
+                                        use_amc_causal=self.use_amc_causal,
+                                        amc_causal_mode=amc_causal_mode,
+                                        amc_causal_window=amc_causal_window,
+                                        amc_motion_gate_alpha=amc_motion_gate_alpha,
+                                        amc_motion_gate_temp=amc_motion_gate_temp)
             self.input_ch += seq_xyz_cond_dim
         
         layers = []
@@ -211,13 +243,29 @@ class PoseEncoder(nn.Module):
         return self.mlp(x_joint_flat)
 
 class SeqPoseEncoder(nn.Module):
-    def __init__(self, length, D1, D2, time_step_num, smpl_type):
+    def __init__(self, length, D1, D2, time_step_num, smpl_type,
+                 use_amc_causal=False, amc_causal_mode="gated_residual", amc_causal_window=3,
+                 amc_motion_gate_alpha=1.0, amc_motion_gate_temp=0.5):
         super(SeqPoseEncoder, self).__init__()
 
         self.input_dim = 3 * (N_JOINT[smpl_type] + 1) # axis-angle form, + global orientation
         self.time_step_num = time_step_num
+        self.use_amc_causal = bool(use_amc_causal)
+        self.amc_causal_mode = amc_causal_mode
+        self.amc_causal_window = max(1, int(amc_causal_window))
+        self.amc_motion_gate_alpha = float(amc_motion_gate_alpha)
+        self.amc_motion_gate_temp = float(amc_motion_gate_temp)
         self.mlp1 = nn.Sequential(nn.Linear(self.input_dim*time_step_num,D1), nn.ReLU())
         self.mlp2 = nn.Sequential(nn.Linear(D1*length, D2), nn.ReLU())
+
+        if self.use_amc_causal:
+            if self.amc_causal_mode != "gated_residual":
+                raise ValueError(f"Unsupported AMC causal mode: {self.amc_causal_mode}")
+            self.amc_step_encoder = nn.Sequential(nn.Linear(self.input_dim, D1), nn.ReLU())
+            self.amc_gru = nn.GRU(D1, D1, batch_first=True)
+            self.amc_out = nn.Linear(D1, D2)
+            nn.init.zeros_(self.amc_out.weight)
+            nn.init.zeros_(self.amc_out.bias)
 
     def forward(self, x):
         # x: (B, N, T, J, DeltaStep, C)
@@ -228,24 +276,64 @@ class SeqPoseEncoder(nn.Module):
                 f"SeqPoseEncoder expected {self.time_step_num} motion channels, "
                 f"got {x.shape[2]} with shape {tuple(x.shape)}"
             )
-        x = self.mlp1(x.view(bs, T, -1))
-        x = self.mlp2(x.view(bs, -1))
+        base_x = self.mlp1(x.reshape(bs, T, -1))
+        base_feat = self.mlp2(base_x.reshape(bs, -1))
 
-        return x
+        if not self.use_amc_causal:
+            return base_feat
+
+        causal_window = min(self.amc_causal_window, T)
+        # The last channel is the shortest time step because generate_time_steps
+        # keeps channels ordered from large step to small step.
+        recent_short_step = x[:, :causal_window, -1].contiguous()
+        causal_chain = torch.flip(recent_short_step, dims=[1]).contiguous()
+        motion_score = torch.linalg.norm(causal_chain, dim=-1)
+        joint_gate = _adaptive_motion_gate(
+            motion_score,
+            alpha=self.amc_motion_gate_alpha,
+            temp=self.amc_motion_gate_temp,
+            reduce_dims=(1, 2),
+        )
+        gated_chain = causal_chain * joint_gate.unsqueeze(-1)
+        causal_in = gated_chain.reshape(bs, causal_window, -1)
+        causal_step_feat = self.amc_step_encoder(causal_in)
+        _, causal_hidden = self.amc_gru(causal_step_feat)
+        causal_delta = self.amc_out(causal_hidden.squeeze(0))
+        motion_gate = joint_gate.mean(dim=(1, 2), keepdim=False).unsqueeze(-1)
+
+        return base_feat + motion_gate * causal_delta
 
 class SeqXYZEncoder(nn.Module):
     def __init__(self, vel_dim=3, pos_emb_dim=63, vel_emb_dim=64, pos_emb_proj_dim=32, 
                  hidden_dim1=96, hidden_dim2=256, output_dim=128, 
-                 time_step_num=1, seq_len=6, seq_xyz_knn=5):
+                 time_step_num=1, seq_len=6, seq_xyz_knn=5,
+                 use_amc_causal=False, amc_causal_mode="gated_residual", amc_causal_window=3,
+                 amc_motion_gate_alpha=1.0, amc_motion_gate_temp=0.5):
         super(SeqXYZEncoder, self).__init__()
 
         self.time_step_num = time_step_num
+        self.use_amc_causal = bool(use_amc_causal)
+        self.amc_causal_mode = amc_causal_mode
+        self.amc_causal_window = max(1, int(amc_causal_window))
+        self.amc_motion_gate_alpha = float(amc_motion_gate_alpha)
+        self.amc_motion_gate_temp = float(amc_motion_gate_temp)
         self.vel_encoder = nn.Sequential(nn.Linear(vel_dim*seq_xyz_knn*time_step_num, vel_emb_dim), nn.ReLU())
         self.pos_emb_proj = nn.Sequential(nn.Linear(pos_emb_dim, pos_emb_proj_dim), nn.ReLU())
         
         self.mlp1 = nn.Sequential(nn.Linear(vel_emb_dim+pos_emb_proj_dim, hidden_dim1), nn.ReLU())
         self.mlp2 = nn.Sequential(nn.Linear(hidden_dim1*seq_len, hidden_dim2), nn.ReLU(),
                                   nn.Linear(hidden_dim2, output_dim), nn.ReLU())
+
+        if self.use_amc_causal:
+            if self.amc_causal_mode != "gated_residual":
+                raise ValueError(f"Unsupported AMC causal mode: {self.amc_causal_mode}")
+            self.amc_vel_encoder = nn.Sequential(nn.Linear(vel_dim * seq_xyz_knn, vel_emb_dim), nn.ReLU())
+            self.amc_mlp1 = nn.Sequential(nn.Linear(vel_emb_dim + pos_emb_proj_dim, hidden_dim1), nn.ReLU())
+            self.amc_gru = nn.GRU(hidden_dim1, hidden_dim1, batch_first=True)
+            self.amc_out = nn.Linear(hidden_dim1, output_dim)
+            nn.init.zeros_(self.amc_out.weight)
+            nn.init.zeros_(self.amc_out.bias)
+
     def forward(self, x, x_emb):
         # x -> B, N, T, KNN, DeltaStep, C
         B, N, T = x.shape[0], x.shape[1], x.shape[2]
@@ -257,10 +345,32 @@ class SeqXYZEncoder(nn.Module):
 
         pos_feat = self.pos_emb_proj(x_emb)
         pos_feat = pos_feat.unsqueeze(2).expand(-1, -1, T, -1)
-        vel_emb = self.vel_encoder(x.view(B, N, T, -1))
+        vel_emb = self.vel_encoder(x.reshape(B, N, T, -1))
 
         h = torch.concat([vel_emb, pos_feat], dim=-1)
         h = self.mlp1(h)
-        h = self.mlp2(h.view(B, N, -1))
+        base_feat = self.mlp2(h.reshape(B, N, -1))
 
-        return h
+        if not self.use_amc_causal:
+            return base_feat
+
+        causal_window = min(self.amc_causal_window, T)
+        recent_short_step = x[:, :, :causal_window, :, -1, :].contiguous()
+        causal_chain = torch.flip(recent_short_step, dims=[2]).contiguous()
+        motion_score = torch.linalg.norm(causal_chain, dim=-1).mean(dim=3)
+        interval_gate = _adaptive_motion_gate(
+            motion_score,
+            alpha=self.amc_motion_gate_alpha,
+            temp=self.amc_motion_gate_temp,
+            reduce_dims=(1, 2),
+        )
+        gated_chain = causal_chain * interval_gate.unsqueeze(-1).unsqueeze(-1)
+        causal_vel = self.amc_vel_encoder(gated_chain.reshape(B, N, causal_window, -1))
+        causal_pos = pos_feat[:, :, :causal_window, :]
+        causal_h = self.amc_mlp1(torch.concat([causal_vel, causal_pos], dim=-1))
+        causal_h = causal_h.reshape(B * N, causal_window, -1)
+        _, causal_hidden = self.amc_gru(causal_h)
+        causal_delta = self.amc_out(causal_hidden.squeeze(0)).reshape(B, N, -1)
+        motion_gate = interval_gate.mean(dim=2, keepdim=True)
+
+        return base_feat + motion_gate * causal_delta
