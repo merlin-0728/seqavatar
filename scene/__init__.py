@@ -54,6 +54,13 @@ class Scene:
             "amc_pair_mode": getattr(args, "amc_pair_mode", "baseline_full"),
             "use_amc_causal": getattr(args, "use_amc_causal", False),
             "amc_causal_mode": getattr(args, "amc_causal_mode", "gated_residual"),
+            "use_tdp": getattr(args, "use_tdp", False),
+            "tdp_mode": getattr(args, "tdp_mode", "keep_base"),
+            "fix_stms": getattr(args, "fix_stms", False),
+            "use_acc_cond": getattr(args, "use_acc_cond", False),
+            "use_motion_token": getattr(args, "use_motion_token", False),
+            "motion_token_fix_stms": getattr(args, "motion_token_fix_stms", False),
+            "motion_token_use_acc": getattr(args, "motion_token_use_acc", False),
             "motion_cond_time_step_num": int(getattr(args, "motion_cond_time_step_num", args.time_step_num)),
         }
 

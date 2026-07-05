@@ -82,6 +82,38 @@ class ModelParams(ParamGroup):
         self.amc_causal_window = 3
         self.amc_motion_gate_alpha = 1.0
         self.amc_motion_gate_temp = 0.5
+        self.use_tdp = False
+        self.tdp_mode = "keep_base"
+        self.use_tdp_semantic_encoder = False
+        self.tdp_semantic_mode = "gated_residual"
+        self.tdp_gate_init_bias = -4.0
+        self.tdp_debug_stats = False
+        self.tdp_debug_interval = 1000
+        self.use_dif = False
+        self.dif_mode = "peak"
+        self.dif_sigma_init = -7.0
+        self.dif_eps = 1e-6
+        self.dif_sigma_min = 1e-4
+        self.dif_sigma_max = 0.05
+        self.dif_residual_beta = 1.0
+        self.dif_residual_warmup = 0
+        self.dif_sigma_prior = 0.02
+        self.dif_sigma_prior_w = 0.0
+        self.dif_uncert_loss_w = 0.0
+        self.dif_uncert_s_min = -6.0
+        self.dif_uncert_s_max = 3.0
+        self.dif_debug_interval = 1000
+        self.fix_stms = False
+        self.use_acc_cond = False
+        self.seq_acc_cond_dim = 64
+        self.use_motion_token = False
+        self.motion_token_mode = "none"
+        self.motion_token_num = 32
+        self.motion_token_dim = 64
+        self.motion_token_part_dim = 16
+        self.motion_token_acc_dim = 64
+        self.motion_token_debug_stats = False
+        self.motion_token_debug_interval = 1000
         self.use_part_moe = False
         self.part_moe_start_iter = 15000
         self.part_moe_warmup = 1000
@@ -133,8 +165,127 @@ def resolve_motion_condition_args(args):
         raise ValueError(
             f"amc_causal_mode must be one of {sorted(valid_amc_causal_modes)}, got {amc_causal_mode}"
         )
-    if sum([use_msti, use_amc_pair, use_amc_causal]) > 1:
-        raise ValueError("use_msti, use_amc_pair, and use_amc_causal are mutually exclusive in these ablations.")
+
+    use_tdp = bool(getattr(args, "use_tdp", False))
+    tdp_mode = getattr(args, "tdp_mode", "keep_base") or "keep_base"
+    tdp_mode = str(tdp_mode).lower()
+    valid_tdp_modes = {"local", "keep_base"}
+    if use_tdp and tdp_mode not in valid_tdp_modes:
+        raise ValueError(f"tdp_mode must be one of {sorted(valid_tdp_modes)}, got {tdp_mode}")
+
+    use_tdp_semantic_encoder = bool(getattr(args, "use_tdp_semantic_encoder", False))
+    tdp_semantic_mode = getattr(args, "tdp_semantic_mode", "gated_residual") or "gated_residual"
+    tdp_semantic_mode = str(tdp_semantic_mode).lower()
+    valid_tdp_semantic_modes = {"gated_residual", "baseline_residual"}
+    if use_tdp_semantic_encoder and tdp_semantic_mode not in valid_tdp_semantic_modes:
+        raise ValueError(
+            f"tdp_semantic_mode must be one of {sorted(valid_tdp_semantic_modes)}, got {tdp_semantic_mode}"
+        )
+    if use_tdp_semantic_encoder and (not use_tdp or tdp_mode != "keep_base"):
+        raise ValueError("use_tdp_semantic_encoder requires use_tdp=True and tdp_mode=keep_base.")
+    tdp_gate_init_bias = float(getattr(args, "tdp_gate_init_bias", -4.0))
+    tdp_debug_stats = bool(getattr(args, "tdp_debug_stats", False))
+    tdp_debug_interval = int(getattr(args, "tdp_debug_interval", 1000) or 1000)
+    if tdp_debug_interval <= 0:
+        raise ValueError(f"tdp_debug_interval must be positive, got {tdp_debug_interval}")
+
+    use_dif = bool(getattr(args, "use_dif", False))
+    dif_mode = getattr(args, "dif_mode", "peak") or "peak"
+    dif_mode = str(dif_mode).lower()
+    valid_dif_modes = {"peak", "sigma_rectifier", "sigma_rectifier_v2", "uncert_loss"}
+    if use_dif and dif_mode not in valid_dif_modes:
+        raise ValueError(f"dif_mode must be one of {sorted(valid_dif_modes)}, got {dif_mode}")
+    dif_sigma_init = float(getattr(args, "dif_sigma_init", -7.0))
+    dif_eps = float(getattr(args, "dif_eps", 1e-6))
+    if use_dif and dif_eps <= 0:
+        raise ValueError(f"dif_eps must be positive, got {dif_eps}")
+    dif_sigma_min = float(getattr(args, "dif_sigma_min", 1e-4))
+    dif_sigma_max = float(getattr(args, "dif_sigma_max", 0.05))
+    dif_residual_beta = float(getattr(args, "dif_residual_beta", 1.0))
+    dif_residual_warmup = int(getattr(args, "dif_residual_warmup", 0) or 0)
+    dif_sigma_prior = float(getattr(args, "dif_sigma_prior", 0.02))
+    dif_sigma_prior_w = float(getattr(args, "dif_sigma_prior_w", 0.0))
+    dif_uncert_loss_w = float(getattr(args, "dif_uncert_loss_w", 0.0))
+    dif_uncert_s_min = float(getattr(args, "dif_uncert_s_min", -6.0))
+    dif_uncert_s_max = float(getattr(args, "dif_uncert_s_max", 3.0))
+    dif_debug_interval = int(getattr(args, "dif_debug_interval", 1000) or 1000)
+    if use_dif:
+        if dif_sigma_min <= 0:
+            raise ValueError(f"dif_sigma_min must be positive, got {dif_sigma_min}")
+        if dif_sigma_max <= dif_sigma_min:
+            raise ValueError(
+                f"dif_sigma_max must be larger than dif_sigma_min, got min={dif_sigma_min}, max={dif_sigma_max}"
+            )
+        if dif_residual_beta < 0:
+            raise ValueError(f"dif_residual_beta must be non-negative, got {dif_residual_beta}")
+        if dif_residual_warmup < 0:
+            raise ValueError(f"dif_residual_warmup must be non-negative, got {dif_residual_warmup}")
+        if dif_sigma_prior <= 0:
+            raise ValueError(f"dif_sigma_prior must be positive, got {dif_sigma_prior}")
+        if dif_sigma_prior_w < 0:
+            raise ValueError(f"dif_sigma_prior_w must be non-negative, got {dif_sigma_prior_w}")
+        if dif_uncert_loss_w < 0:
+            raise ValueError(f"dif_uncert_loss_w must be non-negative, got {dif_uncert_loss_w}")
+        if dif_uncert_s_max <= dif_uncert_s_min:
+            raise ValueError(
+                f"dif_uncert_s_max must be larger than dif_uncert_s_min, "
+                f"got min={dif_uncert_s_min}, max={dif_uncert_s_max}"
+            )
+        if dif_debug_interval <= 0:
+            raise ValueError(f"dif_debug_interval must be positive, got {dif_debug_interval}")
+    if use_dif and bool(getattr(args, "use_part_moe", False)):
+        raise ValueError("use_dif and use_part_moe are not combined in this ablation.")
+
+    fix_stms = bool(getattr(args, "fix_stms", False))
+    use_acc_cond = bool(getattr(args, "use_acc_cond", False))
+    seq_acc_cond_dim = int(getattr(args, "seq_acc_cond_dim", 64) or 64)
+    if use_acc_cond and seq_acc_cond_dim <= 0:
+        raise ValueError(f"seq_acc_cond_dim must be positive, got {seq_acc_cond_dim}")
+    if use_acc_cond:
+        fix_stms = True
+
+    use_motion_token = bool(getattr(args, "use_motion_token", False))
+    motion_token_mode = getattr(args, "motion_token_mode", "none") or "none"
+    motion_token_mode = str(motion_token_mode).lower()
+    valid_motion_token_modes = {"none", "fix_stms", "acc", "part", "codebook", "full"}
+    if motion_token_mode not in valid_motion_token_modes:
+        raise ValueError(
+            f"motion_token_mode must be one of {sorted(valid_motion_token_modes)}, got {motion_token_mode}"
+        )
+    use_motion_token = use_motion_token or motion_token_mode != "none"
+    if not use_motion_token:
+        motion_token_mode = "none"
+    if use_motion_token and bool(getattr(args, "use_part_moe", False)):
+        raise ValueError("use_motion_token and use_part_moe are not combined in this ablation.")
+    if use_motion_token and use_dif:
+        raise ValueError("use_motion_token and use_dif are not combined in this ablation.")
+    if use_motion_token and any([use_msti, use_amc_pair, use_amc_causal, use_tdp]):
+        raise ValueError("use_motion_token is mutually exclusive with MSTI, AMC, and TDP ablations.")
+    if use_acc_cond and any([use_msti, use_amc_pair, use_amc_causal, use_tdp, use_dif, use_motion_token]):
+        raise ValueError("use_acc_cond is a standalone ablation and is mutually exclusive with MSTI, AMC, TDP, DIF, and token ablations.")
+
+    motion_token_num = int(getattr(args, "motion_token_num", 32) or 32)
+    motion_token_dim = int(getattr(args, "motion_token_dim", 64) or 64)
+    motion_token_part_dim = int(getattr(args, "motion_token_part_dim", 16) or 16)
+    motion_token_acc_dim = int(getattr(args, "motion_token_acc_dim", 64) or 64)
+    motion_token_debug_stats = bool(getattr(args, "motion_token_debug_stats", False))
+    motion_token_debug_interval = int(getattr(args, "motion_token_debug_interval", 1000) or 1000)
+    if use_motion_token:
+        for name, value in {
+            "motion_token_num": motion_token_num,
+            "motion_token_dim": motion_token_dim,
+            "motion_token_part_dim": motion_token_part_dim,
+            "motion_token_acc_dim": motion_token_acc_dim,
+        }.items():
+            if value <= 0:
+                raise ValueError(f"{name} must be positive, got {value}")
+        if motion_token_debug_interval <= 0:
+            raise ValueError(
+                f"motion_token_debug_interval must be positive, got {motion_token_debug_interval}"
+            )
+
+    if sum([use_msti, use_amc_pair, use_amc_causal, use_tdp]) > 1:
+        raise ValueError("use_msti, use_amc_pair, use_amc_causal, and use_tdp are mutually exclusive in these ablations.")
 
     amc_causal_window = int(getattr(args, "amc_causal_window", 3) or 3)
     if use_amc_causal and amc_causal_window <= 0:
@@ -154,6 +305,11 @@ def resolve_motion_condition_args(args):
         expected_cond_steps = time_step_num + time_step_num * (time_step_num - 1) // 2
     elif use_amc_causal:
         expected_cond_steps = time_step_num
+    elif use_tdp:
+        if tdp_mode == "local":
+            expected_cond_steps = 2 * time_step_num
+        else:
+            expected_cond_steps = time_step_num + 2 * time_step_num - 1
     elif msti_mode == "none":
         expected_cond_steps = time_step_num
     elif msti_mode == "lite":
@@ -167,7 +323,8 @@ def resolve_motion_condition_args(args):
             "motion_cond_time_step_num mismatch: "
             f"requested={requested_cond_steps}, expected={expected_cond_steps} "
             f"for time_step_num={time_step_num}, msti_mode={msti_mode}, "
-            f"use_amc_pair={use_amc_pair}, use_amc_causal={use_amc_causal}"
+            f"use_amc_pair={use_amc_pair}, use_amc_causal={use_amc_causal}, "
+            f"use_tdp={use_tdp}, tdp_mode={tdp_mode}"
         )
 
     args.use_msti = use_msti
@@ -177,6 +334,42 @@ def resolve_motion_condition_args(args):
     args.amc_pair_mode = amc_pair_mode
     args.use_amc_causal = use_amc_causal
     args.amc_causal_mode = amc_causal_mode
+    args.use_tdp = use_tdp
+    args.tdp_mode = tdp_mode
+    args.use_tdp_semantic_encoder = use_tdp_semantic_encoder
+    args.tdp_semantic_mode = tdp_semantic_mode
+    args.tdp_gate_init_bias = tdp_gate_init_bias
+    args.tdp_debug_stats = tdp_debug_stats
+    args.tdp_debug_interval = tdp_debug_interval
+    args.use_dif = use_dif
+    args.dif_mode = dif_mode
+    args.dif_sigma_init = dif_sigma_init
+    args.dif_eps = dif_eps
+    args.dif_sigma_min = dif_sigma_min
+    args.dif_sigma_max = dif_sigma_max
+    args.dif_residual_beta = dif_residual_beta
+    args.dif_residual_warmup = dif_residual_warmup
+    args.dif_sigma_prior = dif_sigma_prior
+    args.dif_sigma_prior_w = dif_sigma_prior_w
+    args.dif_uncert_loss_w = dif_uncert_loss_w
+    args.dif_uncert_s_min = dif_uncert_s_min
+    args.dif_uncert_s_max = dif_uncert_s_max
+    args.dif_debug_interval = dif_debug_interval
+    args.fix_stms = fix_stms
+    args.use_acc_cond = use_acc_cond
+    args.seq_acc_cond_dim = seq_acc_cond_dim
+    args.use_motion_token = use_motion_token
+    args.motion_token_mode = motion_token_mode
+    args.motion_token_fix_stms = use_motion_token and motion_token_mode in {"fix_stms", "acc", "part", "codebook", "full"}
+    args.motion_token_use_acc = use_motion_token and motion_token_mode in {"acc", "full"}
+    args.motion_token_use_part = use_motion_token and motion_token_mode in {"part", "full"}
+    args.motion_token_use_codebook = use_motion_token and motion_token_mode in {"codebook", "full"}
+    args.motion_token_num = motion_token_num
+    args.motion_token_dim = motion_token_dim
+    args.motion_token_part_dim = motion_token_part_dim
+    args.motion_token_acc_dim = motion_token_acc_dim
+    args.motion_token_debug_stats = motion_token_debug_stats
+    args.motion_token_debug_interval = motion_token_debug_interval
     args.motion_cond_time_step_num = expected_cond_steps
     return args
 

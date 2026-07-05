@@ -53,6 +53,131 @@ def compute_part_moe_alpha(iteration, dataset):
     return t * max_part_weight
 
 
+def maybe_log_tdp_stats(iteration, dataset, gaussians):
+    if not getattr(dataset, "tdp_debug_stats", False):
+        return
+    interval = int(getattr(dataset, "tdp_debug_interval", 1000) or 1000)
+    if interval <= 0 or iteration % interval != 0:
+        return
+    deformer = getattr(gaussians, "non_rigid_deformer", None)
+    if deformer is None or not hasattr(deformer, "pop_tdp_stats"):
+        return
+    stats = deformer.pop_tdp_stats()
+    if not stats:
+        print(f"[TDP Stats][ITER {iteration}] no stats collected")
+        return
+    stats_str = " ".join(f"{key}={value:.6f}" for key, value in sorted(stats.items()))
+    print(f"[TDP Stats][ITER {iteration}] {stats_str}")
+
+
+def maybe_log_dif_stats(iteration, dataset, gaussians):
+    if not getattr(dataset, "use_dif", False):
+        return
+    interval = int(getattr(dataset, "dif_debug_interval", 1000) or 1000)
+    if interval <= 0 or iteration % interval != 0:
+        return
+    deformer = getattr(gaussians, "non_rigid_deformer", None)
+    if deformer is None or not hasattr(deformer, "pop_dif_stats"):
+        return
+    stats = deformer.pop_dif_stats()
+    if not stats:
+        print(f"[DIF Stats][ITER {iteration}] no stats collected")
+        return
+    stats_str = " ".join(f"{key}={value:.6f}" for key, value in sorted(stats.items()))
+    print(f"[DIF Stats][ITER {iteration}] {stats_str}")
+
+
+def maybe_log_motion_token_stats(iteration, dataset, gaussians):
+    if not getattr(dataset, "motion_token_debug_stats", False):
+        return
+    interval = int(getattr(dataset, "motion_token_debug_interval", 1000) or 1000)
+    if interval <= 0 or iteration % interval != 0:
+        return
+    deformer = getattr(gaussians, "non_rigid_deformer", None)
+    if deformer is None or not hasattr(deformer, "pop_motion_token_stats"):
+        return
+    stats, usage = deformer.pop_motion_token_stats()
+    if not stats:
+        print(f"[MotionToken Stats][ITER {iteration}] no stats collected", flush=True)
+        return
+    stats_str = " ".join(f"{key}={value:.6f}" for key, value in sorted(stats.items()))
+    print(f"[MotionToken Stats][ITER {iteration}] {stats_str}", flush=True)
+    if usage:
+        usage_str = ",".join(f"{value:.6f}" for value in usage)
+        print(f"[MotionToken Usage][ITER {iteration}] {usage_str}", flush=True)
+
+
+def dif_sigma_prior_loss(dataset, gaussians):
+    if not getattr(dataset, "use_dif", False):
+        return None
+    weight = float(getattr(dataset, "dif_sigma_prior_w", 0.0) or 0.0)
+    if weight <= 0:
+        return None
+    deformer = getattr(gaussians, "non_rigid_deformer", None)
+    sigma = getattr(deformer, "last_dif_sigma", None) if deformer is not None else None
+    if sigma is None:
+        return None
+    sigma_prior = float(getattr(dataset, "dif_sigma_prior", 0.02) or 0.02)
+    target = torch.log(torch.as_tensor(sigma_prior, dtype=sigma.dtype, device=sigma.device))
+    return weight * ((torch.log(sigma.clamp_min(1e-8)) - target) ** 2).mean()
+
+
+def dif_image_uncertainty_loss(dataset, gaussians, viewpoint_cam, pipe, background,
+                               render_pkg, image, gt_image, bound_mask):
+    if not getattr(dataset, "use_dif", False):
+        return None
+    if str(getattr(dataset, "dif_mode", "peak")).lower() != "uncert_loss":
+        return None
+    weight = float(getattr(dataset, "dif_uncert_loss_w", 0.0) or 0.0)
+    if weight <= 0:
+        return None
+
+    deformer = getattr(gaussians, "non_rigid_deformer", None)
+    sigma = getattr(deformer, "last_dif_sigma", None) if deformer is not None else None
+    if sigma is None:
+        return None
+
+    logvar = 2.0 * torch.log(sigma.clamp_min(1e-8))
+    logvar_color = logvar.reshape(-1, 1).expand(-1, 3).contiguous()
+    zero_background = torch.zeros_like(background)
+
+    d_nonrigid = render_pkg.get("d_nonrigid", None)
+    if d_nonrigid is not None:
+        d_nonrigid = tuple(x.detach() for x in d_nonrigid)
+    transforms = render_pkg.get("transforms", None)
+    if transforms is not None:
+        transforms = transforms.detach()
+    translation = render_pkg.get("translation", None)
+    if translation is not None:
+        translation = translation.detach()
+    else:
+        transforms = None
+
+    uncert_pkg = render(
+        viewpoint_cam,
+        gaussians,
+        pipe,
+        zero_background,
+        override_color=logvar_color,
+        transforms=transforms,
+        translation=translation,
+        d_nonrigid=d_nonrigid,
+        detach_geometry=True,
+    )
+    alpha = uncert_pkg["render_alpha"].detach().clamp_min(1e-4)
+    s_map = uncert_pkg["render"][:1] / alpha
+    s_map = torch.clamp(
+        s_map,
+        min=float(getattr(dataset, "dif_uncert_s_min", -6.0)),
+        max=float(getattr(dataset, "dif_uncert_s_max", 3.0)),
+    )
+
+    residual = (image.detach() - gt_image.detach()).pow(2).mean(dim=0, keepdim=True)
+    loss_map = residual * torch.exp(-s_map) + s_map
+    mask = bound_mask.unsqueeze(0).float()
+    return weight * (loss_map * mask).sum() / mask.sum().clamp_min(1.0)
+
+
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
@@ -105,6 +230,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         iter_start.record()
 
         gaussians.update_learning_rate(iteration)
+        if getattr(dataset, "use_dif", False):
+            deformer = getattr(gaussians, "non_rigid_deformer", None)
+            if deformer is not None and hasattr(deformer, "set_dif_iteration"):
+                deformer.set_dif_iteration(iteration)
         gaussians.part_moe_alpha = compute_part_moe_alpha(iteration, dataset)
         if (
             getattr(dataset, "use_part_moe", False)
@@ -157,6 +286,22 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # iospos ioscov loss
         loss_aiap_xyz, loss_aiap_cov = full_aiap_loss(scene.gaussians.get_xyz, render_pkg["deformed_means3D"], scene.gaussians.get_covariance(), render_pkg["deformed_cov3D"])
         loss = loss + opt.iospos_w * loss_aiap_xyz + opt.ioscov_w * loss_aiap_cov
+        loss_dif_sigma_prior = dif_sigma_prior_loss(dataset, gaussians)
+        if loss_dif_sigma_prior is not None:
+            loss = loss + loss_dif_sigma_prior
+        loss_dif_uncert = dif_image_uncertainty_loss(
+            dataset,
+            gaussians,
+            viewpoint_cam,
+            pipe,
+            background,
+            render_pkg,
+            image,
+            gt_image,
+            bound_mask,
+        )
+        if loss_dif_uncert is not None:
+            loss = loss + loss_dif_uncert
         
         loss.backward()
 
@@ -181,9 +326,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 progress_bar.set_postfix({"#pts": gaussians._xyz.shape[0], "Ll1 Loss": f"{Ll1_loss_for_log:.{3}f}", "mask Loss": f"{mask_loss_for_log:.{2}f}",
                                           "ssim": f"{ssim_loss_for_log:.{2}f}", "lpips": f"{lpips_loss_for_log:.{2}f}"})
                 progress_bar.update(10)
+                maybe_log_dif_stats(iteration, dataset, gaussians)
+                maybe_log_motion_token_stats(iteration, dataset, gaussians)
             if iteration == opt.iterations:
                 progress_bar.close()
 
+            maybe_log_tdp_stats(iteration, dataset, gaussians)
             training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background), saving_iterations)
             
             if (iteration in saving_iterations):

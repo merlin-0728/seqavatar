@@ -183,8 +183,13 @@ def readCamerasI3DHuman(path, smpl_model, output_view, white_background, image_s
         # load conditions
         if smpl_id not in cond_dict.keys():
             pose_conds = torch.from_numpy(frameid_pose[smpl_id]['poses']).unsqueeze(0)
-            seq_pose_conds, seq_xyz_conds = get_seq_pose_xyz_cond(pose_index, time_steps, interval, get_pose_xyz_func, delta_pose_xyz_cache, multi=multi, motion_cond_options=motion_cond_options)
-            cond_dict[smpl_id] = {'pose_conds': pose_conds, 'seq_pose_conds': seq_pose_conds, 'seq_xyz_conds': seq_xyz_conds}
+            cond_result = get_seq_pose_xyz_cond(pose_index, time_steps, interval, get_pose_xyz_func, delta_pose_xyz_cache, multi=multi, motion_cond_options=motion_cond_options)
+            if len(cond_result) == 3:
+                seq_pose_conds, seq_xyz_conds, seq_acc_conds = cond_result
+                cond_dict[smpl_id] = {'pose_conds': pose_conds, 'seq_pose_conds': seq_pose_conds, 'seq_xyz_conds': seq_xyz_conds, 'seq_acc_conds': seq_acc_conds}
+            else:
+                seq_pose_conds, seq_xyz_conds = cond_result
+                cond_dict[smpl_id] = {'pose_conds': pose_conds, 'seq_pose_conds': seq_pose_conds, 'seq_xyz_conds': seq_xyz_conds}
 
         conds = cond_dict[smpl_id]
         pose_conds, seq_pose_conds, seq_xyz_conds = conds['pose_conds'], conds['seq_pose_conds'], conds['seq_xyz_conds']
@@ -337,8 +342,13 @@ def readCamerasDNARendering(path, output_view, white_background, split='train', 
             if not isinstance(pose_conds, torch.Tensor):
                 pose_conds = torch.from_numpy(pose_conds).unsqueeze(0)
 
-            seq_pose_conds, seq_xyz_conds = get_seq_pose_xyz_cond(pose_index, time_steps, interval, get_pose_xyz_func, delta_pose_xyz_cache, multi=multi, motion_cond_options=motion_cond_options)
-            cond_dict[pose_index] = {'pose_conds': pose_conds, 'seq_pose_conds': seq_pose_conds, 'seq_xyz_conds': seq_xyz_conds}
+            cond_result = get_seq_pose_xyz_cond(pose_index, time_steps, interval, get_pose_xyz_func, delta_pose_xyz_cache, multi=multi, motion_cond_options=motion_cond_options)
+            if len(cond_result) == 3:
+                seq_pose_conds, seq_xyz_conds, seq_acc_conds = cond_result
+                cond_dict[pose_index] = {'pose_conds': pose_conds, 'seq_pose_conds': seq_pose_conds, 'seq_xyz_conds': seq_xyz_conds, 'seq_acc_conds': seq_acc_conds}
+            else:
+                seq_pose_conds, seq_xyz_conds = cond_result
+                cond_dict[pose_index] = {'pose_conds': pose_conds, 'seq_pose_conds': seq_pose_conds, 'seq_xyz_conds': seq_xyz_conds}
 
         conds = cond_dict[pose_index]
         pose_conds, seq_pose_conds, seq_xyz_conds = conds['pose_conds'], conds['seq_pose_conds'], conds['seq_xyz_conds']
@@ -496,8 +506,13 @@ def readCamerasZJUMoCap(path, output_view, white_background, image_scaling=0.5, 
 
         if pose_index not in cond_dict.keys():
             pose_conds = torch.from_numpy(smpl_param['poses'][:, 3:].reshape(-1, 3)).unsqueeze(0)
-            seq_pose_conds, seq_xyz_conds = get_seq_pose_xyz_cond(pose_index, time_steps, interval, get_pose_xyz_func, delta_pose_xyz_cache, motion_cond_options=motion_cond_options)
-            cond_dict[pose_index] = {'pose_conds': pose_conds, 'seq_pose_conds': seq_pose_conds, 'seq_xyz_conds': seq_xyz_conds}
+            cond_result = get_seq_pose_xyz_cond(pose_index, time_steps, interval, get_pose_xyz_func, delta_pose_xyz_cache, motion_cond_options=motion_cond_options)
+            if len(cond_result) == 3:
+                seq_pose_conds, seq_xyz_conds, seq_acc_conds = cond_result
+                cond_dict[pose_index] = {'pose_conds': pose_conds, 'seq_pose_conds': seq_pose_conds, 'seq_xyz_conds': seq_xyz_conds, 'seq_acc_conds': seq_acc_conds}
+            else:
+                seq_pose_conds, seq_xyz_conds = cond_result
+                cond_dict[pose_index] = {'pose_conds': pose_conds, 'seq_pose_conds': seq_pose_conds, 'seq_xyz_conds': seq_xyz_conds}
 
         conds = cond_dict[pose_index]
         pose_conds, seq_pose_conds, seq_xyz_conds = conds['pose_conds'], conds['seq_pose_conds'], conds['seq_xyz_conds']
@@ -548,10 +563,19 @@ def get_seq_pose_xyz_cond(pose_index, time_steps, interval, get_pose_xyz_func, d
     use_amc_pair = bool(motion_cond_options.get("use_amc_pair", False))
     amc_pair_mode = str(motion_cond_options.get("amc_pair_mode", "baseline_full")).lower()
     use_amc_causal = bool(motion_cond_options.get("use_amc_causal", False))
+    use_tdp = bool(motion_cond_options.get("use_tdp", False))
+    tdp_mode = str(motion_cond_options.get("tdp_mode", "keep_base")).lower()
+    fix_stms = bool(motion_cond_options.get("fix_stms", False))
+    use_acc_cond = bool(motion_cond_options.get("use_acc_cond", False))
+    use_motion_token = bool(motion_cond_options.get("use_motion_token", False))
+    motion_token_fix_stms = bool(motion_cond_options.get("motion_token_fix_stms", False))
+    motion_token_use_acc = bool(motion_cond_options.get("motion_token_use_acc", False))
+    fix_stms = fix_stms or (use_motion_token and motion_token_fix_stms)
+    use_acc_cond = use_acc_cond or (use_motion_token and motion_token_use_acc)
     expected_channels = int(motion_cond_options.get("motion_cond_time_step_num", len(time_steps)))
 
-    if sum([use_msti and msti_mode != "none", use_amc_pair, use_amc_causal]) > 1:
-        raise ValueError("MSTI, AMC-pair, and AMC-causal are mutually exclusive in motion condition construction.")
+    if sum([use_msti and msti_mode != "none", use_amc_pair, use_amc_causal, use_tdp]) > 1:
+        raise ValueError("MSTI, AMC-pair, AMC-causal, and TDP are mutually exclusive in motion condition construction.")
 
     if use_amc_pair:
         return get_seq_pose_xyz_cond_amc_pair(
@@ -579,39 +603,178 @@ def get_seq_pose_xyz_cond(pose_index, time_steps, interval, get_pose_xyz_func, d
             expected_channels=expected_channels,
         )
 
-    seq_pose_conds, seq_xyz_conds = {}, {}
+    if use_tdp:
+        return get_seq_pose_xyz_cond_tdp(
+            pose_index,
+            time_steps,
+            interval,
+            get_pose_xyz_func,
+            delta_pose_xyz_cache,
+            multi=multi,
+            tdp_mode=tdp_mode,
+            expected_channels=expected_channels,
+        )
+
+    def get_delta(cur_id, former_id):
+        delta_key = str(cur_id) + '-' + str(former_id)
+        if delta_key not in delta_pose_xyz_cache.keys():
+            cur_pose_mat, cur_obs_xyz = get_pose_xyz_func(cur_id)
+            former_pose_mat, former_obs_xyz = get_pose_xyz_func(former_id)
+
+            delta_pose_mat = torch.matmul(cur_pose_mat, torch.linalg.inv(former_pose_mat))
+            posedelta = matrix_to_axis_angle(delta_pose_mat)
+            xyz_delta = cur_obs_xyz - former_obs_xyz
+            delta_pose_xyz_cache[delta_key] = {'pose_delta': posedelta, 'xyz_delta': xyz_delta}
+        return delta_pose_xyz_cache[delta_key]['pose_delta'], delta_pose_xyz_cache[delta_key]['xyz_delta']
+
+    seq_pose_conds, seq_xyz_conds, seq_acc_conds = {}, {}, {}
     for time_step, seq_len in time_steps.items():
-        seq_pose_cond, seq_xyz_cond = [], []
+        seq_pose_cond, seq_xyz_cond, seq_acc_cond = [], [], []
         for i in range(seq_len):
             cur_id = max((pose_index - i * time_step) // interval, 0)
             former_id = max((pose_index - (i + 1) * time_step) // interval, 0)
-            delta_key = str(cur_id) + '-' + str(former_id)
-
-            if delta_key not in delta_pose_xyz_cache.keys():
-                cur_pose_mat, cur_obs_xyz = get_pose_xyz_func(cur_id)
-                former_pose_mat, former_obs_xyz = get_pose_xyz_func(former_id)
-
-                delta_pose_mat = torch.matmul(cur_pose_mat, torch.linalg.inv(former_pose_mat))
-                posedelta = matrix_to_axis_angle(delta_pose_mat)
-                xyz_delta = cur_obs_xyz - former_obs_xyz
-                delta_pose_xyz_cache[delta_key] = {'pose_delta': posedelta, 'xyz_delta': xyz_delta}
-            
-            posedelta = delta_pose_xyz_cache[delta_key]['pose_delta']
-            xyz_delta = delta_pose_xyz_cache[delta_key]['xyz_delta']
+            posedelta, xyz_delta = get_delta(cur_id, former_id)
             seq_pose_cond.append(posedelta)
             seq_xyz_cond.append(xyz_delta)
+            if use_acc_cond:
+                older_id = max((pose_index - (i + 2) * time_step) // interval, 0)
+                _, prev_xyz_delta = get_delta(former_id, older_id)
+                dt = float(time_step / interval)
+                seq_acc_cond.append((xyz_delta / dt) - (prev_xyz_delta / dt))
 
         seq_pose_conds[time_step] = torch.stack(seq_pose_cond, axis=0)
         seq_xyz_conds[time_step] = torch.from_numpy(np.stack(seq_xyz_cond, axis=1))
+        if use_acc_cond:
+            seq_acc_conds[time_step] = torch.from_numpy(np.stack(seq_acc_cond, axis=1))
     
     seq_pose_conds = torch.stack([seq_pose_conds[time_step] for time_step in time_steps], axis=1).unsqueeze(0)
-    seq_xyz_conds = (torch.stack([seq_xyz_conds[time_step] for time_step in time_steps], axis=2) * multi) / float(time_step / interval) 
+    if fix_stms:
+        seq_xyz_conds = torch.stack(
+            [
+                (seq_xyz_conds[time_step] * multi) / float(time_step / interval)
+                for time_step in time_steps
+            ],
+            axis=2,
+        )
+    else:
+        seq_xyz_conds = (torch.stack([seq_xyz_conds[time_step] for time_step in time_steps], axis=2) * multi) / float(time_step / interval)
 
     if seq_pose_conds.shape[2] != expected_channels:
         raise RuntimeError(f"seq_pose_conds channel dim {seq_pose_conds.shape[2]} != expected {expected_channels}")
     if seq_xyz_conds.shape[2] != expected_channels:
         raise RuntimeError(f"seq_xyz_conds channel dim {seq_xyz_conds.shape[2]} != expected {expected_channels}")
-    
+
+    if use_acc_cond:
+        seq_acc_conds = torch.stack(
+            [
+                seq_acc_conds[time_step] * multi
+                for time_step in time_steps
+            ],
+            axis=2,
+        )
+        if seq_acc_conds.shape[2] != expected_channels:
+            raise RuntimeError(f"seq_acc_conds channel dim {seq_acc_conds.shape[2]} != expected {expected_channels}")
+        return seq_pose_conds, seq_xyz_conds, seq_acc_conds
+
+    return seq_pose_conds, seq_xyz_conds
+
+
+def get_seq_pose_xyz_cond_tdp(
+    pose_index,
+    time_steps,
+    interval,
+    get_pose_xyz_func,
+    delta_pose_xyz_cache,
+    multi=1.0,
+    tdp_mode="keep_base",
+    expected_channels=None,
+):
+    if tdp_mode not in {"local", "keep_base"}:
+        raise ValueError(f"TDP mode must be 'local' or 'keep_base', got {tdp_mode}")
+
+    time_step_items = sorted(time_steps.items(), key=lambda item: item[0], reverse=True)
+    if not time_step_items:
+        raise ValueError("time_steps must not be empty")
+    seq_lens = {int(seq_len) for _, seq_len in time_step_items}
+    if len(seq_lens) != 1:
+        raise ValueError(f"TDP expects a single seq_len across time steps, got {sorted(seq_lens)}")
+    seq_len = seq_lens.pop()
+
+    base_steps = [int(step) for step, _ in time_step_items]
+    base_channels = len(base_steps)
+    max_step = max(base_steps)
+    expected = 2 * base_channels if tdp_mode == "local" else base_channels + 2 * base_channels - 1
+    if expected_channels is not None and int(expected_channels) != expected:
+        raise ValueError(
+            f"TDP condition channel mismatch: expected_channels={expected_channels}, "
+            f"computed={expected}, mode={tdp_mode}, base_steps={base_channels}"
+        )
+
+    def frame_to_id(frame_id):
+        return max(int(frame_id) // int(interval), 0)
+
+    def get_pair_delta(cur_id, former_id):
+        delta_key = f"tdp_{tdp_mode}_dt_v1:{cur_id}-{former_id}"
+        if delta_key not in delta_pose_xyz_cache:
+            cur_pose_mat, cur_obs_xyz = get_pose_xyz_func(cur_id)
+            former_pose_mat, former_obs_xyz = get_pose_xyz_func(former_id)
+            posedelta = _relative_pose_delta(cur_pose_mat, former_pose_mat)
+            dt = max(int(cur_id) - int(former_id), 1)
+            xyz_delta = ((cur_obs_xyz - former_obs_xyz) * multi) / float(dt)
+            delta_pose_xyz_cache[delta_key] = {
+                "pose_delta": posedelta,
+                "xyz_delta": xyz_delta.astype(np.float32, copy=False),
+            }
+        return (
+            delta_pose_xyz_cache[delta_key]["pose_delta"],
+            delta_pose_xyz_cache[delta_key]["xyz_delta"],
+        )
+
+    seq_pose_cond_by_i, seq_xyz_cond_by_i = [], []
+    for i in range(seq_len):
+        anchor_frame = pose_index - i * max_step
+        anchor_id = frame_to_id(anchor_frame)
+        point_ids = [frame_to_id(anchor_frame - step) for step in base_steps] + [anchor_id]
+
+        pose_channels, xyz_channels = [], []
+
+        if tdp_mode == "keep_base":
+            for former_id in point_ids[:-1]:
+                d_pose_full, d_xyz_full = get_pair_delta(anchor_id, former_id)
+                pose_channels.append(d_pose_full)
+                xyz_channels.append(d_xyz_full)
+        else:
+            d_pose, d_xyz = get_pair_delta(point_ids[-1], point_ids[0])
+            pose_channels.append(d_pose)
+            xyz_channels.append(d_xyz)
+
+        vel_pose_channels, vel_xyz_channels = [], []
+        for from_id, to_id in zip(point_ids[:-1], point_ids[1:]):
+            d_pose_vel, d_xyz_vel = get_pair_delta(to_id, from_id)
+            vel_pose_channels.append(d_pose_vel)
+            vel_xyz_channels.append(d_xyz_vel)
+            pose_channels.append(d_pose_vel)
+            xyz_channels.append(d_xyz_vel)
+
+        for vel_idx in range(len(vel_pose_channels) - 1):
+            a_pose = vel_pose_channels[vel_idx + 1] - vel_pose_channels[vel_idx]
+            a_xyz = vel_xyz_channels[vel_idx + 1] - vel_xyz_channels[vel_idx]
+            pose_channels.append(a_pose)
+            xyz_channels.append(a_xyz.astype(np.float32, copy=False))
+
+        if len(pose_channels) != expected:
+            raise RuntimeError(f"TDP produced {len(pose_channels)} pose channels, expected {expected}")
+        seq_pose_cond_by_i.append(torch.stack(pose_channels, dim=0))
+        seq_xyz_cond_by_i.append(torch.from_numpy(np.stack(xyz_channels, axis=1)))
+
+    seq_pose_conds = torch.stack(seq_pose_cond_by_i, dim=0).unsqueeze(0)
+    seq_xyz_conds = torch.stack(seq_xyz_cond_by_i, dim=1)
+
+    if seq_pose_conds.shape[2] != expected:
+        raise RuntimeError(f"seq_pose_conds channel dim {seq_pose_conds.shape[2]} != expected {expected}")
+    if seq_xyz_conds.shape[2] != expected:
+        raise RuntimeError(f"seq_xyz_conds channel dim {seq_xyz_conds.shape[2]} != expected {expected}")
+
     return seq_pose_conds, seq_xyz_conds
 
 

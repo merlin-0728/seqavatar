@@ -100,6 +100,32 @@ class GaussianModel:
         self.amc_motion_gate_alpha = getattr(args, "amc_motion_gate_alpha", 1.0)
         self.amc_motion_gate_temp = getattr(args, "amc_motion_gate_temp", 0.5)
         self.motion_cond_time_step_num = int(getattr(args, "motion_cond_time_step_num", getattr(args, "time_step_num", 1)))
+        self.use_tdp_semantic_encoder = getattr(args, "use_tdp_semantic_encoder", False)
+        self.tdp_semantic_mode = getattr(args, "tdp_semantic_mode", "gated_residual")
+        self.tdp_gate_init_bias = getattr(args, "tdp_gate_init_bias", -4.0)
+        self.tdp_debug_stats = getattr(args, "tdp_debug_stats", False)
+        self.tdp_debug_interval = getattr(args, "tdp_debug_interval", 1000)
+        self.tdp_base_time_step_num = int(getattr(args, "time_step_num", 1))
+        self.use_dif = getattr(args, "use_dif", False)
+        self.dif_mode = getattr(args, "dif_mode", "peak")
+        self.dif_sigma_init = getattr(args, "dif_sigma_init", -7.0)
+        self.dif_sigma_min = getattr(args, "dif_sigma_min", 1e-4)
+        self.dif_sigma_max = getattr(args, "dif_sigma_max", 0.05)
+        self.dif_residual_beta = getattr(args, "dif_residual_beta", 1.0)
+        self.dif_residual_warmup = getattr(args, "dif_residual_warmup", 0)
+        self.dif_eps = getattr(args, "dif_eps", 1e-6)
+        self.fix_stms = getattr(args, "fix_stms", False)
+        self.use_acc_cond = getattr(args, "use_acc_cond", False)
+        self.seq_acc_cond_dim = getattr(args, "seq_acc_cond_dim", 64)
+        self.use_motion_token = getattr(args, "use_motion_token", False)
+        self.motion_token_mode = getattr(args, "motion_token_mode", "none")
+        self.motion_token_use_acc = getattr(args, "motion_token_use_acc", False)
+        self.motion_token_use_part = getattr(args, "motion_token_use_part", False)
+        self.motion_token_use_codebook = getattr(args, "motion_token_use_codebook", False)
+        self.motion_token_num = getattr(args, "motion_token_num", 32)
+        self.motion_token_dim = getattr(args, "motion_token_dim", 64)
+        self.motion_token_part_dim = getattr(args, "motion_token_part_dim", 16)
+        self.motion_token_acc_dim = getattr(args, "motion_token_acc_dim", 64)
         self.use_part_moe = getattr(args, "use_part_moe", False)
         self.part_moe_start_iter = getattr(args, "part_moe_start_iter", 15000)
         self.part_moe_warmup = getattr(args, "part_moe_warmup", 1000)
@@ -123,6 +149,7 @@ class GaussianModel:
             if self.non_rigid_flag:
                 non_rigid_mlp_depth = getattr(args, "non_rigid_mlp_depth", 3)
                 non_rigid_mlp_width = getattr(args, "non_rigid_mlp_width", 512)
+                motion_token_num_parts = int(self.SMPL_NEUTRAL['weights'].shape[-1])
                 self.non_rigid_deformer = NonrigidDeformer(pos_input_dim=pos_embed_ch,
                         D=non_rigid_mlp_depth, W=non_rigid_mlp_width,
                         use_pose_cond=self.nonrigid_poseconds_flag, use_seq_pose_cond=self.nonrigid_deltaposeconds_flag, use_seq_xyz_cond=self.nonrigid_deltaxyzconds_flag, 
@@ -133,7 +160,32 @@ class GaussianModel:
                         amc_causal_mode=self.amc_causal_mode,
                         amc_causal_window=self.amc_causal_window,
                         amc_motion_gate_alpha=self.amc_motion_gate_alpha,
-                        amc_motion_gate_temp=self.amc_motion_gate_temp).to(self.device)
+                        amc_motion_gate_temp=self.amc_motion_gate_temp,
+                        use_tdp_semantic_encoder=self.use_tdp_semantic_encoder,
+                        tdp_semantic_mode=self.tdp_semantic_mode,
+                        tdp_base_time_step_num=self.tdp_base_time_step_num,
+                        tdp_gate_init_bias=self.tdp_gate_init_bias,
+                        tdp_debug_stats=self.tdp_debug_stats,
+                        use_dif=self.use_dif,
+                        dif_mode=self.dif_mode,
+                        dif_sigma_init=self.dif_sigma_init,
+                        dif_sigma_min=self.dif_sigma_min,
+                        dif_sigma_max=self.dif_sigma_max,
+                        dif_residual_beta=self.dif_residual_beta,
+                        dif_residual_warmup=self.dif_residual_warmup,
+                        dif_eps=self.dif_eps,
+                        use_acc_cond=self.use_acc_cond,
+                        seq_acc_cond_dim=self.seq_acc_cond_dim,
+                        use_motion_token=self.use_motion_token,
+                        motion_token_mode=self.motion_token_mode,
+                        motion_token_use_acc=self.motion_token_use_acc,
+                        motion_token_use_part=self.motion_token_use_part,
+                        motion_token_use_codebook=self.motion_token_use_codebook,
+                        motion_token_num=self.motion_token_num,
+                        motion_token_dim=self.motion_token_dim,
+                        motion_token_part_dim=self.motion_token_part_dim,
+                        motion_token_acc_dim=self.motion_token_acc_dim,
+                        motion_token_num_parts=motion_token_num_parts).to(self.device)
                             
     def capture(self):
         return (

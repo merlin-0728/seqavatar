@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+    <style>
+      .bg { fill: #ffffff; }
+      .title { font-family: Arial, "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", Helvetica, sans-serif; font-size: 34px; font-weight: 700; fill: #0f172a; }
+      .subtitle { font-family: Arial, "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", Helvetica, sans-serif; font-size: 18px; fill: #475569; }
+      .group { fill: #ffffff; stroke: #cbd5e1; stroke-width: 2; stroke-dasharray: 8 6; rx: 18; }
+      .box { fill: #f8fafc; stroke: #334155; stroke-width: 2.2; rx: 12; }
+      .box-blue { fill: #eff6ff; stroke: #2563eb; stroke-width: 2.2; rx: 12; }
+      .box-green { fill: #ecfdf5; stroke: #059669; stroke-width: 2.2; rx: 12; }
+      .box-orange { fill: #fff7ed; stroke: #ea580c; stroke-width: 2.2; rx: 12; }
+      .box-purple { fill: #f5f3ff; stroke: #7c3aed; stroke-width: 2.2; rx: 12; }
+      .box-red { fill: #fef2f2; stroke: #dc2626; stroke-width: 2.2; rx: 12; }
+      .label { font-family: Arial, "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", Helvetica, sans-serif; font-size: 21px; font-weight: 700; fill: #0f172a; }
+      .small { font-family: Arial, "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", Helvetica, sans-serif; font-size: 16px; fill: #334155; }
+      .tiny { font-family: Arial, "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", Helvetica, sans-serif; font-size: 14px; fill: #475569; }
+      .math { font-family: Arial, "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", Helvetica, sans-serif; font-size: 19px; fill: #1e293b; }
+      .arrow { stroke: #334155; stroke-width: 2.4; fill: none; marker-end: url(#arrow); }
+      .thin { stroke: #64748b; stroke-width: 1.8; fill: none; marker-end: url(#arrow); }
+      .dash { stroke: #ea580c; stroke-width: 2; fill: none; stroke-dasharray: 7 5; marker-end: url(#arrow); }
+      .note { fill: #fff7ed; stroke: #fdba74; stroke-width: 1.6; rx: 10; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1600" height="900"/>
+  <text class="title" x="70" y="70">DIF-Δx Mean / 确定性不确定性头</text>
+  <text class="subtitle" x="72" y="103">不采样：预测 μ 与 σ，选择 z=μ；σ 作为 uncertainty descriptor 输入 rectifier。</text>
+  <text class="subtitle" x="72" y="127">No sampling: predict μ and σ, select z=μ; σ is used as uncertainty context for the rectifier.</text>
+
+  <rect class="group" x="55" y="170" width="360" height="585"/>
+  <text class="label" x="88" y="210">SeqAvatar 共享主干 / Shared Trunk</text>
+  <rect class="box" x="95" y="250" width="265" height="88"/>
+  <text class="small" x="126" y="284">规范高斯与姿态</text>
+  <text class="tiny" x="126" y="309">Canonical Gaussian G<tspan baseline-shift="sub" font-size="70%">i</tspan>, pose P<tspan baseline-shift="sub" font-size="70%">t</tspan></text>
+  <rect class="box-blue" x="95" y="378" width="265" height="98"/>
+  <text class="small" x="126" y="413">STMS 运动条件</text>
+  <text class="tiny" x="126" y="439">Motion features f<tspan baseline-shift="sub" font-size="70%">ΔP</tspan>, f<tspan baseline-shift="sub" font-size="70%">V</tspan></text>
+  <rect class="box-purple" x="95" y="522" width="265" height="110"/>
+  <text class="small" x="126" y="558">非刚性 MLP 主干</text>
+  <text class="tiny" x="126" y="584">Non-rigid MLP trunk</text>
+  <text class="math" x="126" y="611">h<tspan baseline-shift="sub" font-size="70%">i</tspan> = E<tspan baseline-shift="sub" font-size="70%">trunk</tspan>(x<tspan baseline-shift="sub" font-size="70%">i</tspan>, P<tspan baseline-shift="sub" font-size="70%">t</tspan>, f)</text>
+  <path class="arrow" d="M 228 338 L 228 378"/>
+  <path class="arrow" d="M 228 476 L 228 522"/>
+
+  <rect class="group" x="475" y="170" width="385" height="585"/>
+  <text class="label" x="508" y="210">分布头 / Distribution Head</text>
+  <rect class="box-green" x="520" y="268" width="280" height="92"/>
+  <text class="small" x="552" y="303">均值头 / Mean Head</text>
+  <text class="math" x="552" y="330">μ<tspan baseline-shift="sub" font-size="70%">i</tspan> = W<tspan baseline-shift="sub" font-size="70%">μ</tspan>(h<tspan baseline-shift="sub" font-size="70%">i</tspan>)</text>
+  <rect class="box-orange" x="520" y="422" width="280" height="98"/>
+  <text class="small" x="552" y="457">方差头 / Sigma Head</text>
+  <text class="math" x="552" y="484">σ<tspan baseline-shift="sub" font-size="70%">i</tspan> = softplus(W<tspan baseline-shift="sub" font-size="70%">σ</tspan>(h<tspan baseline-shift="sub" font-size="70%">i</tspan>)) + ε</text>
+  <rect class="note" x="520" y="585" width="280" height="88"/>
+  <text class="small" x="548" y="619">高斯分布只作描述</text>
+  <text class="tiny" x="548" y="646">Distribution describes uncertainty only</text>
+  <text class="math" x="548" y="668">Δx<tspan baseline-shift="sub" font-size="70%">i</tspan> ~ N(μ<tspan baseline-shift="sub" font-size="70%">i</tspan>, σ<tspan baseline-shift="sub" font-size="70%">i</tspan><tspan baseline-shift="super" font-size="70%">2</tspan>)</text>
+  <path class="arrow" d="M 360 577 L 520 314"/>
+  <path class="arrow" d="M 360 577 L 520 471"/>
+
+  <rect class="group" x="930" y="170" width="315" height="585"/>
+  <text class="label" x="958" y="210">确定性选择 / Deterministic Selection</text>
+  <rect class="box-blue" x="975" y="260" width="225" height="92"/>
+  <text class="small" x="1012" y="295">不采样 / No Sampling</text>
+  <text class="math" x="1023" y="324">z<tspan baseline-shift="sub" font-size="70%">i</tspan> = μ<tspan baseline-shift="sub" font-size="70%">i</tspan></text>
+  <rect class="box-red" x="975" y="430" width="225" height="115"/>
+  <text class="small" x="1012" y="465">Rectifier MLP</text>
+  <text class="tiny" x="1004" y="493">uses μ and σ, but no random ε</text>
+  <text class="math" x="1004" y="520">ρ<tspan baseline-shift="sub" font-size="70%">i</tspan> = R([h<tspan baseline-shift="sub" font-size="70%">i</tspan>, μ<tspan baseline-shift="sub" font-size="70%">i</tspan>, μ<tspan baseline-shift="sub" font-size="70%">i</tspan>, σ<tspan baseline-shift="sub" font-size="70%">i</tspan>])</text>
+  <rect class="box-purple" x="975" y="620" width="225" height="78"/>
+  <text class="small" x="1018" y="654">位移输出 / Output</text>
+  <text class="math" x="1010" y="680">Δx<tspan baseline-shift="sub" font-size="70%">i</tspan> = μ<tspan baseline-shift="sub" font-size="70%">i</tspan> + ρ<tspan baseline-shift="sub" font-size="70%">i</tspan></text>
+  <path class="arrow" d="M 800 314 L 975 306"/>
+  <path class="thin" d="M 800 471 C 870 470, 905 487, 975 487"/>
+  <path class="arrow" d="M 1088 352 L 1088 430"/>
+  <path class="arrow" d="M 1088 545 L 1088 620"/>
+
+  <rect class="group" x="1310" y="170" width="235" height="585"/>
+  <text class="label" x="1338" y="210">高斯更新 / Update</text>
+  <rect class="box" x="1345" y="330" width="165" height="94"/>
+  <text class="small" x="1372" y="365">位置更新</text>
+  <text class="tiny" x="1376" y="390">Position update</text>
+  <text class="math" x="1370" y="414">x'<tspan baseline-shift="sub" font-size="70%">i</tspan> = x<tspan baseline-shift="sub" font-size="70%">i</tspan> + Δx<tspan baseline-shift="sub" font-size="70%">i</tspan></text>
+  <rect class="box" x="1345" y="490" width="165" height="94"/>
+  <text class="small" x="1374" y="525">原始尺度/旋转头</text>
+  <text class="tiny" x="1372" y="551">baseline δs, δr heads</text>
+  <path class="arrow" d="M 1200 659 L 1345 377"/>
+  <path class="dash" d="M 360 577 C 710 805, 1125 745, 1345 537"/>
+</svg>

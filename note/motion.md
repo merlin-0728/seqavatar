@@ -3711,3 +3711,5187 @@ high-motion subset 上没有达到预设的有效提升阈值:
 如果继续保留，只应作为候选支线，后续需要更强局部/part-aware gate、
 acceleration/second-order motion 或 Part-MoE 组合实验提供新证据。
 ```
+
+## 2026-07-02 TDP 方案可行性评审
+
+用户提出 TDP：
+
+```text
+Temporal Difference Pyramid
+时间差分金字塔
+```
+
+核心判断：
+
+```text
+方案技术上可行。
+它比 AMC-pair 更像一个独立 motion condition 消融，因为它不是简单增加 history-history pair，
+而是显式加入 displacement / velocity / acceleration 三阶时间差分。
+```
+
+需要先固定一个关键表述：
+
+```text
+SeqAvatar baseline 不是 TDP。
+baseline 是多尺度历史到当前帧的位移型 condition：
+  [t-3 -> t, t-2 -> t, t-1 -> t]
+
+TDP 是局部时间窗口上的多阶差分：
+  displacement + adjacent velocity + acceleration
+```
+
+以 DNA `t=100`、`time_steps=[3,2,1]` 为例，推荐第一版 TDP-local：
+
+```text
+P0 = P97
+P1 = P98
+P2 = P99
+P3 = P100
+
+d  = P97 -> P100
+v1 = P97 -> P98
+v2 = P98 -> P99
+v3 = P99 -> P100
+a1 = v2 - v1
+a2 = v3 - v2
+
+channels = [d, v1, v2, v3, a1, a2]
+motion_cond_time_step_num = 6
+```
+
+重要注意：
+
+```text
+这个 6-channel TDP-local 不是在 baseline [97->100, 98->100, 99->100] 后面追加。
+它保留 long displacement 97->100，
+但会把 baseline 的 98->100 和 99->100 替换成 adjacent velocity / acceleration 信息。
+```
+
+如果想保留 baseline 三个 full channel 再追加 TDP 信息，则应另开模式，例如：
+
+```text
+tdp_keep_base:
+  [97->100, 98->100, 99->100, v1, v2, v3, a1, a2]
+  DNA channel = 8
+```
+
+但第一版建议先做低风险版本，同时最终至少补 `tdp_keep_base`：
+
+```text
+tdp_local:
+  DNA channel = 2 * time_step_num = 6
+  ZJU channel = 2 * time_step_num = 4
+
+tdp_keep_base:
+  DNA channel = time_step_num + 2 * time_step_num - 1 = 8
+  ZJU channel = time_step_num + 2 * time_step_num - 1 = 5
+```
+
+跨数据集适配：
+
+```text
+给定原始 offsets 按从远到近排列:
+  offsets = [s_max, ..., s_min, 0]
+
+每个 seq slot 使用明确 local anchor:
+  anchor_i = pose_index - i * s_max
+
+构造局部点:
+  p_j = anchor - offsets[j]
+
+displacement:
+  p_0 -> p_last
+
+velocity:
+  p_j -> p_{j+1}
+
+acceleration:
+  v_{j+1} - v_j
+```
+
+DNA：
+
+```text
+anchor_i = t - i * 3
+
+i=0: [t-3,t-2,t-1,t]
+i=1: [t-6,t-5,t-4,t-3]
+i=2: [t-9,t-8,t-7,t-6]
+
+channels = 1 + 3 + 2 = 6
+```
+
+ZJU：
+
+```text
+[6,3,0] -> [t-6,t-3,t]
+channels = 1 + 2 + 1 = 4
+```
+
+I3D 需要谨慎：
+
+```text
+[42,33,24,0] -> [t-42,t-33,t-24,t]
+intervals = 9, 9, 24
+```
+
+I3D 的速度间隔不均匀，`v3 - v2` 会混合不同 dt 的速度。若后续跑 I3D，必须明确：
+
+```text
+velocity 是否按 dt 归一化；
+acceleration 是否按相邻 velocity 的时间间隔再归一化；
+是否只先在 DNA/ZJU 做 TDP-local。
+```
+
+代码落点和现有基础：
+
+```text
+arguments/__init__.py:
+  已有 resolve_motion_condition_args()
+  已经能自动推导 motion_cond_time_step_num
+  需要新增 use_tdp / tdp_mode，并和 use_msti / use_amc_pair / use_amc_causal 互斥。
+
+scene/__init__.py:
+  已经把 motion_cond_options 传给 dataset reader。
+  需要把 use_tdp / tdp_mode 加入 motion_cond_options。
+
+scene/dataset_readers.py:
+  get_seq_pose_xyz_cond() 已经有 baseline / MSTI / AMC-pair 分支。
+  新增 get_seq_pose_xyz_cond_tdp() 最自然。
+
+scene/gaussian_model.py:
+  已经用 motion_cond_time_step_num 构造 NonrigidDeformer。
+  TDP 不需要额外改 deformer 构造逻辑。
+
+nets/mlp_delta_non_rigid.py:
+  SeqPoseEncoder / SeqXYZEncoder 已经按传入 time_step_num 建 Linear 输入维度。
+  TDP 只要 condition channel 数正确，就能复用 flatten + MLP。
+
+scripts/exps_dnarendering.sh:
+  新增 tdp 模式，输出目录建议:
+    output/DNA-Rendering/<seq>/tdp_local/<RUN_TIME>/
+  日志目录建议:
+    logs/TDP/<RUN_TIME>_DNA-Rendering_tdp_local.log
+```
+
+实现时需要固定的定义：
+
+```text
+channel order:
+  tdp_local:
+    [d, v1, v2, ..., vN, a1, a2, ..., a_{N-1}]
+
+  tdp_keep_base:
+    [full_smax, ..., full_smin, v1, v2, ..., vN, a1, a2, ..., a_{N-1}]
+
+DNA tdp_local:
+  [97->100, 97->98, 98->99, 99->100, a1, a2]
+
+DNA tdp_keep_base:
+  [97->100, 98->100, 99->100, 97->98, 98->99, 99->100, a1, a2]
+
+ZJU tdp_local:
+  [t-6->t, t-6->t-3, t-3->t, a1]
+```
+
+pose delta 方向必须沿用 baseline：
+
+```python
+delta_pose_mat = cur_pose_mat @ inverse(former_pose_mat)
+```
+
+xyz velocity 建议按每个 pair 的真实 dt 归一化：
+
+```python
+v_xyz = (X_to - X_from) / dt
+a_xyz = v_xyz_next - v_xyz_prev
+```
+
+pose velocity / acceleration 有一个理论细节：
+
+```text
+pose delta 是 SO(3) relative rotation 的 axis-angle log vector。
+直接 a_pose = v_pose_next - v_pose_prev 是 Lie algebra 上的近似二阶差分。
+短间隔 DNA 上可以作为消融第一版，但论文里要说清楚是 log-rotation finite difference approximation。
+```
+
+建议第一版：
+
+```text
+use_tdp = False 默认关闭
+和 MSTI / AMC / Part-MoE 默认路径隔离
+先只接 DNA 脚本 smoke test
+
+tdp_mode = local:
+  motion_cond_time_step_num 自动推导为 2 * time_step_num
+
+tdp_mode = keep_base:
+  motion_cond_time_step_num 自动推导为 time_step_num + 2 * time_step_num - 1
+```
+
+建议同时加调试输出：
+
+```text
+SEQAVATAR_TDP_DEBUG=1
+打印:
+  channel order
+  sample frame ids
+  d/v/a pose mean/std/max
+  d/v/a xyz mean/std/max
+  degenerate pair count
+```
+
+主要风险：
+
+```text
+1. TDP-local 6 channel 会改变 baseline 信息组成，不是纯追加。
+2. 若只跑 TDP-local，提升可能来自速度/加速度，也可能来自删掉 full_2/full_1 后 condition 更干净。
+3. TDP-local 的 seq_len anchor 会从 baseline 的 multi-scale grid 变成 local window grid，必须说明这是新的 temporal condition 构造方式。
+4. pose acceleration 是近似定义，不能过度包装成严格 SO(3) 加速度。
+5. I3D 原始 time_steps 不等间隔，必须单独处理 dt。
+6. channel 从 3 到 6/8，参数量增加，需要报告参数量/显存/训练时间。
+7. 现有 encoder 仍是 flatten + MLP，TDP 只改变 condition，不保证网络一定利用 acceleration。
+```
+
+阶段性结论：
+
+```text
+TDP 值得作为 AMC 之后的新 motion 候选继续做。
+它的创新解释比 AMC-pair 更清楚，改动复杂度低于 AMC-causal。
+但最终实验至少需要:
+  baseline
+  tdp_local
+  tdp_keep_base
+
+这样才能区分:
+  TDP 作为新 condition 是否有效；
+  在保留 baseline full channel 时，速度/加速度是否仍然带来增益。
+```
+
+## 2026-07-02 TDP 推荐实验路线更新
+
+当前更稳的路线：
+
+```text
+Step 1: DNA smoke test tdp_local
+Step 2: DNA full run tdp_local
+Step 3: DNA full run tdp_keep_base
+Step 4: 对比 baseline / AMC-causal / TDP
+Step 5: 如果 TDP 有效，再做 Part-MoE + TDP
+```
+
+公平性记录必须包含：
+
+```text
+baseline params
+tdp_local params
+tdp_keep_base params
+显存峰值
+训练时间
+FPS 或 render 时间
+```
+
+如果 TDP 提升明显，后续可加：
+
+```text
+baseline_wide
+```
+
+即 baseline 保持 3 channel，但调大 encoder hidden dim 或非刚性网络宽度，使参数量接近 TDP，回答“是不是只是参数更多”的质疑。
+
+xyz 归一化注意：
+
+```text
+不要顺手修 baseline 的 seq_xyz_conds 除 time_step bug。
+TDP 分支内部可以按每个 pair 的 dt 归一化。
+如果要修 baseline，应单独开:
+  baseline_fixed_xyz
+  tdp_on_fixed_xyz
+否则 TDP 收益会混入 bug fix。
+```
+
+## 2026-07-03 TDP-keep-base 实现和 DNA 六序列结果
+
+本次按用户指定方案实现并运行：
+
+```text
+TDP-keep-base
+experiment_name = tdp
+time_step_num = 3
+motion_cond_time_step_num = 8
+densify_until_iter = 1500
+use_tdp = 1
+tdp_mode = keep_base
+use_msti = 0
+use_amc_pair = 0
+use_amc_causal = 0
+use_part_moe = 0
+```
+
+核心 channel 定义固定为：
+
+```text
+[full_3, full_2, full_1, v1, v2, v3, a1, a2]
+```
+
+以 DNA `t=100` 为例：
+
+```text
+full_3 = 97 -> 100
+full_2 = 98 -> 100
+full_1 = 99 -> 100
+v1     = 97 -> 98
+v2     = 98 -> 99
+v3     = 99 -> 100
+a1     = v2 - v1
+a2     = v3 - v2
+```
+
+实现边界：
+
+```text
+1. baseline / MSTI / AMC / Part-MoE 默认路径不变。
+2. TDP 与 MSTI / AMC-pair / AMC-causal 互斥。
+3. motion_cond_time_step_num 自动推导:
+     tdp_local: 2 * time_step_num
+     tdp_keep_base: time_step_num + 2 * time_step_num - 1
+   DNA keep_base 因此为 8。
+4. TDP 分支的 xyz delta 按每个 pair 的真实 dt 归一化。
+5. baseline 分支未修正已有 xyz 归一化问题，避免改变旧实验。
+6. renderer / loss / CameraInfo / RGB / mask / camera 均未改。
+```
+
+修改文件：
+
+```text
+arguments/__init__.py
+  新增 use_tdp / tdp_mode。
+  新增 TDP channel 自动推导和互斥检查。
+
+scene/__init__.py
+  将 use_tdp / tdp_mode 传入 motion_cond_options。
+
+scene/dataset_readers.py
+  新增 get_seq_pose_xyz_cond_tdp()。
+  baseline / MSTI / AMC 分支保持独立。
+
+scripts/exps_dnarendering.sh
+  新增 tdp / tdp_keep_base / tdp_keepbase 模式。
+  日志目录:
+    /media/image/mxz/human/SeqAvatar/logs/TDP
+  全局日志:
+    <RUN_TIME>_DNA-Rendering_tdp.log
+```
+
+验证：
+
+```text
+py_compile:
+  arguments/__init__.py
+  scene/__init__.py
+  scene/dataset_readers.py
+  scene/gaussian_model.py
+  nets/mlp_delta_non_rigid.py
+
+bash -n scripts/exps_dnarendering.sh 通过
+git diff --check 通过
+
+DNA-like shape test:
+  baseline pose/xyz = (1, 8, 3, 24, 3) / (7, 8, 3, 3)
+  TDP pose/xyz      = (1, 8, 8, 24, 3) / (7, 8, 8, 3)
+
+参数解析:
+  use_tdp=True, tdp_mode=keep_base, time_step_num=3
+  -> motion_cond_time_step_num=8
+```
+
+运行记录：
+
+```text
+RUN_TIME = 20260702_215942
+global log = logs/TDP/20260702_215942_DNA-Rendering_tdp.log
+
+GPU 2:
+  sequences = 0044_11 0051_09 0206_04
+
+GPU 1:
+  sequences = 0813_05 0007_04 0019_10
+```
+
+启动命令等价为：
+
+```bash
+RUN_TIME=20260702_215942 SEQUENCES_OVERRIDE="0044_11 0051_09 0206_04" GPU_id=2 bash scripts/exps_dnarendering.sh tdp
+RUN_TIME=20260702_215942 SEQUENCES_OVERRIDE="0813_05 0007_04 0019_10" GPU_id=1 bash scripts/exps_dnarendering.sh tdp
+```
+
+日志已确认：
+
+```text
+USE_TDP: 1
+TDP_MODE: keep_base
+TIME_STEP_NUM(base): 3
+MOTION_COND_TIME_STEP_NUM: 8
+DENSIFY_UNTIL_ITER: 1500
+FINAL_EVAL_ONLY: 1
+```
+
+### TDP JSON 主结果
+
+主结果取：
+
+```text
+output/DNA-Rendering/<sequence>/tdp/20260702_215942/metrics/results_novelview_25000.json
+```
+
+| Sequence | PSNR | SSIM | LPIPS*1000 |
+|---|---:|---:|---:|
+| 0044_11 | 32.9598 | 0.977815 | 21.5627 |
+| 0051_09 | 28.5351 | 0.970581 | 31.8608 |
+| 0206_04 | 31.3351 | 0.969414 | 34.3639 |
+| 0813_05 | 36.0758 | 0.986793 | 18.8062 |
+| 0007_04 | 29.4485 | 0.957898 | 45.9910 |
+| 0019_10 | 35.3015 | 0.980876 | 21.5235 |
+| Mean | 32.2760 | 0.973896 | 29.0180 |
+
+### TDP render 复评结果
+
+下面采用 `render.py` 最终 novelview 评价行：
+
+```text
+[ITER 25000] Evaluating novelview #120: PSNR ... SSIM ... LPIPS ...
+```
+
+| Sequence | PSNR | SSIM | LPIPS*1000 |
+|---|---:|---:|---:|
+| 0044_11 | 32.9598 | 0.977815 | 21.5626 |
+| 0051_09 | 28.6275 | 0.971297 | 31.3700 |
+| 0206_04 | 31.3385 | 0.969456 | 34.3120 |
+| 0813_05 | 36.0801 | 0.986805 | 18.7885 |
+| 0007_04 | 29.4487 | 0.957920 | 45.9556 |
+| 0019_10 | 35.3025 | 0.980895 | 21.4998 |
+| Mean | 32.2929 | 0.974031 | 28.9147 |
+
+### TDP vs baseline, densify 1500
+
+公平对比使用同 `densify_until_iter=1500` 的 baseline render 复评结果。
+
+TDP - baseline：
+
+| Sequence | dPSNR | dSSIM | dLPIPS*1000 |
+|---|---:|---:|---:|
+| 0044_11 | -0.0143 | -0.000100 | +0.1656 |
+| 0051_09 | -0.0439 | -0.000151 | +0.2779 |
+| 0206_04 | -0.0414 | -0.000342 | +0.2885 |
+| 0813_05 | -0.0066 | -0.000088 | +0.3248 |
+| 0007_04 | -0.0849 | -0.000415 | +0.5662 |
+| 0019_10 | +0.0816 | +0.000199 | +0.2349 |
+| Mean | -0.0182 | -0.000149 | +0.3096 |
+
+阶段性判断：
+
+```text
+TDP-keep-base 当前六序列平均没有优于 baseline。
+PSNR / SSIM 平均略低，LPIPS*1000 平均更高。
+
+这说明“保留 baseline full motion 后追加 v/a channel”的第一版没有带来稳定收益。
+目前不建议把 TDP-keep-base 直接作为第二创新点主线。
+```
+
+可能原因：
+
+```text
+1. DNA 的 [3,2,1] 已经很密，baseline full_3/full_2/full_1 已包含足够近邻运动信息。
+2. 额外 velocity / acceleration channel 与 full channel 冗余，flatten MLP 可能不能有效区分阶数语义。
+3. pose acceleration 只是 log-rotation 空间的近似二阶差分，可能带来噪声。
+4. xyz acceleration 对非刚性区域可能有用，但全局平均指标被静态/低运动区域稀释。
+```
+
+后续若继续探索 TDP：
+
+```text
+1. 先用 evaluate_amc_decision.py 类似逻辑做 high-motion subset / boundary subset 评价。
+2. 如果 high-motion subset 也没有提升，不建议继续主推 TDP。
+3. 若要继续改模型，优先做分支式 encoder:
+     full motion encoder
+     velocity encoder
+     acceleration encoder
+     late fusion / gate
+   不要继续简单把所有 channel flatten 混在一起。
+4. 可补 tdp_local，但要明确它不是纯追加 baseline，而是重新定义 motion condition。
+```
+
+## 2026-07-03 TDP 效果下降原因和无效判断标准
+
+当前不能说 TDP 理论方向被彻底否定，更准确的结论是：
+
+```text
+当前 TDP-keep-base 实现，在 DNA / 当前 flatten+MLP encoder / densify=1500 设置下，
+没有带来可复现的全局指标收益，因此不适合作为第二创新点主线。
+```
+
+### 为什么可能下降
+
+1. DNA baseline 的 `[3,2,1]` 已经很密
+
+baseline 已有：
+
+```text
+full_3 = t-3 -> t
+full_2 = t-2 -> t
+full_1 = t-1 -> t
+```
+
+对 xyz 这类向量运动，如果 full delta 都按 dt 归一化，则：
+
+```text
+full_1 = v3
+full_2 = (v2 + v3) / 2
+full_3 = (v1 + v2 + v3) / 3
+```
+
+因此速度可以由 full motion 近似线性组合得到：
+
+```text
+v3 = full_1
+v2 = 2 * full_2 - full_1
+v1 = 3 * full_3 - 2 * full_2
+```
+
+这说明 TDP 追加的 `v1/v2/v3/a1/a2` 在 DNA 短时间跨度上信息增量可能很小，更多是冗余通道。
+
+2. 当前 encoder 不知道这些 channel 的阶数语义
+
+当前 `SeqPoseEncoder / SeqXYZEncoder` 仍然是 flatten + MLP。
+
+它看到的是 8 个平铺通道：
+
+```text
+[full_3, full_2, full_1, v1, v2, v3, a1, a2]
+```
+
+但没有显式结构告诉网络：
+
+```text
+前三个是 displacement
+中间三个是 velocity
+最后两个是 acceleration / trend
+```
+
+所以“加入速度/加速度”不等于模型真的按时间差分金字塔使用它们。额外通道也可能只是增加输入噪声和优化难度。
+
+3. pose acceleration 是近似二阶差分，可能带噪声
+
+当前：
+
+```text
+a_pose = v_pose_next - v_pose_prev
+```
+
+其中 `v_pose` 是 relative rotation 的 axis-angle/log vector。
+
+这只能称为：
+
+```text
+log-rotation space approximate second-order difference
+```
+
+不是严格物理角加速度。对旋转较复杂的关节，它可能引入不稳定的高频噪声。
+
+4. TDP 的 seq_len 组织方式改变了 baseline 的时间网格
+
+baseline 对每个 time_step 各自推进：
+
+```text
+step=3: t-3 -> t, t-6 -> t-3, ...
+step=2: t-2 -> t, t-4 -> t-2, ...
+step=1: t-1 -> t, t-2 -> t-1, ...
+```
+
+TDP 使用局部 anchor：
+
+```text
+anchor_i = t - i * 3
+i=0: [t-3,t-2,t-1,t]
+i=1: [t-6,t-5,t-4,t-3]
+```
+
+因此 TDP-keep-base 只在 `i=0` 的当前窗口完整保留 baseline 的 `[full_3, full_2, full_1]`。
+在 `i>0` 时，它不是原 baseline 的多尺度时间网格，而是局部 causal window 网格。
+
+这会改变 encoder 过去已经适配的 `seq_len/channel` 语义，可能抵消 TDP channel 的潜在收益。
+
+5. TDP 分支的 xyz 归一化和 baseline 不完全一致
+
+为了不影响旧实验，baseline 分支未修已有 xyz dt 归一化问题。
+TDP 分支内部则按每个 pair 的真实 dt 归一化。
+
+因此当前对比不是单纯：
+
+```text
+baseline + v/a channel
+```
+
+还包含：
+
+```text
+TDP 分支 xyz 数值尺度变化
+seq_len 时间网格变化
+channel 数增加
+```
+
+这意味着不能把下降只归因于 acceleration 无效，但可以判断当前整体实现没有收益。
+
+### 怎么判断当前方法没有效果
+
+当前判断依据不是看某一个序列，而是看公平设置下的整体趋势：
+
+```text
+same dataset: DNA six sequences
+same split: novelview
+same iteration: 25000
+same densify_until_iter: 1500
+same renderer / loss / CameraInfo
+```
+
+TDP render 复评相对 baseline：
+
+```text
+Mean dPSNR        = -0.0182
+Mean dSSIM        = -0.000149
+Mean dLPIPS*1000  = +0.3096
+```
+
+逐序列趋势：
+
+```text
+PSNR: 5/6 序列下降，只有 0019_10 上升。
+SSIM: 5/6 序列下降，只有 0019_10 上升。
+LPIPS: 6/6 序列变差。
+```
+
+因此当前不是“有轻微不稳定收益”，而是：
+
+```text
+全局平均三项都不优；
+感知指标 LPIPS 在所有序列上都更差；
+唯一 PSNR/SSIM 上升的 0019_10，LPIPS 仍更差。
+```
+
+判定标准：
+
+```text
+1. 如果全局平均三项至少两项没有提升，不能作为主方法。
+2. 如果 LPIPS 在所有序列变差，不能声称视觉质量改善。
+3. 如果收益只出现在单个序列，且其它序列多数下降，只能认为是偶然或序列特异。
+4. 如果方法主张改善运动区域，还必须看 high-motion subset / boundary subset；
+   若这些子集也无提升，则应停止作为 motion 主线。
+```
+
+当前结论：
+
+```text
+TDP-keep-base 当前结果足以判定:
+  不适合作为第二创新点主线。
+
+但还不能严格判定:
+  所有 TDP 形式都无效。
+
+如果继续，只应作为支线做:
+  high-motion subset / boundary subset 评价；
+  或分支式 full/velocity/acceleration encoder + gate。
+```
+
+## 2026-07-03 TDP 消融实验代码改动说明
+
+TDP 消融实验的目标是：
+
+```text
+在不改 renderer / loss / CameraInfo / RGB / mask / Part-MoE / MSTI / AMC 默认路径的前提下，
+只改变输入 non-rigid motion encoder 的 motion condition channel。
+```
+
+本次 TDP-keep-base 的 condition 定义：
+
+```text
+baseline:
+  [full_3, full_2, full_1]
+
+TDP-keep-base:
+  [full_3, full_2, full_1, v1, v2, v3, a1, a2]
+```
+
+### 1. `arguments/__init__.py`
+
+新增参数：
+
+```text
+use_tdp = False
+tdp_mode = keep_base
+```
+
+目的：
+
+```text
+1. 默认关闭 TDP，保证 baseline / MSTI / AMC / Part-MoE 旧实验不受影响。
+2. 通过命令行 `--use_tdp --tdp_mode keep_base` 显式进入 TDP 分支。
+3. 统一在 resolve_motion_condition_args() 中推导 encoder 输入 channel 数，避免脚本手填错误。
+```
+
+新增互斥规则：
+
+```text
+use_msti / use_amc_pair / use_amc_causal / use_tdp 最多只能开一个。
+```
+
+目的：
+
+```text
+避免多个 motion 消融分支同时改变 condition 语义，导致 train/render 维度和解释混乱。
+```
+
+新增 channel 推导：
+
+```text
+tdp_mode = local:
+  motion_cond_time_step_num = 2 * time_step_num
+
+tdp_mode = keep_base:
+  motion_cond_time_step_num = time_step_num + 2 * time_step_num - 1
+```
+
+DNA 中：
+
+```text
+time_step_num = 3
+TDP-keep-base channel = 3 + 2 * 3 - 1 = 8
+```
+
+目的：
+
+```text
+保留 time_step_num 的原始含义:
+  仍然用于生成原始尺度 [3,2,1]
+
+单独用 motion_cond_time_step_num 表示 encoder 真正接收的 condition channel 数:
+  baseline = 3
+  TDP-keep-base = 8
+```
+
+### 2. `scene/__init__.py`
+
+在 `motion_cond_options` 中新增：
+
+```text
+use_tdp
+tdp_mode
+motion_cond_time_step_num
+```
+
+目的：
+
+```text
+Scene 构建 dataset / cond_dict 时，把 train/render 的 TDP 配置传给 dataset reader。
+这样训练和渲染阶段会用同一套 condition 构造逻辑。
+```
+
+### 3. `scene/dataset_readers.py`
+
+在入口 `get_seq_pose_xyz_cond()` 中新增 TDP 分支：
+
+```text
+if use_tdp:
+  return get_seq_pose_xyz_cond_tdp(...)
+```
+
+目的：
+
+```text
+把 TDP 和 baseline / MSTI / AMC-pair 分开。
+不开 use_tdp 时，原始 baseline condition 构造逻辑完全不变。
+```
+
+新增函数：
+
+```text
+get_seq_pose_xyz_cond_tdp()
+```
+
+核心逻辑：
+
+```text
+1. 按原始 time_steps 从大到小排序:
+     DNA: [3,2,1]
+
+2. 每个 seq slot 使用局部 anchor:
+     anchor_i = pose_index - i * max_step
+
+3. 对 DNA 构造局部时间点:
+     [anchor-3, anchor-2, anchor-1, anchor]
+
+4. keep_base 模式先构造 full channels:
+     anchor-3 -> anchor
+     anchor-2 -> anchor
+     anchor-1 -> anchor
+
+5. 再构造 adjacent velocity:
+     anchor-3 -> anchor-2
+     anchor-2 -> anchor-1
+     anchor-1 -> anchor
+
+6. 最后构造 acceleration / trend:
+     a1 = v2 - v1
+     a2 = v3 - v2
+```
+
+pose delta 方向保持和 baseline 一致：
+
+```text
+delta_pose = cur_pose @ inv(former_pose)
+```
+
+xyz delta 在 TDP 分支中按每个 pair 自己的 dt 归一化：
+
+```text
+xyz_delta = (cur_xyz - former_xyz) / dt
+```
+
+cache key：
+
+```text
+tdp_<tdp_mode>_dt_v1:<cur_id>-<former_id>
+```
+
+目的：
+
+```text
+1. 避免 TDP 的 dt-normalized delta 与 baseline 旧 cache key 混用。
+2. 避免 keep_base / local 不同模式之间复用错误缓存。
+```
+
+shape assert：
+
+```text
+seq_pose_conds.shape[2] == expected_channels
+seq_xyz_conds.shape[2] == expected_channels
+```
+
+目的：
+
+```text
+快速暴露 train/render 配置不一致或 channel 构造错误。
+```
+
+### 4. `scripts/exps_dnarendering.sh`
+
+新增运行模式：
+
+```bash
+bash scripts/exps_dnarendering.sh tdp
+```
+
+等价别名：
+
+```text
+tdp_keep_base
+tdp_keepbase
+```
+
+TDP 模式配置：
+
+```text
+experiment_name = tdp
+use_tdp = 1
+tdp_mode = keep_base
+part_moe_enabled = 0
+final_eval_only = 1
+time_step_num = 3
+motion_cond_time_step_num = 8
+densify_until_iter = 1500
+```
+
+日志目录：
+
+```text
+/media/image/mxz/human/SeqAvatar/logs/TDP
+```
+
+日志命名：
+
+```text
+<RUN_TIME>_DNA-Rendering_tdp.log
+```
+
+目的：
+
+```text
+1. TDP 输出和 baseline / MSTI / AMC / Part-MoE 日志隔离。
+2. train.py 和 render.py 都带上相同的:
+     --use_tdp
+     --tdp_mode keep_base
+     --motion_cond_time_step_num 8
+   确保 checkpoint 维度和 render 构造的 condition 维度一致。
+3. TDP 模式不生成普通 output/.../logs/train/render 分日志，只保留全局 TDP 日志，和 MSTI/AMC 规则一致。
+```
+
+### 5. 没有改的部分
+
+TDP 没有改：
+
+```text
+renderer
+loss
+CameraInfo
+RGB image / mask / camera
+Gaussian densify 逻辑
+Part-MoE 专家 / 路由 / label
+MSTI 分支
+AMC-pair / AMC-causal 分支
+SeqPoseEncoder / SeqXYZEncoder 网络结构
+NonrigidDeformer 主体结构
+```
+
+`gaussian_model.py` 和 `nets/mlp_delta_non_rigid.py` 已经支持通过 `motion_cond_time_step_num` 改 encoder 输入维度，所以 TDP 只复用了这套机制：
+
+```text
+baseline checkpoint:
+  encoder input channels = 3
+
+TDP checkpoint:
+  encoder input channels = 8
+```
+
+因此 baseline checkpoint 和 TDP checkpoint 不能直接混用。
+
+### 6. 代码改动的实验目的总结
+
+本次代码改动服务于一个单一消融问题：
+
+```text
+在完整保留 SeqAvatar baseline 多尺度 full motion 的情况下，
+额外加入 adjacent velocity 和 approximate acceleration / trend，
+能不能改善 non-rigid deformation 的 motion condition？
+```
+
+代码层面的隔离设计保证：
+
+```text
+如果 TDP 有收益，收益主要来自 condition channel 内容变化；
+不是来自 renderer/loss/监督图像/相机/Part-MoE/MSTI/AMC 的变化。
+```
+
+## 2026-07-03 TDP semantic branch encoder 方案评审
+
+用户提出下一版 TDP 不再把：
+
+```text
+[full_3, full_2, full_1, v1, v2, v3, a1, a2]
+```
+
+直接 flatten 到同一个 MLP，而是按语义拆成：
+
+```text
+full: [full_3, full_2, full_1]
+vel:  [v1, v2, v3]
+acc:  [a1, a2]
+```
+
+分别编码后用残差门控融合：
+
+```text
+f_motion = f_full + g_v * f_vel + g_a * f_acc
+```
+
+结论：
+
+```text
+方案可行，而且比上一版 TDP-keep-base 更合理。
+它直接针对上一版失败原因:
+  full / velocity / acceleration 语义混在 flatten MLP 中，网络没有结构性归纳偏置。
+```
+
+但这已经不是单纯 condition-channel 消融，而是：
+
+```text
+TDP condition + semantic motion encoder
+```
+
+因此实验名建议不要继续叫普通 `tdp`，而应单独命名，例如：
+
+```text
+tdp_semantic
+tdp_branch_gate
+tdp_semantic_gate
+```
+
+### 对当前代码的适配判断
+
+当前 `SeqPoseEncoder` 输入实际是：
+
+```text
+x: [B, seq_len, motion_channels, J, 3]
+```
+
+DNA 使用 SMPL-X 时，`J` 不是 24，而是：
+
+```text
+N_JOINT[smplx] + 1 = 55
+```
+
+所以 DNA TDP pose condition shape 是：
+
+```text
+[1, 8, 8, 55, 3]
+```
+
+而不是：
+
+```text
+[B, L, 8, 24, 3]
+```
+
+因此实现时不能硬编码 `24`，必须沿用当前代码：
+
+```text
+self.input_dim = 3 * (N_JOINT[smpl_type] + 1)
+```
+
+Pose 分支维度应是：
+
+```text
+full input = self.input_dim * 3
+vel input  = self.input_dim * 3
+acc input  = self.input_dim * 2
+```
+
+当前 `SeqXYZEncoder` 输入实际是：
+
+```text
+x: [B, N, seq_len, KNN, motion_channels, 3]
+```
+
+因此 xyz 分支要沿 channel 维 `x.shape[4]` 拆：
+
+```text
+full = x[:, :, :, :, 0:3, :]
+vel  = x[:, :, :, :, 3:6, :]
+acc  = x[:, :, :, :, 6:8, :]
+```
+
+xyz 分支输入维度应是：
+
+```text
+full input = 3 * seq_xyz_knn * 3
+vel input  = 3 * seq_xyz_knn * 3
+acc input  = 2 * seq_xyz_knn * 3
+```
+
+### 推荐实现方式
+
+不要替换原 `SeqPoseEncoder / SeqXYZEncoder` 默认逻辑。
+
+建议新增开关：
+
+```text
+use_tdp_semantic_encoder = False
+tdp_semantic_mode = gated_residual
+tdp_gate_init_bias = -4.0
+```
+
+默认关闭，只有同时满足：
+
+```text
+use_tdp = True
+tdp_mode = keep_base
+use_tdp_semantic_encoder = True
+motion_cond_time_step_num = 8
+```
+
+才使用 semantic branch encoder。
+
+这样隔离关系是：
+
+```text
+baseline:
+  原 encoder, 3 channel
+
+tdp:
+  原 encoder, 8 channel flatten
+
+tdp_semantic:
+  semantic branch encoder, 8 channel
+```
+
+这能清楚回答：
+
+```text
+1. 只加 TDP channel 有没有用？
+2. 给 TDP 加语义分支归纳偏置有没有用？
+```
+
+### Pose encoder 推荐结构
+
+对 pose：
+
+```text
+full -> full_encoder -> f_full
+vel  -> vel_encoder  -> f_vel
+acc  -> acc_encoder  -> f_acc
+
+gate_v = sigmoid(gate_v(f_full))
+gate_a = sigmoid(gate_a(f_full))
+
+f_step = f_full + gate_v * f_vel + gate_a * f_acc
+f_pose = mlp2(flatten(seq_len, f_step))
+```
+
+其中 gate 推荐输出：
+
+```text
+[B, seq_len, 1]
+```
+
+初始 bias：
+
+```text
+gate_v final Linear bias = -4.0
+gate_a final Linear bias = -4.0
+```
+
+这样：
+
+```text
+sigmoid(-4) ~= 0.018
+```
+
+模型初始接近：
+
+```text
+f_step ~= f_full
+```
+
+注意：
+
+```text
+f_full 并不完全等于旧 baseline encoder。
+它是只看 TDP local anchor 下 full_3/full_2/full_1 的分支。
+因此它是“接近 full-only 分支”，不是严格复现 baseline。
+```
+
+如果希望更接近 baseline，还要把 TDP 的 seq_len 时间网格问题一并处理。
+
+### XYZ encoder 推荐结构
+
+对 xyz 不建议只照搬 pose 伪代码，因为当前 `SeqXYZEncoder` 还融合了 positional embedding：
+
+```text
+pos_feat = pos_emb_proj(x_emb)
+```
+
+推荐：
+
+```text
+full -> full_vel_encoder -> f_full
+vel  -> vel_vel_encoder  -> f_vel
+acc  -> acc_vel_encoder  -> f_acc
+
+gate_v = sigmoid(gate_v(concat(f_full, pos_feat)))
+gate_a = sigmoid(gate_a(concat(f_full, pos_feat)))
+
+f_motion = f_full + gate_v * f_vel + gate_a * f_acc
+h = concat(f_motion, pos_feat)
+mlp1 / mlp2 保持原结构
+```
+
+gate 形状建议：
+
+```text
+[B, N, seq_len, 1]
+```
+
+这样每个 Gaussian / 每个时间 slot 都能决定是否使用 velocity / acceleration。
+
+### 需要修改的文件
+
+如果实现该方案，预计修改：
+
+```text
+arguments/__init__.py
+  新增 use_tdp_semantic_encoder / tdp_semantic_mode / tdp_gate_init_bias
+  限制只能和 use_tdp + keep_base 同时使用
+
+scene/gaussian_model.py
+  将 use_tdp_semantic_encoder / tdp_gate_init_bias 传入 NonrigidDeformer
+
+nets/mlp_delta_non_rigid.py
+  SeqPoseEncoder 增加 TDP semantic 分支逻辑
+  SeqXYZEncoder 增加 TDP semantic 分支逻辑
+
+scripts/exps_dnarendering.sh
+  新增 tdp_semantic 或 tdp_branch_gate 模式
+  日志目录仍可用 logs/TDP
+  experiment_name 建议用 tdp_semantic
+```
+
+`scene/dataset_readers.py` 原则上不需要改：
+
+```text
+沿用当前 TDP-keep-base 已生成的 8 channel condition。
+```
+
+### 风险点
+
+1. 参数量增加
+
+相比当前 flatten TDP，三分支 encoder 会增加参数。
+如果有效，仍需记录：
+
+```text
+参数量
+显存
+训练时间
+```
+
+必要时做：
+
+```text
+baseline_wide
+```
+
+2. `f_full` 不严格等价 baseline
+
+因为 TDP condition 的 seq_len local anchor 与 baseline 时间网格不同。
+即使 gate 初始化接近 0，模型也不是完全等于 baseline。
+
+3. acceleration 可能仍然是噪声
+
+gate 能降低伤害，但如果 acc 分支一直接近 0，说明 acceleration 对当前设置贡献不大。
+
+建议日志诊断：
+
+```text
+gate_v mean/std/max
+gate_a mean/std/max
+gate_v active ratio
+gate_a active ratio
+```
+
+### 实验优先级
+
+该方案比继续跑普通 `tdp_local` 更值得尝试。
+
+推荐路线：
+
+```text
+1. 先实现 tdp_semantic，默认关闭。
+2. 单序列 smoke test，确认:
+     pose / xyz shape 正确
+     gate 初值约 0.018
+     loss 不 NaN
+3. 跑 DNA 六序列 tdp_semantic。
+4. 对比:
+     baseline densify=1500
+     tdp_keep_base flatten
+     tdp_semantic
+5. 如果 tdp_semantic 仍不提升，再停止 TDP 主线。
+```
+
+阶段性判断：
+
+```text
+可行，且是 TDP 当前最合理的下一步。
+但它是 encoder 结构消融，不再只是 condition channel 消融。
+必须独立命名、独立日志、默认关闭，并和现有 tdp flatten 结果分开解释。
+```
+
+## 2026-07-03 TDP-semantic 实现与 DNA 六序列结果
+
+用户要求在不影响其它实验路径的条件下实现 `tdp_semantic` 消融：
+
+```text
+TDP keep-base condition:
+  [full_3, full_2, full_1, v1, v2, v3, a1, a2]
+
+tdp_semantic encoder:
+  full -> FullEncoder
+  vel  -> VelEncoder
+  acc  -> AccEncoder
+  fused = f_full + gate_v * f_vel + gate_a * f_acc
+```
+
+实现隔离：
+
+```text
+baseline / Part-MoE / MSTI / AMC / 普通 TDP flatten 默认行为不变。
+tdp_semantic 只有同时开启:
+  use_tdp = 1
+  tdp_mode = keep_base
+  use_tdp_semantic_encoder = 1
+才进入新 encoder 分支。
+```
+
+主要代码改动：
+
+```text
+arguments/__init__.py
+  新增 use_tdp_semantic_encoder / tdp_semantic_mode / tdp_gate_init_bias。
+  限制 semantic encoder 只能与 use_tdp + keep_base 组合。
+
+scene/gaussian_model.py
+  将 TDP semantic 参数传入 NonrigidDeformer。
+
+nets/mlp_delta_non_rigid.py
+  SeqPoseEncoder 新增 full/vel/acc 三分支 gated residual 编码。
+  SeqXYZEncoder 新增 full/vel/acc 三分支 gated residual 编码，并保留 pos_feat 融合。
+  gate 最后一层 bias 初始化为 -4.0，初始 sigmoid 约 0.018。
+  默认未开启 use_tdp_semantic_encoder 时仍走原 flatten encoder。
+
+scripts/exps_dnarendering.sh
+  新增 tdp_semantic 模式。
+  默认:
+    experiment_name = tdp_semantic
+    use_tdp = 1
+    tdp_mode = keep_base
+    motion_cond_time_step_num = 8
+    densify_until_iter = 1500
+    final_eval_only = 1
+  新增可选 GLOBAL_LOG_SUFFIX / LOG_SUFFIX，用于双卡并行时拆分主日志。
+  默认不设置后缀时，旧日志命名保持不变。
+```
+
+验证：
+
+```text
+bash -n scripts/exps_dnarendering.sh 通过。
+git diff --check 通过。
+前置 shape test 已确认:
+  SeqPoseEncoder semantic input [B,8,8,55,3] -> [B,32]
+  SeqXYZEncoder semantic input [B,N,8,8,8,3] -> [B,N,128]
+  gate 初值约 0.016-0.018
+```
+
+运行记录：
+
+```text
+第一次尝试:
+  RUN_TIME = 20260703_002549
+  两卡共用一个主日志，并且 GPU2 在加载阶段 OOM。
+  已终止，不作为结果。
+
+第二次尝试:
+  RUN_TIME = 20260703_003245
+  使用 IMAGE_DATA_DEVICE=cpu 后可进入训练。
+  但用户要求双卡主日志拆分，因此早期终止，不作为结果。
+
+正式运行:
+  RUN_TIME = 20260703_003540
+  IMAGE_DATA_DEVICE = cpu
+
+GPU2:
+  sequences = 0044_11 0051_09 0206_04
+  log = logs/TDP/20260703_003540_DNA-Rendering_tdp_semantic_gpu2.log
+
+GPU1:
+  sequences = 0813_05 0007_04 0019_10
+  log = logs/TDP/20260703_003540_DNA-Rendering_tdp_semantic_gpu1.log
+```
+
+启动命令：
+
+```bash
+RUN_TIME=20260703_003540 GLOBAL_LOG_SUFFIX=gpu2 SEQUENCES_OVERRIDE="0044_11 0051_09 0206_04" GPU_id=2 IMAGE_DATA_DEVICE=cpu bash scripts/exps_dnarendering.sh tdp_semantic
+RUN_TIME=20260703_003540 GLOBAL_LOG_SUFFIX=gpu1 SEQUENCES_OVERRIDE="0813_05 0007_04 0019_10" GPU_id=1 IMAGE_DATA_DEVICE=cpu bash scripts/exps_dnarendering.sh tdp_semantic
+```
+
+六序列均完成，无 `Traceback / RuntimeError / CUDA out of memory / NaN`。
+
+主结果采用 render.py 最终 novelview 行：
+
+```text
+[ITER 25000] Evaluating novelview #120: PSNR ... SSIM ... LPIPS ...
+```
+
+| Sequence | PSNR | SSIM | LPIPS*1000 |
+|---|---:|---:|---:|
+| 0044_11 | 32.9554 | 0.977727 | 21.6095 |
+| 0051_09 | 28.6507 | 0.971516 | 30.8890 |
+| 0206_04 | 31.3627 | 0.970109 | 33.5955 |
+| 0813_05 | 36.0005 | 0.986649 | 18.8276 |
+| 0007_04 | 29.5074 | 0.958098 | 45.5770 |
+| 0019_10 | 35.2780 | 0.980853 | 21.1745 |
+| Mean | 32.2925 | 0.974159 | 28.6122 |
+
+与 DNA baseline densify_until_iter=1500 的差值，TDP-semantic - baseline：
+
+| Sequence | dPSNR | dSSIM | dLPIPS*1000 |
+|---|---:|---:|---:|
+| 0044_11 | -0.0187 | -0.000188 | +0.2125 |
+| 0051_09 | -0.0207 | +0.000068 | -0.2031 |
+| 0206_04 | -0.0172 | +0.000311 | -0.4280 |
+| 0813_05 | -0.0862 | -0.000244 | +0.3639 |
+| 0007_04 | -0.0262 | -0.000237 | +0.1876 |
+| 0019_10 | +0.0571 | +0.000157 | -0.0904 |
+| Mean | -0.0186 | -0.000022 | +0.0071 |
+
+与普通 TDP flatten 均值对比：
+
+```text
+TDP flatten mean:
+  PSNR 32.2929, SSIM 0.974031, LPIPS*1000 28.9147
+
+TDP-semantic - TDP flatten:
+  dPSNR        -0.0004
+  dSSIM        +0.000128
+  dLPIPS*1000  -0.3025
+```
+
+阶段性判断：
+
+```text
+tdp_semantic 相比 baseline:
+  PSNR 略低，SSIM 基本持平，LPIPS*1000 基本持平。
+
+tdp_semantic 相比普通 TDP flatten:
+  PSNR 几乎相同，SSIM 略高，LPIPS*1000 明显更好。
+
+结论:
+  semantic branch/gate 能缓解普通 TDP flatten 的感知指标下降，
+  但相对 baseline 仍没有形成稳定、明确的整体提升。
+  TDP 主线还不能直接作为强第二创新点，需要进一步看 high-motion / boundary subset 或 gate 统计。
+```
+
+### TDP-semantic OOM 处理说明
+
+本次为了避免 `tdp_semantic` 加载阶段 OOM，实际没有降低模型/训练核心参数：
+
+```text
+没有降低:
+  iterations = 25000
+  seq_len = 8
+  seq_xyz_knn = 8
+  time_step_num = 3
+  motion_cond_time_step_num = 8
+  non_rigid_mlp_depth = 3
+  non_rigid_mlp_width = 512
+  densify_until_iter = 1500
+  图像分辨率 / train-test split / renderer / loss
+
+没有开启:
+  SKIP_LOAD_TEST_CAMERAS = 1
+```
+
+真正用于降显存的是运行时环境变量：
+
+```text
+IMAGE_DATA_DEVICE=cpu
+```
+
+脚本会把它传成：
+
+```text
+SEQAVATAR_IMAGE_DATA_DEVICE=cpu
+```
+
+代码效果：
+
+```text
+scene/cameras.py:
+  original_image / mask 常驻在 CPU，而不是构造 Camera 时直接常驻 GPU。
+
+train.py:
+  每次训练只把当前 viewpoint 的 original_image / mask 搬到 GPU。
+
+render.py:
+  评价时同样在使用时再搬到 GPU。
+```
+
+这会降低显存峰值，代价是 CPU->GPU 拷贝导致训练/评价略慢。它不改变输入图像数值、模型结构、loss、采样帧、Gaussian densify 策略或最终 render 逻辑，因此理论上不应系统性改变指标。
+
+`final_eval_only=1` 也不是降低模型参数。它只把中间 `3000 / part_moe_start_iter` 的 eval/save 去掉，保留最终 `25000` eval/save：
+
+```text
+test_iterations = [25000]
+save_iterations = [25000]
+```
+
+它不参与 optimizer update，不改变训练 loss。主要作用是减少中间全测试集评估带来的显存和时间压力。
+
+因此本次指标下降不应归因于 `IMAGE_DATA_DEVICE=cpu` 或日志拆分，而应归因于 `tdp_semantic` 本身的运动编码/encoder 改动和训练随机波动。
+
+### TDP-semantic 指标下降原因判断
+
+相对 baseline 的均值差很小：
+
+```text
+dPSNR        -0.0186
+dSSIM        -0.000022
+dLPIPS*1000  +0.0071
+```
+
+这更像“没有明确收益”，不是大幅退化。
+
+可能原因：
+
+```text
+1. tdp_semantic 不是严格 baseline 等价初始化。
+   gate 初始接近 0 只抑制 vel/acc residual，
+   但 f_full 是新的 full 分支 encoder，不是原 baseline flatten encoder。
+
+2. TDP 的 seq_len local anchor 与 baseline 原时间网格不同。
+   即使保留 full_3/full_2/full_1，每个 seq slot 的组织方式也不是完全相同。
+
+3. velocity / acceleration 对 DNA 可能冗余。
+   DNA 的 [3,2,1] 已经很密，full_1/full_2/full_3 已经包含大部分短期运动信息。
+
+4. acceleration 是二阶差分，可能放大 SMPL pose / vertex motion 的噪声。
+
+5. 三分支 encoder 增加参数和优化难度。
+   gate 能减少伤害，但不能保证一定优于 baseline。
+
+6. 六序列逐项并非全部下降。
+   0051_09 / 0206_04 / 0019_10 的 LPIPS 更好，
+   但 0044_11 / 0813_05 / 0007_04 变差，平均后没有稳定收益。
+```
+
+相比普通 TDP flatten：
+
+```text
+TDP-semantic - TDP flatten:
+  dPSNR        -0.0004
+  dSSIM        +0.000128
+  dLPIPS*1000  -0.3025
+```
+
+说明 semantic branch/gate 对普通 TDP flatten 的 LPIPS 下降有缓解作用，但仍不足以超过 baseline。
+
+## 2026-07-03 I3D / ZJU TDP-semantic 脚本与运行记录
+
+目标：
+
+```text
+在 I3D-Human 和 ZJU-MoCap 上复用 DNA 的 TDP-semantic 消融；
+不改变 baseline / Part-MoE / MSTI / AMC / 普通 TDP flatten 默认路径；
+日志统一写到 logs/TDP；
+GPU1 / GPU2 并行时使用分主日志，避免两张卡日志混在一起。
+```
+
+脚本改动：
+
+```text
+scripts/exps_i3dhuman.sh
+scripts/exps_zjumocap.sh
+```
+
+新增模式：
+
+```text
+tdp_semantic
+tdp_branch_gate
+tdp_semantic_gate
+```
+
+tdp_semantic 模式固定：
+
+```text
+use_tdp = 1
+tdp_mode = keep_base
+use_tdp_semantic_encoder = 1
+tdp_semantic_mode = gated_residual
+tdp_gate_init_bias = -4.0
+final_eval_only = 1
+use_part_moe = 0
+```
+
+channel 自动推导：
+
+```text
+motion_cond_time_step_num = time_step_num + 2 * time_step_num - 1
+
+I3D:
+  time_step_num = 3
+  time_steps = [42,33,24]
+  motion_cond_time_step_num = 8
+
+ZJU:
+  time_step_num = 2
+  time_steps = [6,3]
+  motion_cond_time_step_num = 5
+```
+
+日志规则：
+
+```text
+TDP_LOG_DIR = /media/image/mxz/human/SeqAvatar/logs/TDP
+GLOBAL_LOG_SUFFIX = gpu1 / gpu2
+
+I3D:
+  logs/TDP/<RUN_TIME>_I3D-Human_tdp_semantic_gpu1.log
+  logs/TDP/<RUN_TIME>_I3D-Human_tdp_semantic_gpu2.log
+
+ZJU:
+  logs/TDP/<RUN_TIME>_ZJU-MoCap_tdp_semantic_gpu1.log
+  logs/TDP/<RUN_TIME>_ZJU-MoCap_tdp_semantic_gpu2.log
+```
+
+显存控制：
+
+```text
+IMAGE_DATA_DEVICE=cpu
+```
+
+脚本会转成：
+
+```text
+SEQAVATAR_IMAGE_DATA_DEVICE=cpu
+```
+
+该设置只影响 image/mask 常驻设备，降低显存峰值；不改变模型结构、loss、renderer、训练帧、测试帧或最终指标计算语义。
+
+已验证：
+
+```text
+bash -n scripts/exps_i3dhuman.sh 通过
+bash -n scripts/exps_zjumocap.sh 通过
+bash -n scripts/exps_dnarendering.sh 通过
+git diff --check 通过
+
+shape smoke test 通过:
+  I3D base=3, cond=8
+  ZJU base=2, cond=5
+```
+
+### I3D-Human TDP-semantic 启动记录
+
+启动时间：
+
+```text
+RUN_TIME = 20260703_143023
+```
+
+GPU1：
+
+```bash
+RUN_TIME=20260703_143023 \
+GLOBAL_LOG_SUFFIX=gpu1 \
+SEQUENCES_OVERRIDE="ID1_1 ID1_2" \
+GPU_id=1 \
+IMAGE_DATA_DEVICE=cpu \
+bash scripts/exps_i3dhuman.sh tdp_semantic
+```
+
+日志：
+
+```text
+logs/TDP/20260703_143023_I3D-Human_tdp_semantic_gpu1.log
+```
+
+GPU2：
+
+```bash
+RUN_TIME=20260703_143023 \
+GLOBAL_LOG_SUFFIX=gpu2 \
+SEQUENCES_OVERRIDE="ID2_1 ID3_1" \
+GPU_id=2 \
+IMAGE_DATA_DEVICE=cpu \
+bash scripts/exps_i3dhuman.sh tdp_semantic
+```
+
+日志：
+
+```text
+logs/TDP/20260703_143023_I3D-Human_tdp_semantic_gpu2.log
+```
+
+启动后确认：
+
+```text
+USE_TDP = 1
+TDP_MODE = keep_base
+USE_TDP_SEMANTIC_ENCODER = 1
+TIME_STEP_NUM(base) = 3
+MOTION_COND_TIME_STEP_NUM = 8
+FINAL_EVAL_ONLY = 1
+IMAGE_DATA_DEVICE = cpu
+```
+
+当前状态：
+
+```text
+两个首序列 ID1_1 / ID2_1 已进入训练迭代；
+GPU1 / GPU2 显存约 22GB；
+未出现 OOM、shape mismatch 或 TDP 配置报错。
+```
+
+### I3D-Human TDP-semantic 指标, 20260703_143023
+
+结果来源：
+
+```text
+output/I3D-Human/<sequence>/tdp_semantic/20260703_143023/metrics/results_novelview_15000.json
+output/I3D-Human/<sequence>/tdp_semantic/20260703_143023/metrics/results_novelpose_15000.json
+```
+
+说明：
+
+```text
+四个 I3D-Human 序列均已完成。
+下面采用 metrics/results JSON 主结果。
+平均值为序列级简单算术平均，不按测试图片数量加权。
+```
+
+Novelview:
+
+| Sequence | PSNR | SSIM | LPIPS*1000 |
+|---|---:|---:|---:|
+| ID1_1 | 31.9781 | 0.966546 | 25.8807 |
+| ID1_2 | 32.0687 | 0.966366 | 27.3639 |
+| ID2_1 | 31.5075 | 0.969134 | 29.4292 |
+| ID3_1 | 33.6861 | 0.965457 | 33.6492 |
+| Mean | 32.3101 | 0.966876 | 29.0808 |
+
+Novelpose:
+
+| Sequence | PSNR | SSIM | LPIPS*1000 |
+|---|---:|---:|---:|
+| ID1_1 | 29.9252 | 0.959751 | 31.8501 |
+| ID1_2 | 30.5655 | 0.959789 | 31.2806 |
+| ID2_1 | 27.8554 | 0.953647 | 41.9104 |
+| ID3_1 | 32.6332 | 0.959644 | 37.6441 |
+| Mean | 30.2448 | 0.958208 | 35.6713 |
+
+### ZJU-MoCap TDP-semantic 队列记录
+
+由于 I3D 已占用 GPU1/GPU2，ZJU 采用同卡排队启动，等待对应 I3D 序列组结束后自动运行。
+
+队列等待方式：
+
+```text
+等待对应 I3D tmux session 退出后再启动 ZJU，
+避免在 I3D 同卡两个序列切换的短间隔误判 GPU 空闲。
+```
+
+队列时间：
+
+```text
+RUN_TIME = 20260703_143851
+```
+
+GPU1 队列：
+
+```bash
+RUN_TIME=20260703_143851 \
+GLOBAL_LOG_SUFFIX=gpu1 \
+SEQUENCES_OVERRIDE="CoreView_377 CoreView_386 CoreView_387" \
+GPU_id=1 \
+IMAGE_DATA_DEVICE=cpu \
+bash scripts/exps_zjumocap.sh tdp_semantic
+```
+
+预期日志：
+
+```text
+logs/TDP/20260703_143851_ZJU-MoCap_tdp_semantic_gpu1.log
+```
+
+GPU2 队列：
+
+```bash
+RUN_TIME=20260703_143851 \
+GLOBAL_LOG_SUFFIX=gpu2 \
+SEQUENCES_OVERRIDE="CoreView_392 CoreView_393 CoreView_394" \
+GPU_id=2 \
+IMAGE_DATA_DEVICE=cpu \
+bash scripts/exps_zjumocap.sh tdp_semantic
+```
+
+预期日志：
+
+```text
+logs/TDP/20260703_143851_ZJU-MoCap_tdp_semantic_gpu2.log
+```
+
+tmux 队列：
+
+```text
+seqavatar_zju_tdp_semantic_gpu1_20260703_143851
+seqavatar_zju_tdp_semantic_gpu2_20260703_143851
+```
+
+队列 launch 日志：
+
+```text
+/tmp/seqavatar_20260703_143851_zju_tdp_semantic_gpu1.launch.log
+/tmp/seqavatar_20260703_143851_zju_tdp_semantic_gpu2.launch.log
+```
+
+### ZJU-MoCap TDP-semantic 指标, 20260703_143851
+
+结果来源：
+
+```text
+output/ZJU-MoCap/<sequence>/tdp_semantic/20260703_143851/metrics/results_test_3000.json
+```
+
+说明：
+
+```text
+六个 ZJU-MoCap 序列均已完成。
+下面采用 metrics/results JSON 主结果。
+平均值为序列级简单算术平均，不按测试图片数量加权。
+render.py 最终日志行与 JSON 只有极小差异；论文表格建议固定使用 JSON 主结果。
+```
+
+Test:
+
+| Sequence | PSNR | SSIM | LPIPS*1000 |
+|---|---:|---:|---:|
+| CoreView_377 | 31.5128 | 0.973515 | 18.0263 |
+| CoreView_386 | 33.9771 | 0.969577 | 24.7938 |
+| CoreView_387 | 28.8232 | 0.955757 | 32.2784 |
+| CoreView_392 | 31.9010 | 0.964121 | 28.4618 |
+| CoreView_393 | 29.4774 | 0.954615 | 33.5957 |
+| CoreView_394 | 31.0709 | 0.956886 | 30.4775 |
+| Mean | 31.1271 | 0.962412 | 27.9389 |
+
+## 2026-07-03 三数据集 TDP-semantic 对比基线阶段判断
+
+用户观察：
+
+```text
+DNA-Rendering / I3D-Human / ZJU-MoCap 上，
+TDP-semantic 相比 SeqAvatar baseline 都几乎没有变化。
+```
+
+当前可对齐的均值差：
+
+```text
+DNA-Rendering, novelview, 25000 iter, densify_until_iter=1500:
+  TDP-semantic - baseline
+  dPSNR        = -0.0186
+  dSSIM        = -0.000022
+  dLPIPS*1000  = +0.0071
+
+ZJU-MoCap, test, 3000 iter:
+  使用 render-log 最终行对齐:
+    baseline mean      = PSNR 31.1122, SSIM 0.962380, LPIPS*1000 28.0268
+    TDP-semantic mean  = PSNR 31.1300, SSIM 0.962474, LPIPS*1000 27.8958
+    delta              = PSNR +0.0178, SSIM +0.000095, LPIPS*1000 -0.1310
+  使用 JSON 主结果:
+    TDP-semantic mean  = PSNR 31.1271, SSIM 0.962412, LPIPS*1000 27.9389
+    与 baseline 差值同样属于极小波动。
+
+I3D-Human, 15000 iter:
+  原始脚本 baseline 设置为 15000。
+  baseline 结果来源:
+    output/I3D-Human/<sequence>/orginal/20260616_212011/metrics/results_*_15000.json
+  TDP-semantic 结果来源:
+    output/I3D-Human/<sequence>/tdp_semantic/20260703_143023/metrics/results_*_15000.json
+
+  novelview:
+    baseline mean      = PSNR 32.3824, SSIM 0.967281, LPIPS*1000 28.7066
+    TDP-semantic mean  = PSNR 32.3101, SSIM 0.966876, LPIPS*1000 29.0808
+    delta              = PSNR -0.0723, SSIM -0.000405, LPIPS*1000 +0.3742
+
+  novelpose:
+    baseline mean      = PSNR 30.3859, SSIM 0.958848, LPIPS*1000 34.8498
+    TDP-semantic mean  = PSNR 30.2448, SSIM 0.958208, LPIPS*1000 35.6713
+    delta              = PSNR -0.1411, SSIM -0.000640, LPIPS*1000 +0.8215
+```
+
+阶段性判断：
+
+```text
+TDP-semantic 当前没有形成稳定有效收益。
+DNA 与 ZJU 差值接近随机波动量级。
+I3D 按原始 15000 baseline 对齐后，TDP-semantic 明确略低于 baseline，尤其 novelpose LPIPS 变差更明显。
+```
+
+主要原因分析：
+
+```text
+1. TDP keep-base 的新通道与 baseline full motion 高度冗余。
+   DNA 中:
+     full_3 = 97->100
+     full_2 = 98->100
+     full_1 = 99->100
+     v1 = 97->98
+     v2 = 98->99
+     v3 = 99->100
+   对 xyz 这种线性位移来说，v/full 之间几乎可由线性组合互相恢复；
+   acceleration 也是这些 velocity 的二阶组合。
+   因此 TDP 更多是重参数化，而不是提供真正新信息。
+
+2. ZJU 的 time_step_num=2，TDP 金字塔太浅。
+   ZJU keep-base 只有:
+     [full_6, full_3, v1, v2, a1]
+   其中 full_3 与 v2 语义接近，full_6 又接近 v1/v2 的平均。
+   新增 trend 信息更少。
+
+3. baseline 的 flatten MLP 已经能学习 full channel 的差分组合。
+   即使没有显式 v/a，MLP 也可能从 [full_s] 中近似推断短期变化。
+
+4. semantic gate 初始接近 0，会保护 baseline，但也容易让 vel/acc 被忽略。
+   如果没有额外监督或强运动采样，gate 可能学不到明显作用。
+   当前还没有 gate/residual 统计，无法确认它是没开、开了但无效，还是信号本身冗余。
+
+5. 当前 TDP-semantic 不是严格 baseline 等价初始化。
+   gate 接近 0 只抑制 vel/acc residual；
+   full 分支本身是新的 FullEncoder，不是原 baseline encoder 权重/结构的直接复用。
+   因此即使 vel/acc 没贡献，也可能只有接近 baseline，而不是完全等于 baseline。
+
+6. acceleration 可能放大噪声。
+   pose acceleration 是 log/axis-angle 空间中的近似二阶差分，不是严格角加速度；
+   xyz acceleration 会放大 SMPL 顶点估计误差和局部抖动。
+
+7. 全图平均指标会稀释动态区域收益。
+   高运动肢体、衣服边界、silhouette 只占图像小区域。
+   如果 TDP 只在这些区域有轻微收益，PSNR/SSIM/LPIPS 全图平均很难显著变化。
+   但 DNA high-motion / boundary subset 也没有显示明确强收益，因此当前证据仍偏弱。
+
+8. I3D 的时间间隔不均匀。
+   I3D time_steps=[42,33,24]，局部间隔为 9,9,24。
+   当前第一版 acceleration 仍是 velocity difference，未严格除以二阶时间间隔；
+   这可能让 I3D 的趋势通道尺度和语义不干净。
+```
+
+建议改进优先级：
+
+```text
+P0: 先加诊断，不急着继续大规模跑。
+  记录:
+    gate_v mean/max/active ratio
+    gate_a mean/max/active ratio
+    ||f_vel|| / ||f_full||
+    ||f_acc|| / ||f_full||
+    residual / full feature norm
+  如果 gate 长期接近 0，说明模型基本忽略 TDP。
+  如果 gate 很大但指标无提升，说明 v/a 信号本身冗余或噪声大。
+
+P1: 改成严格 baseline-residual 结构。
+  不要让 full 分支重新学 baseline。
+  建议:
+    f_base = 原始 baseline SeqPoseEncoder/SeqXYZEncoder(full channels)
+    f_tdp  = gate_v * VelEncoder(v) + gate_a * AccEncoder(a)
+    output = f_base + zero_init_projection(f_tdp)
+  这样初始模型严格等价或更接近 baseline，
+  TDP 只作为残差增益，能更干净判断新增趋势信息是否有用。
+
+P2: 做 baseline checkpoint adapter 实验。
+  从 baseline checkpoint 初始化；
+  冻结或半冻结 baseline encoder / non-rigid 主干；
+  只训练 vel/acc adapter 和 gate 若干轮；
+  如果 adapter 学不到收益，说明 TDP 作为附加信息价值有限。
+
+P3: 做 part-aware / point-aware gate，而不是全局 gate。
+  TDP 的潜在收益应该集中在手臂、腿、衣服边界等局部高运动区域。
+  建议:
+    pose gate: joint/part-level gate
+    xyz gate: Gaussian/part-level gate
+  或与 Part-MoE 结合，让动态 part 专家接收 TDP residual。
+
+P4: 改趋势定义，减少冗余。
+  当前 v/a 大多可由 full channel 线性组合恢复。
+  更值得试:
+    nonlinear motion residual:
+      e_t = current - linear_extrapolate(previous states)
+    normalized acceleration:
+      a = (v_next - v_prev) / dt_between_velocity_centers
+    direction-change / curvature feature:
+      angle(v_prev, v_next), ||v_next - v_prev||
+  尤其 I3D 必须处理不等时间间隔。
+
+P5: 加 high-motion / local-region 训练或评价。
+  评价:
+    top motion frames
+    silhouette boundary
+    arms / legs / loose-cloth-like areas
+  训练:
+    high-motion frame sampling weight
+    boundary/dynamic-region loss weight
+  如果局部评价仍没有收益，应停止把 TDP 作为主线。
+
+P6: 公平性补实验。
+  I3D 当前已经有 baseline 15000 vs TDP-semantic 15000 的对齐结果。
+  若要确认不是 seed 波动，需要至少一组 seed 复跑。
+  25000 的 I3D 日志属于非原始脚本口径的额外重跑，不应再作为默认 baseline 口径。
+```
+
+当前决策：
+
+```text
+TDP-semantic 不建议作为第二创新点主线直接继续堆实验。
+下一步最小成本是加 gate/residual 诊断 + baseline-residual adapter 版本。
+如果诊断显示 gate 不用或高运动区域无收益，应转向 Part-aware temporal residual / dynamic-region objective，
+而不是继续增加 TDP channel 或更复杂 encoder。
+```
+
+## 2026-07-03 I3D TDP-semantic iteration 二次纠正
+
+用户提供三个数据集最初脚本，确认原始 baseline 设置为：
+
+```text
+DNA:
+  iter = 25000
+
+I3D:
+  iter = 15000
+
+ZJU:
+  iter = 3000
+```
+
+因此此前根据 `logs/20260621_183404_I3D-Human_orginal_25000.log` 判断 I3D baseline 为 25000 是错误口径。
+该 25000 log 是额外重跑，不是最初脚本 baseline 默认设置。
+
+脚本已改回：
+
+```text
+scripts/exps_i3dhuman.sh:
+  iter=${ITER:-15000}
+```
+
+影响：
+
+```text
+当前 I3D TDP-semantic run:
+  logs/TDP/20260703_143023_I3D-Human_tdp_semantic_gpu*.log
+  iteration = 15000
+
+与原始 I3D baseline 15000 设置是对齐的。
+不需要因为 iteration 问题重跑 I3D TDP-semantic。
+```
+
+验证：
+
+```text
+bash -n scripts/exps_i3dhuman.sh 通过
+git diff --check -- scripts/exps_i3dhuman.sh 通过
+```
+
+## 2026-07-03 TDP-semantic 代码总结与后续改进方向
+
+TDP-semantic 本次改动目标：
+
+```text
+在不影响 baseline / Part-MoE / MSTI / AMC / 普通 TDP flatten 的前提下，
+把 TDP-keep-base 的 8 个 motion condition channel 按语义分开编码：
+  full: [full_3, full_2, full_1]
+  vel:  [v1, v2, v3]
+  acc:  [a1, a2]
+再用 gated residual 融合。
+```
+
+代码改动范围：
+
+```text
+arguments/__init__.py
+  新增:
+    use_tdp_semantic_encoder
+    tdp_semantic_mode
+    tdp_gate_init_bias
+  约束:
+    use_tdp_semantic_encoder 只能和 use_tdp=True、tdp_mode=keep_base 同时使用。
+    use_tdp 与 MSTI / AMC-pair / AMC-causal 互斥。
+  自动推导:
+    tdp_keep_base cond channels = time_step_num + 2 * time_step_num - 1。
+
+scene/dataset_readers.py
+  TDP condition 构造仍由 get_seq_pose_xyz_cond_tdp() 完成。
+  tdp_keep_base channel 顺序固定为:
+    [full channels, velocity channels, acceleration channels]
+  不开 use_tdp 时仍走原 baseline condition 构造。
+
+scene/gaussian_model.py
+  将:
+    use_tdp_semantic_encoder
+    tdp_semantic_mode
+    tdp_base_time_step_num
+    tdp_gate_init_bias
+  传给 NonrigidDeformer。
+
+nets/mlp_delta_non_rigid.py
+  SeqPoseEncoder / SeqXYZEncoder 新增 TDP semantic 分支。
+  开启后:
+    full -> full_encoder
+    vel  -> vel_encoder
+    acc  -> acc_encoder
+    fused = f_full + gate_v * f_vel + gate_a * f_acc
+  gate 最后一层 bias 初始化为 tdp_gate_init_bias=-4.0，
+  初始 sigmoid 约 0.018，尽量让模型从接近 full 分支开始。
+  未开启 use_tdp_semantic_encoder 时仍使用原 flatten encoder。
+
+scripts/exps_dnarendering.sh
+scripts/exps_i3dhuman.sh
+scripts/exps_zjumocap.sh
+  新增 tdp_semantic 模式。
+  日志写入 logs/TDP。
+  支持 GLOBAL_LOG_SUFFIX，把两张 GPU 的主日志拆开。
+  train/render 都传入一致的 motion_cond_time_step_num 和 TDP semantic 参数。
+  I3D 默认 iter 保持原始脚本 15000。
+  ZJU 默认 iter 保持 3000。
+  DNA 默认 iter 保持 25000。
+```
+
+三数据集结果后的判断：
+
+```text
+TDP-semantic 目前没有形成稳定收益。
+DNA 与 ZJU 只有极小波动级别差异。
+I3D 在 15000 iter 对齐原始 baseline 后略低于 baseline。
+因此不能把当前 TDP-semantic 作为第二创新点主线。
+```
+
+没有优化的核心原因：
+
+```text
+1. TDP keep-base 的 v/a 与 baseline full channels 信息高度冗余。
+   对 xyz 位移，v/full/acc 很多可以线性组合互相恢复。
+
+2. baseline flatten MLP 本身已经可能从 full channels 中学到近似差分。
+   显式添加 v/a 不一定提供新信息。
+
+3. semantic gate 只抑制 vel/acc，但 full 分支不是原 baseline encoder。
+   所以当前结构不是严格 baseline 等价初始化。
+
+4. gate bias=-4.0 保护 baseline，但也可能让 vel/acc 长期被忽略。
+   当前还没有 gate/residual 统计，无法判断模型是否真的使用了 TDP。
+
+5. acceleration 通道可能放大 SMPL pose / xyz 抖动。
+   pose acceleration 只是 log/axis-angle 空间近似二阶差分，不是严格物理角加速度。
+
+6. I3D 的时间间隔 [42,33,24] 对应局部间隔 9,9,24。
+   当前 acceleration 对不等时间间隔的二阶归一化还不够严谨。
+
+7. 如果收益只集中在四肢、衣服边界、silhouette 等局部动态区域，
+   全图 PSNR/SSIM/LPIPS 很容易把收益稀释。
+```
+
+后续最小风险改进路线：
+
+```text
+P0: 先加诊断，不直接继续大跑。
+  记录 gate_v / gate_a 的 mean、max、active ratio。
+  记录 ||f_vel||/||f_full||、||f_acc||/||f_full||、residual/full norm。
+
+P1: 改成真正 baseline-residual adapter。
+  f_base = 原 baseline encoder(full channels)
+  f_tdp  = gate_v * VelEncoder(v) + gate_a * AccEncoder(a)
+  out    = f_base + zero_init_projection(f_tdp)
+  这样更接近严格 baseline 初始化，只验证 TDP residual 是否有用。
+
+P2: 从 baseline checkpoint 初始化 adapter。
+  冻结或半冻结 baseline 主干，只训练 vel/acc adapter 和 gate。
+  如果 adapter 仍没有收益，说明 TDP 附加信息价值有限。
+
+P3: 做 part-aware / point-aware gate。
+  TDP residual 不应全局作用，优先作用到高运动 part / Gaussian / boundary 区域。
+  可和 Part-MoE 组合，让动态 part 专家接收 temporal residual。
+
+P4: 换更少冗余的趋势定义。
+  例如:
+    current - linear_extrapolate(history)
+    normalized acceleration with unequal dt
+    direction-change / curvature feature
+
+P5: 若 high-motion / boundary / part-local 评价仍无收益，应停止 TDP 主线，
+  转向 dynamic-region objective 或 Part-aware temporal residual。
+```
+
+### TDP 改进项分别解决什么问题
+
+这些改进不是同时全部做，而是按诊断顺序逐步排除问题。
+
+```text
+1. gate / residual 诊断
+   作用:
+     判断 TDP-semantic 里的 vel/acc 分支到底有没有被模型使用。
+   能回答:
+     gate 接近 0 -> 模型基本忽略 TDP，继续大跑意义小。
+     gate 很大但指标不升 -> vel/acc 信号可能冗余或有噪声。
+     residual norm 很小 -> TDP 分支影响不到 non-rigid deformation。
+     residual norm 很大但指标差 -> TDP 分支在干扰 baseline。
+
+2. baseline-residual adapter
+   作用:
+     让模型初始严格接近 baseline，只把 TDP 作为增量残差加入。
+   当前问题:
+     TDP-semantic 的 full_encoder 不是原 baseline encoder，
+     所以即使 gate 抑制 vel/acc，也不是严格 baseline 等价。
+   能回答:
+     如果 adapter 有提升，说明 TDP 趋势信息确实有增量价值。
+     如果 adapter 仍无提升，说明 v/a 对当前任务帮助有限。
+
+3. 从 baseline checkpoint 初始化，只训练 adapter + gate
+   作用:
+     排除随机初始化和整体重新训练带来的干扰。
+   能回答:
+     在一个已经训练好的 baseline 上，单独给 vel/acc 一个小残差分支，
+     是否还能进一步改善动态区域。
+   好处:
+     实验更便宜，解释更干净。
+     不会因为主干重新训练波动掩盖 TDP 的真实作用。
+
+4. part-aware / point-aware gate
+   作用:
+     让 TDP residual 只影响真正需要运动趋势的局部区域。
+   当前问题:
+     全局 gate 会把四肢/边界的小范围运动信号平均掉，
+     也可能把 acceleration 噪声加到静态躯干区域。
+   能回答:
+     TDP 是否只对高运动 part / Gaussian / silhouette boundary 有局部收益。
+   适合与 Part-MoE 结合:
+     动态 part 专家接收 temporal residual，
+     静态 part 继续保持 baseline 表达。
+
+5. 替换趋势定义
+   作用:
+     减少 raw velocity / raw acceleration 与 baseline full channel 的冗余。
+   当前问题:
+     v/a 很多可以由 full channels 线性组合得到，
+     acceleration 还可能放大 SMPL 抖动。
+   更值得试的特征:
+     current - linear_extrapolate(history)
+       表示当前帧偏离匀速预测多少，更像非线性运动残差。
+     normalized acceleration with unequal dt
+       对 I3D 这种 [42,33,24] 不等间隔更合理。
+     direction-change / curvature
+       直接描述转向、急停、反向运动，比 raw v/a 更不冗余。
+```
+
+推荐执行顺序：
+
+```text
+先做 P0 gate/residual 诊断。
+
+如果 gate≈0:
+  不要继续大跑，先尝试 adapter 或调 gate 初始化。
+
+如果 gate 有效但全图指标不升:
+  看 high-motion / boundary / part-local 指标。
+
+如果局部有收益:
+  做 part-aware / point-aware gate 或和 Part-MoE 结合。
+
+如果局部也无收益:
+  放弃 raw TDP，改用 nonlinear residual / direction-change 特征。
+
+如果 adapter + 新趋势定义仍无收益:
+  停止把 TDP 作为第二创新点主线。
+```
+
+## 2026-07-03 TDP-adapter 实现与 ZJU 诊断结果
+
+用户要求按上面的改进继续验证 TDP，最后判断是否还要继续。
+
+本次没有把所有想法混在一个实验里，而是先做最小可解释版本：
+
+```text
+tdp_adapter
+
+目标:
+  让 baseline full 分支保持 baseline encoder 结构；
+  TDP 的 velocity / acceleration 只作为 zero-init residual adapter；
+  同时输出 gate / residual 诊断。
+
+未放入本实验:
+  baseline checkpoint adapter
+  part-aware / point-aware gate
+  nonlinear extrapolation trend
+原因:
+  避免一次改太多，无法解释指标变化来源。
+```
+
+新增代码：
+
+```text
+arguments/__init__.py
+  tdp_semantic_mode 新增 baseline_residual。
+  新增:
+    tdp_debug_stats
+    tdp_debug_interval
+
+nets/mlp_delta_non_rigid.py
+  NonrigidDeformer 新增 pop_tdp_stats()。
+  SeqPoseEncoder / SeqXYZEncoder 新增 tdp_semantic_mode=baseline_residual:
+    base/full path = 原 baseline encoder 结构，只吃 full channels。
+    residual path = gate_v * VelEncoder(v) + gate_a * AccEncoder(a)。
+    residual projection zero-init，初始 residual 输出为 0。
+  记录:
+    gate_v mean/max/active ratio
+    gate_a mean/max/active ratio
+    ||f_vel||/||f_full||
+    ||f_acc||/||f_full||
+    residual/full feature norm
+
+train.py
+  新增 maybe_log_tdp_stats()。
+  开启 tdp_debug_stats 时按 interval 打印 [TDP Stats]。
+
+scripts/exps_dnarendering.sh
+scripts/exps_i3dhuman.sh
+scripts/exps_zjumocap.sh
+  新增 tdp_adapter / tdp_residual / tdp_baseline_residual 模式。
+  tdp_adapter:
+    use_tdp=1
+    tdp_mode=keep_base
+    use_tdp_semantic_encoder=1
+    tdp_semantic_mode=baseline_residual
+    tdp_debug_stats=1
+```
+
+验证：
+
+```text
+bash -n scripts/exps_dnarendering.sh 通过
+bash -n scripts/exps_i3dhuman.sh 通过
+bash -n scripts/exps_zjumocap.sh 通过
+py_compile arguments / gaussian_model / mlp_delta_non_rigid / train 通过
+dummy shape test 通过:
+  pose_out = (1, 32)
+  xyz_out  = (1, 4, 128)
+
+ZJU smoke:
+  CoreView_377, ITERATIONS=2, tdp_adapter
+  train/render 均通过
+  初始 residual_feat_base_feat_norm_ratio = 0
+  说明 zero-init adapter 生效
+```
+
+### ZJU-MoCap tdp_adapter 六序列实验
+
+设置：
+
+```text
+RUN_TIME = 20260703_180739
+logs:
+  logs/TDP/20260703_180739_ZJU-MoCap_tdp_adapter_gpu1.log
+  logs/TDP/20260703_180739_ZJU-MoCap_tdp_adapter_gpu2.log
+
+GPU1:
+  CoreView_377, CoreView_386, CoreView_387
+GPU2:
+  CoreView_392, CoreView_393, CoreView_394
+
+iter = 3000
+densify_until_iter = 1200
+time_step_num = 2
+motion_cond_time_step_num = 5
+tdp_semantic_mode = baseline_residual
+```
+
+下面使用 render.py 最终 test 行，与 baseline `20260618_233204_ZJU-MoCap_orginal_3000.log` 口径一致。
+
+| Sequence | Base PSNR | Adapter PSNR | dPSNR | Base SSIM | Adapter SSIM | dSSIM | Base LPIPS*1000 | Adapter LPIPS*1000 | dLPIPS*1000 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| CoreView_377 | 31.4262 | 31.4697 | +0.0434 | 0.973127 | 0.973527 | +0.000400 | 18.2643 | 17.9429 | -0.3214 |
+| CoreView_386 | 34.0227 | 33.9260 | -0.0966 | 0.969627 | 0.969310 | -0.000317 | 25.0206 | 24.9220 | -0.0986 |
+| CoreView_387 | 28.7058 | 28.8055 | +0.0997 | 0.955544 | 0.955720 | +0.000176 | 32.4304 | 32.2320 | -0.1984 |
+| CoreView_392 | 31.9875 | 31.9840 | -0.0035 | 0.964477 | 0.964325 | -0.000152 | 28.4383 | 28.4842 | +0.0460 |
+| CoreView_393 | 29.4300 | 29.4486 | +0.0186 | 0.954530 | 0.954590 | +0.000061 | 33.6920 | 33.5379 | -0.1542 |
+| CoreView_394 | 31.1008 | 31.0688 | -0.0320 | 0.956973 | 0.956922 | -0.000051 | 30.3150 | 30.7222 | +0.4072 |
+| Mean | 31.1122 | 31.1171 | +0.0049 | 0.962380 | 0.962399 | +0.000019 | 28.0268 | 27.9735 | -0.0532 |
+
+诊断统计，取每个序列 ITER 3000 的 `[TDP Stats]` 平均：
+
+```text
+pose/gate_v_mean                = 0.024088
+pose/gate_a_mean                = 0.009739
+pose/gate_v_active_0p1          = 0.004278
+pose/gate_a_active_0p1          = 0.000000
+xyz/gate_v_mean                 = 0.089826
+xyz/gate_a_mean                 = 0.007278
+xyz/gate_v_active_0p1           = 0.083333
+xyz/gate_a_active_0p1           = 0.000000
+pose/residual_feat_base_ratio   = 0.071598
+xyz/residual_feat_base_ratio    = 0.800741
+```
+
+解释：
+
+```text
+1. acceleration gate 基本完全没开。
+   pose gate_a_active_0p1 = 0
+   xyz gate_a_active_0p1 = 0
+   说明 raw acceleration / trend 在当前定义下没有被模型采用。
+
+2. pose velocity 也基本没开。
+   pose gate_v_active_0p1 平均只有 0.004278。
+   pose residual 对最终特征影响很小。
+
+3. 主要被使用的是 xyz velocity residual。
+   xyz residual/base feature norm 不小，但最终指标只提升:
+     PSNR +0.0049
+     SSIM +0.000019
+     LPIPS*1000 -0.0532
+   这个幅度仍属于随机波动级别，不能作为有效创新点证据。
+```
+
+阶段结论：
+
+```text
+不建议继续把 TDP 作为第二创新点主线。
+```
+
+原因：
+
+```text
+1. 普通 TDP flatten 在 DNA 上没有超过 baseline。
+2. TDP-semantic 在 DNA / I3D / ZJU 三个数据集都没有稳定收益。
+3. 本次更严格的 baseline-residual adapter 在 ZJU 上也只有极小波动收益。
+4. 诊断显示 acceleration 基本没被用，pose trend 也基本没被用。
+5. 真正被用到的是 xyz velocity residual，但它带来的收益极小。
+```
+
+后续建议：
+
+```text
+停止继续大规模 TDP 实验。
+
+如果还想保留 motion 方向，只保留一个很小的支线：
+  dynamic-region / part-aware temporal residual
+
+也就是:
+  不再做全局 TDP channel；
+  不再强调 acceleration pyramid；
+  只把局部 velocity residual 给高运动 part / boundary / Gaussian。
+
+更优先的方向:
+  回到 Part-MoE 主线，
+  或做 Part-MoE + 局部动态 residual，
+  而不是继续扩展 TDP。
+```
+
+## 2026-07-03 STMS 网络级优化候选
+
+用户根据论文 4.2 Spatio-temporal Multi-scale Sampling 总结了 STMS 的不足，并要求提出网络级优化，不能只是加残差或调权重。
+
+当前判断：
+
+```text
+不要再把重点放在 raw TDP / 直接追加 velocity-acceleration channel。
+TDP 系列实验已经说明：
+  只改变 condition channel 或加语义分支，收益不稳定；
+  acceleration 基本不被使用；
+  全局指标和 high-motion / boundary 证据不足。
+
+新的 STMS 优化应直接改变 motion encoder 的结构归纳偏置：
+  显式区分尺度；
+  动态选择时间尺度；
+  动态选择空间邻域；
+  建模粗骨架 motion 与细顶点 motion 的交互；
+  对不同 body part / Gaussian 使用不同 motion context。
+```
+
+### 候选 1：Scale-Token Temporal Transformer
+
+目标：
+
+```text
+解决 STMS 多尺度 motion 只是 concat 的问题。
+```
+
+核心做法：
+
+```text
+把每个时间尺度当作一个 token，而不是 flatten channel：
+  full_1 token
+  full_2 token
+  full_3 token
+
+每个 token 加 scale embedding / dt embedding，
+再用 cross-scale self-attention 建模短期、中期、长期尺度之间的关系。
+```
+
+可用于：
+
+```text
+SeqPoseEncoder:
+  skeleton scale tokens -> transformer -> f_deltaP
+
+SeqXYZEncoder:
+  per-Gaussian local vertex scale tokens -> lightweight transformer / attention mixer -> f_V
+```
+
+优点：
+
+```text
+1. 明确保留尺度语义，不再让 MLP 从 flatten 向量中猜。
+2. 不需要新增 RGB / mask / camera。
+3. 比 TDP 更贴近 STMS 原始问题：多尺度采样后的融合方式太弱。
+```
+
+风险：
+
+```text
+1. 计算量比 MLP 大，XYZ per-Gaussian attention 需要做轻量化。
+2. 仍然依赖原始固定尺度，不能完全解决尺度自适应问题。
+```
+
+### 候选 2：Motion-Adaptive Scale Router
+
+目标：
+
+```text
+解决固定时间尺度不能按动作状态自适应的问题。
+```
+
+核心做法：
+
+```text
+为 short / mid / long scale 建立不同 temporal experts：
+  E_short
+  E_mid
+  E_long
+
+根据当前 pose motion、xyz local motion、body part 或 Gaussian feature 生成 routing logits，
+对每个 part / Gaussian 动态选择 top-k scale experts。
+```
+
+与普通加权不同：
+
+```text
+不是把 3 个尺度简单乘权重求和；
+而是不同尺度进入不同专家网络，
+每个专家学习不同时间窗口下的 non-rigid motion pattern。
+```
+
+适合 SeqAvatar 的解释：
+
+```text
+快速挥手 / 踢腿:
+  动态 limbs 路由到 short-scale expert。
+
+躯干 / 慢动作:
+  路由到 long-scale expert。
+
+突然停止 / 转向:
+  可以同时激活 short + mid expert。
+```
+
+优点：
+
+```text
+1. 网络级结构变化明显，论文解释强。
+2. 能和 Part-MoE 主线自然结合。
+3. 比全局 TDP 更符合“局部动态区域才需要特殊 motion modeling”的实验结论。
+```
+
+风险：
+
+```text
+1. 需要控制路由稳定性，避免所有点都塌缩到同一个 expert。
+2. 需要记录 routing 分布，作为可解释性证据。
+```
+
+### 候选 3：Dynamic Spatio-Temporal Motion Graph
+
+目标：
+
+```text
+解决空间 KNN 固定、欧氏最近不一定 motion 相关的问题。
+```
+
+核心做法：
+
+```text
+构建动态图：
+  节点: SMPL joints / SMPL vertices / Gaussians
+  边:
+    1. kinematic skeleton edges
+    2. canonical KNN edges
+    3. motion-similarity dynamic edges
+    4. optional part edges
+
+用 graph attention / message passing 在时空图上传播 motion feature。
+```
+
+对当前固定 KNN 的替代：
+
+```text
+先保留 K 个 canonical nearest vertices 作为 candidate pool，
+再用 motion query 选择真正相关的邻居：
+  Gaussian query = [x, pose feature, local velocity]
+  SMPL vertex key = [template position, part label, motion feature]
+  attention 得到动态邻域聚合。
+```
+
+优点：
+
+```text
+1. 直接针对 STMS 空间采样不足。
+2. 更适合衣服、边界、关节附近区域。
+3. 可以输出邻域 attention map，解释哪些 SMPL 顶点影响某个 Gaussian。
+```
+
+风险：
+
+```text
+1. 工程改动比 temporal encoder 大。
+2. per-Gaussian graph attention 显存压力大，需要 candidate pool 和低维 attention。
+```
+
+### 候选 4：Coarse-Fine Motion Cross-Attention
+
+目标：
+
+```text
+解决粗骨架 motion f_deltaP 与细顶点 motion f_V 只是隐式拼接融合的问题。
+```
+
+核心做法：
+
+```text
+把 skeleton joints 作为 coarse tokens；
+把 Gaussian-local KNN vertices 或 Gaussian motion features 作为 fine tokens；
+做双向 cross-attention：
+
+  fine queries attend to skeleton tokens:
+    每个 Gaussian 知道应该关注哪些 joints / body parts。
+
+  skeleton queries attend to fine tokens:
+    骨架 motion feature 获得局部非刚性反馈。
+```
+
+最终 non-rigid MLP 输入：
+
+```text
+不是简单 [x, pose, f_deltaP, f_V]，
+而是 cross-attended motion feature:
+  f_motion_i = CrossAttn(fine_i, skeleton_tokens, vertex_tokens)
+```
+
+优点：
+
+```text
+1. 直接解决 STMS 粗细 motion 融合简单的问题。
+2. 对不同 Gaussian 自适应选择 coarse / fine 信息源。
+3. 比单独强化 pose 或 xyz encoder 更有结构创新。
+```
+
+风险：
+
+```text
+1. 需要设计 token 数量，避免 vertex token 太多。
+2. 需要确认 cross-attention 不引入明显 OOM。
+```
+
+### 候选 5：Causal Motion State Encoder
+
+目标：
+
+```text
+解决 STMS 只看 t-s -> t 位移，缺少连续运动过程建模的问题。
+```
+
+核心做法：
+
+```text
+不再手工堆 raw velocity / acceleration channel，
+而是让网络按时间顺序编码 motion state：
+
+  P_{t-3}, P_{t-2}, P_{t-1}, P_t
+  X_{t-3}, X_{t-2}, X_{t-1}, X_t
+
+通过 TCN / GRU / SSM / lightweight causal transformer 得到 motion state。
+```
+
+和 TDP 的区别：
+
+```text
+TDP:
+  手工构造 [v, a]，再送 MLP。
+
+Causal Motion State Encoder:
+  网络直接看有序状态序列，
+  自己学习速度、转向、急停、非线性趋势。
+```
+
+优点：
+
+```text
+1. 避免 raw acceleration 放大 SMPL 抖动。
+2. 比 AMC-causal 更正式，可以统一 pose/xyz 的状态建模。
+3. 对 fast motion path change 的解释更自然。
+```
+
+风险：
+
+```text
+1. 对 I3D/ZJU 不等间隔采样要加入 dt embedding。
+2. 如果只在全局 pose 上做，局部收益可能仍被全图平均淹没。
+```
+
+### 候选 6：Part-Aware Scale-Adaptive Motion Field
+
+目标：
+
+```text
+把 STMS 改成 body-part aware 的动态 motion field，
+同时承接第一创新点 Part-MoE。
+```
+
+核心做法：
+
+```text
+每个 body part 拥有独立的 temporal-scale encoder / scale router：
+  torso expert
+  arm expert
+  leg expert
+  head expert
+  hand/foot optional expert
+
+Gaussian 根据 SMPL part label / learned part assignment 选择对应 motion field。
+动态 part 使用更短期、更强的 temporal encoder；
+稳定 part 使用长期尺度或轻量 encoder。
+```
+
+与 Part-MoE 的关系：
+
+```text
+Part-MoE 主要解决 non-rigid deformation 的空间部位专家化。
+Part-Aware STMS 则解决每个部位使用什么 motion context。
+
+二者可以组合成：
+  part-specific temporal motion encoder
+  +
+  part-specific deformation expert
+```
+
+优点：
+
+```text
+1. 最符合当前实验结论：全局 TDP 没收益，局部动态区域才可能有收益。
+2. 与已有 Part-MoE 代码和论文叙事兼容。
+3. 可解释性强：不同 part 的 scale routing / motion attention 可以可视化。
+```
+
+风险：
+
+```text
+1. 需要谨慎隔离，不能让 Part-MoE 默认依赖 Motion 模块。
+2. 需要 part-local / high-motion subset 评价，否则全图指标可能看不出收益。
+```
+
+### 推荐优先级
+
+```text
+P1: Part-Aware Scale-Adaptive Motion Field
+    最适合当前项目，因为它能承接 Part-MoE，并避免继续做全局 TDP。
+
+P2: Scale-Token Temporal Transformer
+    最容易从现有 SeqPoseEncoder / SeqXYZEncoder 改起，直接解决 concat 弱点。
+
+P3: Coarse-Fine Motion Cross-Attention
+    结构创新较强，针对 f_deltaP / f_V 融合不足。
+
+P4: Dynamic Spatio-Temporal Motion Graph
+    论文价值高，但工程和显存风险较大。
+
+P5: Causal Motion State Encoder
+    比 TDP 更合理地建模连续运动，但需要重新定义跨数据集时间窗口。
+```
+
+当前最建议的第二创新点候选：
+
+```text
+Part-aware Scale-Adaptive STMS
+
+一句话定义：
+  让每个 Gaussian / body part 根据自身运动状态，
+  在短期、中期、长期 motion experts 中动态选择时空上下文，
+  并通过 coarse-fine cross-attention 融合骨架和局部 vertex motion。
+```
+
+## 2026-07-03 Part-MoE 对 STMS 的影响确认
+
+问题：
+
+```text
+在已加入的 Part-MoE 消融实验中，STMS 是否受到影响？
+```
+
+代码结论：
+
+```text
+普通 Part-MoE 消融不会改变 STMS 的 motion condition 构造，也不会改变 STMS encoder 输入通道数。
+```
+
+依据：
+
+```text
+1. STMS condition 构造仍在 scene/dataset_readers.py:get_seq_pose_xyz_cond()。
+   普通 Part-MoE 没有作为 motion_cond_options 传入该函数。
+   只有 use_msti / use_amc_pair / use_amc_causal / use_tdp 会切换 motion condition 分支。
+
+2. scene/__init__.py 只把 use_msti / use_amc / use_tdp / motion_cond_time_step_num
+   传给 dataset reader。
+   use_part_moe 不参与 time_steps 或 seq_pose_conds / seq_xyz_conds 生成。
+
+3. scripts 中普通 part_moe / part_moe_leg / part_moe_foot / part_moe_arm:
+   use_msti=0
+   use_amc_pair=0
+   use_amc_causal=0
+   use_tdp=0
+   因此 motion_cond_time_step_num = time_step_num。
+
+4. NonrigidDeformer.forward() 中执行顺序是:
+   SeqPoseEncoder(seq_pose_conds)
+   SeqXYZEncoder(seq_xyz_conds, x_emb)
+   concat features
+   然后才根据 use_part_moe / part_label 路由到 part experts。
+
+5. 因此 Part-MoE 改的是 STMS feature 之后的 non-rigid deformation head：
+   baseline shared MLP/head
+   -> part-specific expert MLP/head
+   而不是 STMS 的采样、delta 计算、KNN、encoder channel 或 condition 内容。
+```
+
+需要区分的例外：
+
+```text
+part_moe_leg_msti 是组合实验。
+它显式打开 use_msti=1，因此会改变 STMS motion condition channel。
+这个影响来自 MSTI，不是普通 Part-MoE 本身。
+```
+
+表述建议：
+
+```text
+普通 Part-MoE 可以写成:
+  在保持 SeqAvatar 原 STMS motion condition 不变的情况下，
+  将 non-rigid deformation head 改为 part-specific mixture-of-experts。
+
+不要写成:
+  Part-MoE 改进了 STMS motion sampling。
+```
+
+## 2026-07-03 Gaussian 按 part label / learned assignment 选择 motion field 的具体方案
+
+目标：
+
+```text
+把 STMS 从“所有 Gaussian 共用同一套 motion encoder / 同一组尺度融合”
+改成“不同 body part / Gaussian 使用不同 motion field”。
+```
+
+这不是普通 Part-MoE 的重复：
+
+```text
+Part-MoE:
+  STMS feature 已经算完；
+  再把后面的 non-rigid deformation head 按 part 分专家。
+
+Part-aware motion field:
+  在 STMS motion encoder 阶段就按 part / Gaussian 选择 motion context；
+  解决每个部位应该看什么时间尺度、什么骨架关节、什么局部 vertex motion。
+```
+
+### 版本 A：SMPL hard label 路由
+
+第一版建议先做 hard label，因为当前代码已经有标签生成链路：
+
+```text
+part_moe_start_iter 时:
+  canonical Gaussian -> nearest canonical SMPL vertex
+  SMPL vertex dominant LBS joint -> part label
+  保存 gaussian_part_label.npy
+```
+
+新增一个独立开关：
+
+```text
+use_part_motion_field = False
+part_motion_assignment = smpl_hard
+part_motion_start_iter = part_moe_start_iter
+part_motion_warmup = 1000
+```
+
+不要强制依赖 `use_part_moe`，但可以复用同一份 `gaussian_part_label.npy`。
+
+结构：
+
+```text
+seq_pose_conds: [B, L, S, J, 3]
+seq_xyz_conds:  [B, N, L, K, S, 3]
+part_label:     [N]
+
+对每个 part p 建 motion encoder:
+  E_pose_p
+  E_xyz_p
+  optional scale router R_p
+
+Gaussian i:
+  p_i = part_label[i]
+  f_pose_i = E_pose_{p_i}(seq_pose_conds)
+  f_xyz_i  = E_xyz_{p_i}(seq_xyz_conds_i, x_i)
+  f_motion_i = fuse_p(f_pose_i, f_xyz_i)
+```
+
+为了省显存，不建议第一版真的复制完整大 encoder：
+
+```text
+更稳实现:
+  shared scale token projection
+  + part-specific small temporal adapters / experts
+  + part-specific scale router
+```
+
+例如：
+
+```text
+shared_pose_tokens = PoseScaleProjector(seq_pose_conds)
+shared_xyz_tokens_i = XYZScaleProjector(seq_xyz_conds_i)
+
+for part p:
+  f_i_p = PartMotionExpert_p(shared_pose_tokens, shared_xyz_tokens_i, x_i)
+
+hard route:
+  f_i = f_i_{part_label[i]}
+```
+
+### 版本 B：learned soft assignment
+
+hard label 的问题：
+
+```text
+衣服、边界、高斯漂移区域不一定严格属于最近 SMPL 顶点；
+关节附近可能需要同时参考上下游 part；
+nearest SMPL label 可能过硬。
+```
+
+learned assignment 做法：
+
+```text
+a_i = softmax(AssignNet([x_emb_i, local_xyz_motion_i, optional_smpl_part_onehot_i]))
+a_i: [num_parts]
+
+f_i = sum_p a_{i,p} * f_i_p
+```
+
+训练约束：
+
+```text
+用 SMPL hard label 做初始化监督:
+  CE(a_i, smpl_part_label_i)
+
+边界 / unknown / 低置信度区域可以减小 CE 权重，
+允许 soft blend。
+
+可加 entropy / balance 正则，避免所有 Gaussian 塌缩到一个 part。
+```
+
+阶段建议：
+
+```text
+先做 smpl_hard。
+如果 hard label 有局部收益，再做 learned_soft。
+不要第一版直接 learned assignment，否则难判断收益来自 motion field 还是 assignment 学习。
+```
+
+### part 内部的 scale-adaptive motion field
+
+每个 part 不应只选择一个普通 encoder，而应选择不同时间尺度专家：
+
+```text
+E_{p,short}
+E_{p,mid}
+E_{p,long}
+```
+
+router：
+
+```text
+r_{i,s} = R_p([x_i, f_xyz_i, pose_motion_score_p, scale_dt_s])
+f_i = sum_s r_{i,s} * E_{p,s}(motion_token_{i,s})
+```
+
+解释：
+
+```text
+手臂 / 腿:
+  更常用 short-scale 或 high-frequency expert。
+
+躯干:
+  更常用 mid/long-scale expert。
+
+关节边界:
+  可以混合相邻 part 或多个 scale expert。
+```
+
+### 为什么可能有效
+
+核心原因：
+
+```text
+STMS 当前是全局统一 motion encoder。
+同一个 skeleton motion feature 会扩展给所有 Gaussian。
+但不同部位的非刚性形变规律完全不同。
+```
+
+具体收益来源：
+
+```text
+1. 减少全局 motion 混淆
+   手部快速运动不应该强迫躯干 Gaussian 使用同样的短期高频 motion。
+   躯干稳定信息也不应该冲淡手臂/腿的动态信息。
+
+2. 时间尺度更合理
+   limbs 需要短期尺度；
+   torso/head 更需要稳定长期上下文；
+   关节和轮廓边界需要多尺度混合。
+
+3. 空间邻域更语义化
+   固定 KNN 只看欧氏距离，关节附近容易取到运动语义不一致的顶点。
+   part label / soft assignment 给 KNN motion 加了 body semantic prior。
+
+4. 更符合已有实验结果
+   全局 TDP / AMC 的收益很弱；
+   说明“给所有 Gaussian 加同一类 temporal 信息”不够有效。
+   如果 motion 增益存在，更可能集中在高运动 part / boundary / limb 区域。
+
+5. 可以和 Part-MoE 形成互补
+   Part-aware motion field 负责“每个 part 看什么 motion context”；
+   Part-MoE 负责“每个 part 如何预测 deformation”。
+```
+
+### 最小消融路线
+
+```text
+Step 1:
+  part_motion_hard
+  只用 SMPL hard label 路由 motion field；
+  不开 Part-MoE deformation experts。
+  目的: 单独验证 part-aware STMS 是否有效。
+
+Step 2:
+  part_motion_hard + part_moe
+  目的: 验证 part-aware motion encoder 和 part-specific deformation head 是否互补。
+
+Step 3:
+  part_motion_soft
+  用 learned soft assignment 替代 hard label。
+  目的: 处理衣服、边界、关节附近 hard label 不准确的问题。
+```
+
+评价不能只看全图平均：
+
+```text
+必须同时看:
+  high-motion subset
+  part-local metrics
+  silhouette / boundary metrics
+  routing distribution per part
+  scale router distribution per part
+```
+
+## 2026-07-03 STMS / Part-MoE / Part-Motion 框架图
+
+已生成三张会议论文风格的 SVG 矢量框架图：
+
+```text
+note/figures/baseline_stms_pipeline.svg
+  Baseline SeqAvatar STMS:
+  multi-scale skeleton motion + local vertex KNN motion
+  -> shared SeqPoseEncoder / SeqXYZEncoder
+  -> shared non-rigid MLP。
+
+note/figures/part_moe_pipeline.svg
+  SeqAvatar + Part-MoE:
+  STMS motion condition 和 motion encoder 保持不变；
+  只在 STMS feature 之后按 Gaussian part label 路由到 part-specific deformation experts。
+
+note/figures/part_moe_part_motion_pipeline.svg
+  SeqAvatar + Part-MoE + Part-aware Motion Field:
+  Gaussian part assignment 同时控制 motion-context encoder 和 deformation expert；
+  动态 part 可选择 short-scale motion，稳定 part 可选择 long-scale motion。
+```
+
+校验：
+
+```text
+python3 XML parse 通过。
+当前环境没有 rsvg-convert / inkscape / magick / convert，因此暂未导出 PNG。
+SVG 可直接用浏览器打开，也可后续在论文工具链中转 PDF/PNG。
+```
+
+补充：
+
+```text
+2026-07-03 已将三张 SVG 改成中英文双语版本。
+标题、模块名、关键说明和底部解释均包含中文和英文。
+再次用 python3 XML parse 校验通过。
+当前环境没有 cairosvg / rsvg-convert / inkscape / magick / convert，因此仍只保留 SVG。
+```
+
+再次补充：
+
+```text
+2026-07-03 已把三张 SVG 中的代码式数学写法改为真正 SVG 上下标。
+例如:
+  x_i -> x 下标 i
+  P_t -> P 下标 t
+  ΔP^{s1} -> ΔP 上标 s_1
+  f_ΔP -> f 下标 ΔP
+  R^{32} -> R 上标 32
+  E0 / Ep -> E 下标 0 / p
+
+python3 XML parse 通过；
+rg 检查未再发现 x_i / P_t / E_V / f_ / ^{} 等代码式上下标残留。
+```
+
+## 2026-07-03 Part motion experts 输出如何接回统一 non-rigid MLP
+
+问题：
+
+```text
+如果根据 SMPL part label 选择对应 motion MLP，
+多个 motion experts 不合并成一个 MLP，
+但后面的 non-rigid MLP 只接收一个统一 motion embedding，
+这两者如何兼容？
+```
+
+结论：
+
+```text
+不合并 experts 的参数。
+只在输出 tensor 层面按 Gaussian part label 做 gather / routing。
+后面的 non-rigid MLP 仍然只接收一个统一维度的 f_motion_i。
+```
+
+形状设计：
+
+```text
+原始 SeqAvatar:
+  f_deltaP: [B, Dp] -> expand -> [B, N, Dp]
+  f_V:      [B, N, Dv]
+  features_i = [x_i, P_t, f_deltaP, f_V_i]
+
+Part-aware motion field:
+  E_pose_p(seq_pose_conds) -> f_deltaP_p: [B, P, Dp]
+  E_xyz_p(seq_xyz_conds_i) -> f_V_p:      [B, N, P, Dv]
+
+  part_label_i -> p_i
+
+  f_deltaP_i = gather(f_deltaP_p, p_i) -> [B, N, Dp]
+  f_V_i      = gather(f_V_p, p_i)      -> [B, N, Dv]
+
+  features_i = [x_i, P_t, f_deltaP_i, f_V_i]
+```
+
+因此后面的接口仍然是：
+
+```text
+δx_i, δs_i, δr_i = E_nonrigid(x_i, P_t, f_deltaP_i, f_V_i)
+```
+
+只是 `f_deltaP_i / f_V_i` 的来源从 shared encoder 变成：
+
+```text
+Gaussian i 的 part label 选择出来的 part-specific motion encoder 输出。
+```
+
+实现上有两种等价方式：
+
+```text
+方式 A: 先算所有 part 的 embedding，再 gather。
+  优点: 代码直观。
+  缺点: 多算了一些未被使用的 part embedding。
+
+方式 B: 像当前 Part-MoE deformation head 一样，按 part label 分组 index_select，
+        每组只跑对应 expert，再 index_copy 回统一输出 tensor。
+  优点: 更省计算和显存。
+  缺点: 代码稍复杂。
+```
+
+重要表述：
+
+```text
+这里“统一 motion embedding”指的是输出张量接口统一，
+不是把多个 expert 的参数合并成一个网络。
+
+也就是说:
+  多个 expert 参数保留；
+  每个 Gaussian 只拿一个对应 expert 的输出；
+  non-rigid MLP 看到的仍是一个 f_motion_i。
+```
+
+如果和 Part-MoE deformation head 组合：
+
+```text
+part label 同时用于:
+  1. 选择 part-specific motion field，得到 f_motion_i；
+  2. 选择 part-specific deformation expert，预测 δx_i / δs_i / δr_i。
+
+两个模块可以共享 part label，但不能混成一个模块解释。
+```
+
+## 2026-07-03 Part motion field 的分专家主轴
+
+问题：
+
+```text
+Part-aware STMS 里 motion MLP 到底应该按 body part 分，
+还是按长短时间序列 / temporal scale 分？
+```
+
+结论：
+
+```text
+第一版消融建议按 part 分 MLP。
+长短序列 / scale 不作为第一版的专家主轴，而是作为每个 part motion MLP 的输入。
+```
+
+原因：
+
+```text
+1. 当前已有 Part-MoE 标签链路，按 part 分 motion MLP 最容易复用。
+2. 已有实验表明全局 TDP / AMC / TDP-semantic 没有稳定收益，
+   说明单纯沿时间维度加专家或加通道不够可靠。
+3. STMS 的真正问题之一是所有 Gaussian 共享同一套 motion encoder。
+   按 part 分 MLP 可以直接解决不同身体部位运动规律不同的问题。
+4. 如果第一版同时按 part 和 scale 分成 E_{p,s}，
+   参数量和解释复杂度都会上升，不利于判断收益来源。
+```
+
+第一版定义：
+
+```text
+part_motion_hard
+
+输入仍是 baseline STMS 的多尺度 condition:
+  [full_s1, full_s2, full_s3]
+
+但 motion encoder 按 part label 选择:
+  M_body([full_s1, full_s2, full_s3])
+  M_arm([full_s1, full_s2, full_s3])
+  M_leg([full_s1, full_s2, full_s3])
+  ...
+
+输出统一维度:
+  f_motion_i = M_{part_i}(multi_scale_motion_i)
+```
+
+也就是说：
+
+```text
+按 part 分专家；
+每个 part 专家内部仍然看完整的长/中/短多尺度序列。
+```
+
+后续增强版本：
+
+```text
+part_scale_router
+
+先按 part 选择 motion field，
+再在 part 内部学习 short / mid / long scale 的动态选择。
+
+形式:
+  f_i = M_{part_i}( R_{part_i}([full_short, full_mid, full_long]) )
+
+或者 factorized:
+  shared scale encoders E_short / E_mid / E_long
+  + part-specific router R_p
+  + part-specific adapter A_p
+```
+
+不建议第一版直接做：
+
+```text
+E_{part,scale}
+```
+
+原因：
+
+```text
+专家数量 = num_parts * num_scales。
+例如 6 parts * 3 scales = 18 个 motion experts，
+参数量、显存、训练稳定性和消融解释都会变差。
+```
+
+最终论文表述可以是：
+
+```text
+We first introduce part-specific motion encoders to model heterogeneous motion patterns
+across body regions. Temporal scales are retained as multi-scale inputs within each
+part-specific encoder. A scale-adaptive router can be further introduced inside each
+part branch to dynamically select short-, mid-, and long-term contexts.
+```
+
+## 2026-07-03 放弃 Part-aware motion field，转向 D-IF inspired Δx distribution
+
+用户决定放弃 Part-aware motion field，转而参考：
+
+```text
+paper:
+  note/D-IF.pdf
+
+code:
+  /media/image/mxz/human/D-IF_release
+```
+
+D-IF 关键机制：
+
+```text
+不是直接预测一个确定 occupancy value，
+而是预测每个 query point 的 Gaussian distribution:
+  μ(p), σ(p)
+
+训练时:
+  z ~ N(μ, σ)
+  rectifier MLP 输入 [原特征, z, μ, σ]
+  输出 refined occupancy。
+
+代码对应:
+  D-IF_release/lib/net/MLP_DIF.py
+    line 82: mu_0, sigma_0 = torch.split(y, 1, dim=1)
+    line 83: sigma_0 = F.softplus(sigma_0)
+    line 85-86: Normal(mu_0, sigma_0).rsample()
+    line 88-91: concat [feature, z/mu, mu, sigma]
+
+  D-IF_release/lib/net/HGPIFuNet.py
+    line 407-411: 用 target_sigma 和 KL loss 约束预测分布。
+```
+
+需要澄清：
+
+```text
+D-IF 的“表面点”不是直接从 Gaussian distribution 里挑一个点当表面点。
+它仍然预测 occupancy / smooth occupancy field，
+最后通过 iso-surface / Marching Cubes 得到表面。
+
+SeqAvatar 是 3D Gaussian deformation，不是 occupancy field。
+所以不能机械照搬“选 surface point”。
+更合理的迁移是:
+  把 deterministic Δx 改为 uncertainty-aware displacement distribution。
+```
+
+### 当前 SeqAvatar 对应位置
+
+当前 non-rigid deformer 是确定性输出：
+
+```text
+nets/mlp_delta_non_rigid.py
+
+h = self.mlp(features)
+d_xyz      = self.gaussian_warp(h)
+d_scaling  = self.gaussian_scaling(h)
+d_rotation = self.gaussian_rotation(h)
+```
+
+也就是：
+
+```text
+Δx_i = MLP(features_i)
+```
+
+### 推荐第一版：Uncertainty-aware Δx head
+
+只改 `Δx`，先不动 rotation / scaling：
+
+```text
+h = shared_nonrigid_mlp(features_i)
+
+μ_i       = W_mu(h)          # [B, N, 3]
+logσ_i    = W_sigma(h)       # [B, N, 1] or [B, N, 3]
+σ_i       = softplus(logσ_i) + eps
+
+训练:
+  ε ~ N(0, I)
+  z_i = μ_i + σ_i * ε
+
+测试:
+  z_i = μ_i
+
+rectifier:
+  r_i = R_delta([h_i, z_i, μ_i, σ_i])
+  Δx_i = z_i + r_i
+```
+
+第一版建议：
+
+```text
+σ_i 先用 scalar isotropic std: [B, N, 1]。
+不要第一版就用 [B, N, 3] diagonal std，避免不稳定。
+
+rectifier 最后一层 zero-init。
+这样初始时:
+  Δx_i ≈ μ_i
+```
+
+### 为什么对 SeqAvatar 可能有用
+
+SeqAvatar 的 `Δx` 存在天然不确定性：
+
+```text
+1. 多视角监督不是每个 Gaussian 都有直接 3D 位移 GT。
+2. cloth / hair / silhouette boundary 的非刚性偏移本身多解。
+3. 快速运动时，同一个 motion condition 到最终可见表面的映射不唯一。
+4. 原始 deterministic Δx MLP 容易把所有不确定区域压成一个平均偏移，
+   可能导致边界拖影、局部过平滑或错位。
+```
+
+D-IF-inspired 分布头可以让网络表达：
+
+```text
+这个 Gaussian 应该往哪里动，以及这个判断有多确定。
+```
+
+低不确定区域：
+
+```text
+σ 小，Δx 接近 μ，行为接近 baseline。
+```
+
+高不确定区域：
+
+```text
+σ 大，rectifier 可以利用 [z, μ, σ] 学到更稳健的修正。
+```
+
+### 训练难点：SeqAvatar 没有 Δx ground truth
+
+D-IF 有 occupancy / smooth occupancy GT，可以直接约束：
+
+```text
+μ -> O_gt
+σ -> target_sigma(distance to surface)
+```
+
+SeqAvatar 没有 `Δx_gt`，只有最终 render loss，因此不能直接写：
+
+```text
+KL(N(μ_Δx, σ_Δx), N(Δx_gt, σ_target))
+```
+
+需要使用 proxy uncertainty regularization。
+
+可选 proxy：
+
+```text
+1. motion magnitude:
+   高 motion Gaussian / 高 motion frame -> target σ 稍大。
+
+2. SMPL distance:
+   canonical Gaussian 离最近 SMPL vertex 越远，越可能是衣服/头发/非贴体区域，
+   target σ 可稍大。
+
+3. silhouette / boundary contribution:
+   位于轮廓或高渲染残差区域的 Gaussian 允许更大 σ。
+
+4. opacity / visibility stability:
+   长期稳定可见的 Gaussian σ 小；
+   可见性不稳定区域 σ 大。
+```
+
+第一版最稳：
+
+```text
+target_sigma_i = σ_min + (σ_max - σ_min) * normalize(
+    a * motion_score_i + b * smpl_dist_i
+)
+
+L_sigma = SmoothL1(log σ_i, stopgrad(log target_sigma_i))
+L_var   = mean(σ_i^2)  # 防止 σ 爆炸
+```
+
+同时保留原 render loss：
+
+```text
+L = L_render + λ_sigma L_sigma + λ_var L_var
+```
+
+### 更稳的训练路线
+
+推荐从 baseline checkpoint 初始化：
+
+```text
+1. μ head 初始化为原 gaussian_warp。
+2. σ head bias 初始化为很小值，例如 σ ≈ 1e-4 或 1e-3。
+3. rectifier zero-init。
+4. 前几千步只训练 σ head + rectifier，或给 μ head 小学习率。
+```
+
+这样可以保证初始行为接近 baseline：
+
+```text
+Δx ≈ μ ≈ baseline Δx。
+```
+
+否则随机采样 `z = μ + σε` 很容易直接伤 PSNR / SSIM。
+
+### 关于“选择特定点作为表面点”
+
+如果一定要引入“从多个候选位移中选择”的思想，可以做第二阶段：
+
+```text
+K 个候选:
+  Δx_i^k = μ_i + σ_i ε_k
+
+用 soft selection:
+  w_k = softmax(-E_k / τ)
+  Δx_i = Σ_k w_k Δx_i^k
+```
+
+但难点是 `E_k` 怎么定义：
+
+```text
+如果每个 candidate 都完整 render 一次，代价太高。
+如果只用 SMPL distance / temporal smoothness 做 E_k，又可能和真实图像误差脱节。
+```
+
+所以第一版不建议做 K-sample selection。
+第一版只做：
+
+```text
+single rsample during training + μ during test + rectifier。
+```
+
+### 推荐实验命名
+
+```text
+dif_delta_x
+uncertain_delta_x
+delta_x_distribution
+```
+
+最小消融：
+
+```text
+baseline
+dif_delta_x_mean      # 只预测 μ/σ，但 forward 用 μ，不采样，用 σ 作为 rectifier 输入
+dif_delta_x_sample    # train 用 rsample，test 用 μ
+dif_delta_x_rectifier # sample + rectifier
+```
+
+阶段判断：
+
+```text
+如果 dif_delta_x_mean 都不提升:
+  说明 μ/σ 描述本身没有带来增益，采样版风险更高。
+
+如果 mean 稳定、sample 下降:
+  说明 stochastic training 噪声伤害渲染，保留 deterministic uncertainty descriptor。
+
+如果 sample + rectifier 提升 high-motion/boundary:
+  该方向可以作为第二创新点继续推进。
+```
+
+### 从不确定分布中得到最终 Δx 的规则
+
+问题：
+
+```text
+把确定性 Δx MLP 改成输出 μ 和 σ 后，
+最终用于 Gaussian deformation 的 Δx 应该怎么从分布里选？
+```
+
+结论：
+
+```text
+第一版不要做 hard selection。
+训练时用 reparameterized sample；
+测试时用均值 / MAP，也就是 μ。
+```
+
+原因：
+
+```text
+对 Gaussian distribution N(μ, σ²)，概率最大点就是 μ。
+如果没有额外 render-level candidate score，
+硬从多个 sample 里选一个并不可靠，还可能造成帧间抖动。
+```
+
+推荐 forward：
+
+```text
+h_i = shared_nonrigid_mlp(features_i)
+
+μ_i = W_mu(h_i)                         # [B, N, 3]
+σ_i = softplus(W_sigma(h_i)) + eps       # [B, N, 1] or [B, N, 3]
+
+if training and use_delta_x_sampling:
+    ε_i ~ N(0, I)
+    z_i = μ_i + σ_i * ε_i                # rsample, 可反传
+else:
+    z_i = μ_i                            # MAP / mean
+
+if use_delta_x_rectifier:
+    r_i = R_delta([h_i, z_i, μ_i, σ_i])
+    Δx_i = z_i + r_i
+else:
+    Δx_i = z_i
+```
+
+测试时：
+
+```text
+Δx_i = μ_i
+```
+
+如果有 rectifier：
+
+```text
+Δx_i = μ_i + R_delta([h_i, μ_i, μ_i, σ_i])
+```
+
+这样测试是确定性的，不会因为随机采样导致同一帧重复渲染结果不同。
+
+可选但不建议第一版做的 hard/soft candidate selection：
+
+```text
+采 K 个候选:
+  Δx_i^k = μ_i + σ_i ε_i^k
+
+定义 proxy energy:
+  E_i^k =
+    λ_smpl * surface_prior(x_i + Δx_i^k)
+  + λ_temp * ||Δx_i^k - Δx_{i,prev}||
+  + λ_mag  * ||Δx_i^k||
+
+soft selection:
+  w_i^k = softmax(-E_i^k / τ)
+  Δx_i = Σ_k w_i^k Δx_i^k
+```
+
+但风险很大：
+
+```text
+1. 真正可靠的 E_i^k 应该来自 render loss；
+   但每个 candidate 都 render 一次代价太高。
+2. 只用 SMPL distance / temporal smoothness 做 E，
+   可能选择到“几何上平滑但图像上错误”的 Δx。
+3. hard argmin 不可导，softmin 又会退化成加权平均。
+4. 随机候选选择容易造成 temporal flicker。
+```
+
+因此推荐消融顺序：
+
+```text
+1. dif_delta_x_mean:
+   不采样，Δx = μ 或 μ + R([h, μ, μ, σ])。
+   σ 作为 uncertainty descriptor 参与 rectifier 和 regularization。
+
+2. dif_delta_x_sample:
+   train 用 z = μ + σε，test 用 μ。
+   验证 stochastic training 是否带来鲁棒性。
+
+3. dif_delta_x_candidate:
+   只有前两步有收益时，再考虑 K candidate soft selection。
+```
+
+一句话：
+
+```text
+SeqAvatar 中不是“从分布里选一个表面点”，而是:
+  训练时从 Δx distribution 采样来学习不确定性；
+  测试时使用最可能的 Δx，即 μ；
+  rectifier 可用 σ 作为不确定性上下文修正 μ。
+```
+
+## 2026-07-03 DIF-Δx 实现与启动记录
+
+用户要求新增两个消融：
+
+```text
+dif_delta_x_mean
+  不采样，Δx = μ + R([h, μ, μ, σ])
+
+dif_delta_x_sample
+  train:  Δx = z + R([h, z, μ, σ]), z = μ + σε
+  render: Δx = μ + R([h, μ, μ, σ])
+```
+
+实现范围：
+
+```text
+只改 non-rigid deformation 的 Δx head。
+不改:
+  STMS condition
+  SeqPoseEncoder / SeqXYZEncoder
+  Δs / Δr heads
+  renderer
+  loss
+  CameraInfo / RGB / mask
+  baseline / MSTI / AMC / TDP / Part-MoE 默认路径
+```
+
+新增参数：
+
+```text
+arguments/__init__.py
+  use_dif_delta_x = False
+  dif_delta_x_mode = mean / sample
+  dif_delta_x_sigma_init = -7.0
+  dif_delta_x_eps = 1e-6
+
+use_dif_delta_x 与 use_part_moe 第一版互斥，
+避免 Part-MoE expert head 和 DIF Δx head 混成未定义组合。
+```
+
+核心代码：
+
+```text
+nets/mlp_delta_non_rigid.py
+
+baseline:
+  h = self.mlp(features)
+  d_xyz = self.gaussian_warp(h)
+
+DIF-Δx:
+  μ = self.gaussian_warp(h)
+  σ = softplus(self.gaussian_warp_sigma(h)) + eps
+
+  mean mode:
+    z = μ
+
+  sample mode:
+    if training:
+      z = μ + σ * randn_like(μ)
+    else:
+      z = μ
+
+  d_xyz = z + zero_init_rectifier([h, z, μ, σ])
+```
+
+初始化：
+
+```text
+gaussian_warp 仍作为 μ head。
+gaussian_warp_sigma:
+  weight = 0
+  bias = -7.0
+  softplus(-7) ≈ 0.00091
+
+rectifier 最后一层 zero-init。
+因此 mean mode 初始接近 baseline Δx。
+```
+
+DNA 脚本：
+
+```text
+scripts/exps_dnarendering.sh
+  dif_delta_x_mean
+  dif_delta_x_sample
+
+日志目录:
+  /media/image/mxz/human/SeqAvatar/logs/dif
+```
+
+验证：
+
+```text
+bash -n scripts/exps_dnarendering.sh 通过
+py_compile arguments / gaussian_model / mlp_delta_non_rigid 通过
+dummy forward:
+  baseline / dif_mean / dif_sample 输出 shape 均为:
+    d_xyz      (1, 5, 3)
+    d_rotation (1, 5, 4)
+    d_scaling  (1, 5, 3)
+```
+
+### DNA 六序列启动
+
+设置：
+
+```text
+RUN_TIME = 20260703_202436
+iter = 25000
+densify_until_iter = 1500
+time_step_num = 3
+motion_cond_time_step_num = 3
+final_eval_only = 1
+
+sequences:
+  0044_11, 0051_09, 0206_04, 0813_05, 0007_04, 0019_10
+```
+
+启动：
+
+```text
+GPU 1:
+  dif_delta_x_mean
+  log = logs/dif/20260703_202436_DNA-Rendering_dif_delta_x_mean.log
+
+GPU 2:
+  dif_delta_x_sample
+  log = logs/dif/20260703_202436_DNA-Rendering_dif_delta_x_sample.log
+```
+
+启动后确认：
+
+```text
+两个模式均打印:
+  USE_DIF_DELTA_X = 1
+  DIF_DELTA_X_MODE = mean / sample
+  DIF_DELTA_X_SIGMA_INIT = -7.0
+  DIF_DELTA_X_EPS = 1e-6
+
+两个模式首个序列 0044_11 均进入 Training。
+```
+
+### DNA 六序列 tmux 重启
+
+原因：
+
+```text
+普通 exec 会被会话中断影响，改为 tmux detached 方式重跑。
+第一次重启 20260703_222605 因脚本当前默认 SEQUENCES 只有 0044_11，已立即停止，不作为正式结果。
+```
+
+正式重启：
+
+```text
+RUN_TIME = 20260703_222657
+SEQUENCES_OVERRIDE = 0044_11 0051_09 0206_04 0813_05 0007_04 0019_10
+
+GPU 1:
+  tmux = seqavatar_dif_mean_20260703_222657
+  mode = dif_delta_x_mean
+  log  = logs/dif/20260703_222657_DNA-Rendering_dif_delta_x_mean.log
+
+GPU 2:
+  tmux = seqavatar_dif_sample_20260703_222657
+  mode = dif_delta_x_sample
+  log  = logs/dif/20260703_222657_DNA-Rendering_dif_delta_x_sample.log
+```
+
+启动后确认：
+
+```text
+两个模式均使用 DNA 六序列。
+两个模式首个序列 0044_11 均进入 Training。
+train 参数确认：
+  use_dif_delta_x = True
+  dif_delta_x_mode = mean / sample
+  motion_cond_time_step_num = 3
+  densify_until_iter = 1500
+  iterations = 25000
+```
+
+### DIF-Delta-X 三个框图
+
+已生成三张方法框图：
+
+```text
+note/figures/dif_delta_x_mean_pipeline.svg
+note/figures/dif_delta_x_sample_pipeline.svg
+note/figures/dif_delta_x_rectifier_pipeline.svg
+```
+
+三张图的语义区分：
+
+```text
+dif_delta_x_mean:
+  预测 μ / σ。
+  不采样，选择 z = μ。
+  σ 作为 uncertainty descriptor 输入 rectifier。
+  Δx = μ + R([h, μ, μ, σ])。
+
+dif_delta_x_sample:
+  预测 μ / σ。
+  训练使用 reparameterized sample:
+    z = μ + σ ⊙ ε
+  测试 / render 使用 z = μ。
+  Δx = z，不额外使用 rectifier。
+
+dif_delta_x_rectifier:
+  预测 μ / σ。
+  训练 sample，测试 / render 使用 μ。
+  再用 D-IF 风格 rectifier 修正：
+    Δx = z + R([h, z, μ, σ])
+  这是最接近 D-IF 原始思想的版本。
+```
+
+## 2026-07-04 重新定义 DIF 消融：Delta-X Gaussian Peak
+
+用户澄清真正想要的 DIF 实验：
+
+```text
+原始 SeqAvatar:
+  h_i -> Δx_i
+
+新 DIF:
+  h_i -> (μ_i, σ_i)
+  用高斯分布建模每个 Gaussian 点自己的 Δx 分布:
+    Δx_i ~ N(μ_i, σ_i)
+  取分布最高点作为最终运动偏移:
+    Δx_i = argmax_x N(x | μ_i, σ_i)
+```
+
+关键结论：
+
+```text
+单峰 Gaussian 的最高点就是均值 μ_i。
+因此当前阶段真正 forward 应为:
+  Δx_i = μ_i
+
+暂时不考虑方差作用:
+  不 sampling
+  不 rectifier
+  不让 σ 进入 render / loss
+  不做 σ regularization
+```
+
+因此旧实验定义废弃：
+
+```text
+dif_delta_x_mean:
+  μ + rectifier([h, μ, μ, σ])
+
+dif_delta_x_sample:
+  train sample + rectifier
+```
+
+旧代码路径已删除 / 替换为单一新开关：
+
+```text
+use_dif
+dif_sigma_init = -7.0
+dif_eps = 1e-6
+```
+
+新代码语义：
+
+```python
+mu = gaussian_warp(h)
+sigma = softplus(gaussian_warp_sigma(h)) + eps
+d_xyz = mu
+```
+
+注意：
+
+```text
+由于 σ 暂时不参与 loss / render，σ head 目前不会学习到有效不确定性。
+这个消融只能验证“把 Δx head 参数化为 Gaussian 并取 peak=μ”是否会影响结果。
+如果要真正证明每个点的不确定性有意义，下一步必须引入:
+  sampling
+  uncertainty regularization
+  error / boundary / motion-aware σ supervision
+  或 rectifier 使用 σ
+```
+
+验证：
+
+```text
+bash -n scripts/exps_dnarendering.sh 通过
+py_compile arguments / gaussian_model / mlp_delta_non_rigid 通过
+dummy forward:
+  baseline 输出 shape = [(1,4,3), (1,4,4), (1,4,3)], 无 sigma head
+  dif      输出 shape = [(1,4,3), (1,4,4), (1,4,3)], 有 sigma head
+```
+
+### 新 DIF DNA 启动
+
+设置：
+
+```text
+RUN_TIME = 20260704_001710
+experiment_name = dif
+iter = 25000
+densify_until_iter = 1500
+time_step_num = 3
+motion_cond_time_step_num = 3
+final_eval_only = 1
+```
+
+并行启动：
+
+```text
+GPU 1:
+  tmux = seqavatar_dif_gpu1_20260704_001710
+  sequences = 0044_11, 0051_09, 0206_04
+  log = logs/dif/20260704_001710_DNA-Rendering_dif_gpu1.log
+
+GPU 2:
+  tmux = seqavatar_dif_gpu2_20260704_001710
+  sequences = 0813_05, 0007_04, 0019_10
+  log = logs/dif/20260704_001710_DNA-Rendering_dif_gpu2.log
+```
+
+启动后确认：
+
+```text
+两个主日志均打印:
+  Mode = dif
+  Experiment = dif
+  USE_DIF = 1
+  DIF_SIGMA_INIT = -7.0
+  DIF_EPS = 1e-6
+
+命令行参数确认:
+  --use_dif --dif_sigma_init -7.0 --dif_eps 1e-6
+
+两个首个序列均进入 Training 进度条。
+```
+
+### 新 DIF DNA 结果
+
+运行状态：
+
+```text
+RUN_TIME = 20260704_001710
+GPU1 log = logs/dif/20260704_001710_DNA-Rendering_dif_gpu1.log
+GPU2 log = logs/dif/20260704_001710_DNA-Rendering_dif_gpu2.log
+
+0206_04 首次在 GPU1 训练到约 4100 iter 时出现一次 CUDA/cuBLAS 执行失败：
+  CUBLAS_STATUS_EXECUTION_FAILED
+
+随后单独重跑 0206_04 成功：
+  RUN_TIME = 20260704_0206_retry
+  log = logs/dif/20260704_0206_retry_DNA-Rendering_dif_gpu1_retry.log
+```
+
+最终使用 render 阶段不带 `L1` 的 `Evaluating novelview #120` 指标。
+
+与 DNA densify=1500 baseline 对比：
+
+| Sequence | Base PSNR | DIF PSNR | dPSNR | Base SSIM | DIF SSIM | dSSIM | Base LPIPS*1000 | DIF LPIPS*1000 | dLPIPS*1000 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0044_11 | 32.9741 | 32.9414 | -0.0327 | 0.977914 | 0.977834 | -0.000080 | 21.3979 | 21.5731 | 0.1752 |
+| 0051_09 | 28.5780 | 28.5824 | 0.0044 | 0.970733 | 0.971281 | 0.000548 | 31.5899 | 31.4612 | -0.1287 |
+| 0206_04 | 31.3778 | 31.3604 | -0.0174 | 0.969745 | 0.969381 | -0.000364 | 34.1104 | 34.6370 | 0.5266 |
+| 0813_05 | 36.0828 | 35.9868 | -0.0960 | 0.986881 | 0.986573 | -0.000308 | 18.4874 | 19.0358 | 0.5484 |
+| 0007_04 | 29.5333 | 29.4813 | -0.0520 | 0.958320 | 0.958168 | -0.000152 | 45.4151 | 45.6882 | 0.2731 |
+| 0019_10 | 35.2200 | 35.3034 | 0.0834 | 0.980679 | 0.980988 | 0.000309 | 21.2880 | 21.2776 | -0.0104 |
+
+平均：
+
+```text
+dPSNR        = -0.0184
+dSSIM        = -0.000008
+dLPIPS*1000  = +0.2307
+```
+
+判断：
+
+```text
+当前 peak-only DIF 不建议继续作为第二创新点主线。
+
+原因：
+1. Δx = argmax Gaussian = μ，实际输出仍等价于 deterministic mean head。
+2. σ 暂时不进入 loss / render / rectifier，也没有 regularization，因此不会学习到有意义 uncertainty。
+3. 平均 PSNR / SSIM / LPIPS 均没有稳定提升，且 4/6 序列 LPIPS 变差。
+4. 0206_04 首次出现一次 CUDA/cuBLAS 失败，虽然 retry 成功，但当前实现没有带来足够收益来抵消额外复杂度。
+
+如果后续还想沿 D-IF 思路继续，必须让 σ 真正参与优化：
+  sampling + 测试用 μ
+  σ regularization
+  error / boundary / motion-aware σ supervision
+  或使用 σ 的 rectifier / uncertainty-aware residual
+
+但“只输出 Gaussian 参数并取最高点 μ”的版本到此停止。
+```
+
+## 2026-07-04 DIF 方差引入方案
+
+关键判断：
+
+```text
+如果仍使用单峰 Gaussian 并取最高点:
+  Δx = argmax_x N(x | μ, σ) = μ
+
+则 σ 不影响 Δx，也不影响 render / loss。
+因此 σ 不会被有效优化。
+```
+
+要让方差有意义，必须至少满足一个条件：
+
+```text
+1. σ 参与 Δx forward:
+   Δx = μ + σ * something
+
+2. σ 参与 loss:
+   例如 uncertainty NLL / regularization / pseudo supervision
+
+3. 使用 mixture Gaussian:
+   多个 μ_k / σ_k / π_k 时，mode selection 才可能受 σ 影响。
+```
+
+最小可做版本：
+
+```text
+dif_sigma_sample:
+  train:
+    ε ~ N(0, I)
+    Δx = μ + σ * ε
+  test/render:
+    Δx = μ
+
+需要:
+  sigma clamp
+  sigma warmup
+  sigma regularization
+  记录 sigma mean / max / active ratio
+```
+
+更推荐版本：
+
+```text
+dif_sigma_rectifier:
+  z = μ + σ * ε        # train
+  z = μ                # test/render
+  Δx = z + R([h, z, μ, logσ])
+
+或更稳定的 deterministic 版本:
+  Δx = μ + σ * tanh(R([h, μ, logσ]))
+
+优点:
+  σ 直接控制 residual 幅度；
+  R 可以 zero-init，初始接近 baseline；
+  σ 不再是无效旁路。
+```
+
+更强但复杂版本：
+
+```text
+dif_mixture_mode:
+  输出 K 个分布:
+    {π_k, μ_k, σ_k}_{k=1..K}
+  选择峰值最高的 component:
+    k* = argmax_k π_k / prod(σ_k)
+    Δx = μ_{k*}
+
+这样 mode selection 会受 σ 影响。
+但 argmax 不平滑，训练更复杂，第一阶段不建议直接做。
+```
+
+当前建议：
+
+```text
+下一步若继续 DIF，不做 peak-only。
+优先做 dif_sigma_rectifier，而不是直接 sample-only。
+```
+
+### dif_sigma_rectifier 前三序列实验
+
+用户要求先在 DNA 前三个序列测试：
+
+```text
+sequences = 0044_11, 0051_09, 0206_04
+experiment_name = dif_sigma_rectifier
+```
+
+实现：
+
+```text
+mu = gaussian_warp(h)
+sigma = softplus(gaussian_warp_sigma(h)) + eps
+r = rectifier([h, mu, log(sigma)])
+d_xyz = mu + sigma * tanh(r)
+```
+
+设计细节：
+
+```text
+dif_mode = sigma_rectifier
+sigma 是每个 Gaussian 点一个标量，broadcast 到 xyz 三维 residual。
+rectifier 最后一层 zero-init，初始 d_xyz = mu。
+dif_sigma_init = -4.0，初始 sigma mean 约 0.018。
+```
+
+验证：
+
+```text
+bash -n scripts/exps_dnarendering.sh 通过
+py_compile arguments / gaussian_model / mlp_delta_non_rigid 通过
+dummy forward:
+  output shapes = [(5,3), (5,4), (5,3)]
+  max_initial_delta_from_mu = 0.0
+  sigma_mean = 0.01815
+```
+
+启动：
+
+```text
+RUN_TIME = 20260704_042454
+tmux = seqavatar_dif_sigma_rectifier_gpu1_20260704_042454
+GPU = 1
+log = logs/dif/20260704_042454_DNA-Rendering_dif_sigma_rectifier_gpu1.log
+```
+
+用户随后要求 GPU1/GPU2 同时跑前三个序列，调整为：
+
+```text
+GPU1:
+  sequence = 0044_11
+  tmux = seqavatar_dif_sigma_rectifier_gpu1_20260704_042454
+  log = logs/dif/20260704_042454_DNA-Rendering_dif_sigma_rectifier_gpu1.log
+
+GPU2:
+  sequences = 0051_09, 0206_04
+  tmux = seqavatar_dif_sigma_rectifier_gpu2_20260704_042454
+  log = logs/dif/20260704_042454_DNA-Rendering_dif_sigma_rectifier_gpu2.log
+```
+
+注意：
+
+```text
+GPU1 原脚本最初包含 0044_11 / 0051_09 / 0206_04。
+已增加外部监控：
+  当 GPU1 日志出现 Finished sequence: 0044_11 后，
+  自动停止 GPU1 tmux，避免重复跑 0051_09 / 0206_04。
+```
+
+运行中调整：
+
+```text
+GPU1 的 0044_11 已完成后被自动停止。
+GPU2 的 0051_09 已完成。
+GPU2 跑 0206_04 到约 4680 iter 时出现:
+  CUBLAS_STATUS_INTERNAL_ERROR
+
+0206_04 改为单独在 GPU1 retry:
+  RUN_TIME = 20260704_0206_dsr_retry
+  tmux = seqavatar_dif_sigma_rectifier_0206_gpu1_20260704_0206_dsr_retry
+  log = logs/dif/20260704_0206_dsr_retry_DNA-Rendering_dif_sigma_rectifier_gpu1_retry.log
+```
+
+结果：
+
+```text
+最终使用 render 阶段不带 L1 的 Evaluating novelview #120 指标。
+```
+
+| Sequence | Base PSNR | Rect PSNR | dPSNR | Base SSIM | Rect SSIM | dSSIM | Base LPIPS*1000 | Rect LPIPS*1000 | dLPIPS*1000 | dPSNR vs peak | dLPIPS*1000 vs peak |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0044_11 | 32.9741 | 32.9575 | -0.0166 | 0.977914 | 0.977818 | -0.000096 | 21.3979 | 21.5402 | 0.1423 | 0.0161 | -0.0330 |
+| 0051_09 | 28.5780 | 28.6249 | 0.0469 | 0.970733 | 0.971135 | 0.000402 | 31.5899 | 31.2958 | -0.2941 | 0.0425 | -0.1654 |
+| 0206_04 | 31.3778 | 31.3292 | -0.0486 | 0.969745 | 0.969387 | -0.000358 | 34.1104 | 34.5895 | 0.4791 | -0.0312 | -0.0476 |
+
+平均：
+
+```text
+vs baseline:
+  dPSNR        = -0.0061
+  dSSIM        = -0.000017
+  dLPIPS*1000  = +0.1091
+
+vs peak-only DIF:
+  dPSNR        = +0.0091
+  dSSIM        = -0.000052
+  dLPIPS*1000  = -0.0820
+```
+
+阶段判断：
+
+```text
+sigma-rectifier 比 peak-only DIF 略好，说明让 σ 控制 residual 至少不是完全无效。
+但前三序列平均仍没有超过 baseline，尤其 0206_04 退化明显。
+
+当前不建议直接扩大到完整 DNA / I3D / ZJU。
+如果继续，需要先加诊断:
+  sigma mean / max / min
+  residual norm
+  residual / mu norm
+  sigma 是否在 high-motion / boundary 区域更大
+
+如果诊断显示 residual 很小:
+  sigma_init=-3 或 residual scale 放大。
+
+如果 residual 过大伤 PSNR:
+  加 sigma clamp / residual clamp / warmup。
+
+如果 sigma 没有空间结构:
+  需要 error-aware 或 boundary-aware sigma supervision。
+```
+
+## 2026-07-04 DIF peak-only 是否可以改 loss
+
+当前问题：
+
+```text
+DIF peak-only:
+  Δx = argmax N(Δx | μ, σ) = μ
+
+如果 σ 不参与 forward / loss:
+  最终几何仍是 deterministic Δx = μ
+  σ 不会学到有意义 uncertainty
+```
+
+因此如果“暂时不考虑方差，让 δ=均值”，可以改 loss，但实验含义要写清楚：
+
+```text
+1. 不输出 / 不使用 σ:
+   所谓 distribution 退化为固定方差 Gaussian。
+   约束分布本质等价于约束 μ，也就是约束 Δx peak。
+
+2. 输出 σ 但 forward 仍用 μ:
+   可以通过 KL / sigma regularization 约束分布形状。
+   但如果 σ 只被 regularizer 约束，不和 image residual / geometry residual 绑定，
+   σ 学到的多半是人为先验，不是真正 uncertainty。
+```
+
+可做的 loss 版本：
+
+```text
+dif_mean_peak_reg:
+  Δx = μ
+  L = L_render + λ_mu * robust(||μ||)
+  目的：防止 Δx 过大，约束 Gaussian 分布峰值不要乱漂。
+  缺点：这不是严格 uncertainty modeling，容易和已有 AIAP 几何约束重复。
+
+dif_mean_kl_prior:
+  Δx = μ
+  q(Δx) = N(μ, σ)
+  p(Δx) = N(0, σ0)
+  L = L_render + λ_kl * KL(q || p)
+  目的：同时约束 μ 和 σ，防止分布无限扩散或塌缩。
+  缺点：如果没有 delta_x GT / residual supervision，σ 仍主要学习先验。
+
+dif_mean_surface_reg:
+  Δx = μ
+  L = L_render + λ_surface * point-to-plane / nearest-SMPL-surface regularization
+  目的：让分布峰值 μ 后的 Gaussian 位置不要远离人体表面。
+  缺点：衣服、头发、松散区域可能被过度拉回 SMPL，权重要很小。
+
+dif_mean_render_uncertainty:
+  Δx = μ
+  输出 σ，并让 σ 解释 image / geometry residual
+  例如把 residual 大的位置允许更大 σ，小 residual 约束更小 σ。
+  这是更合理的 distribution loss，但实现需要 per-Gaussian residual / visibility attribution，
+  比 peak_reg / KL_prior 复杂。
+```
+
+代码落点建议：
+
+```text
+train.py:
+  当前已有:
+    image L1 / mask / SSIM / LPIPS
+    full_aiap_loss(scene.gaussians.get_xyz, render_pkg["deformed_means3D"], ...)
+
+  如果只约束 δ=μ:
+    delta = render_pkg["deformed_means3D"] - scene.gaussians.get_xyz[None]
+    loss += λ_mu * robust(delta)
+
+nets/mlp_delta_non_rigid.py:
+  如果要 KL / sigma loss:
+    forward_delta_x 中保存 last_dif_mu / last_dif_sigma
+    train.py 读取 gaussians.non_rigid_deformer.last_dif_mu / last_dif_sigma 加 loss
+```
+
+当前建议：
+
+```text
+可以做一个小消融 dif_mean_peak_reg 或 dif_mean_kl_prior。
+但不要宣称它已经建模有效 uncertainty。
+如果最终仍是 δ=μ，最干净的说法是:
+  distribution-peak regularization / probabilistic displacement prior
+而不是 D-IF 式真正从不确定分布中选择点。
+```
+
+## 2026-07-04 DIF 方差继续推进的具体做法
+
+核心结论：
+
+```text
+单峰 Gaussian 如果仍取最高点:
+  δ = argmax N(δ | μ, σ) = μ
+
+则 σ 不影响最终 Δx。
+因此真正“引入方差”必须让 σ 至少进入 forward 或进入有效 loss。
+```
+
+当前最推荐继续版本：
+
+```text
+dif_sigma_rectifier_v2
+```
+
+形式：
+
+```python
+mu = gaussian_warp(h)
+raw_sigma = gaussian_warp_sigma(h)
+sigma = softplus(raw_sigma) + eps
+sigma = clamp(sigma, sigma_min, sigma_max)
+
+r = rectifier([h, mu, log(sigma)])
+delta_x = mu + beta * sigma * tanh(r)
+```
+
+原因：
+
+```text
+1. σ 直接控制 residual 最大幅度，因此不是无效旁路。
+2. rectifier zero-init 后，初始 delta_x = mu，不会一开始破坏 baseline。
+3. 不引入随机采样噪声，比 sample-only 稳定。
+4. σ 可以解释为每个 Gaussian 点允许的非刚性修正空间。
+```
+
+建议配套：
+
+```text
+sigma shape:
+  第一版用 [N,1] scalar sigma，broadcast 到 xyz。
+  比 [N,3] 更稳，参数更少，也更容易解释。
+
+sigma init:
+  dif_sigma_init = -4.0 或 -3.5
+  初始 sigma 约 0.018 到 0.030。
+
+residual scale:
+  beta = 0.5 / 1.0 可做小网格。
+
+clamp:
+  sigma_min = 1e-4
+  sigma_max = 0.05 或 0.10
+
+warmup:
+  前 1000-3000 iter 让 beta 从 0 线性升到目标值。
+```
+
+loss 建议：
+
+```text
+不要只对 sigma 加强 regularization。
+如果 sigma 只被 regularizer 约束，它学到的是人为先验，不是真正 uncertainty。
+
+可以加很轻的 sigma prior，防止无限放大:
+  L_sigma_prior = mean((log(sigma) - log(sigma0))^2)
+
+也可以加 residual ratio 约束:
+  residual = beta * sigma * tanh(r)
+  L_residual = mean(|residual|) 或 smooth_l1(residual)
+
+权重要小，避免把非刚性形变压没。
+```
+
+必须加诊断：
+
+```text
+每 1000 iter 记录:
+  sigma_mean / sigma_min / sigma_max
+  residual_norm
+  mu_norm
+  residual_norm / mu_norm
+  active_ratio = mean(|residual| > threshold)
+
+如果 sigma_mean 一直接近初始值且 residual_norm 很小:
+  说明 σ 没有被用起来。
+
+如果 sigma 快速顶到 sigma_max 且 PSNR 掉:
+  说明 residual 过强，需要减小 beta 或 sigma_max。
+```
+
+不推荐优先做：
+
+```text
+dif_sigma_sample:
+  train: delta_x = mu + sigma * eps
+  test: delta_x = mu
+
+原因:
+  会引入随机噪声；
+  单样本 render 梯度方差大；
+  对当前 SeqAvatar 这种逐点高斯渲染训练不够稳。
+```
+
+更强但后做：
+
+```text
+dif_mixture:
+  输出 K 个 Gaussian component:
+    {pi_k, mu_k, sigma_k}
+  用 log peak = log pi_k - sum(log sigma_k) 选择 component。
+
+这个版本 σ 会影响 mode selection，
+但训练和解释都更复杂，应在 sigma_rectifier_v2 有正信号后再做。
+```
+
+### dif_sigma_rectifier_v2 四序列实验
+
+实现：
+
+```text
+mode = dif_sigma_rectifier_v2
+experiment_name = dif_sigma_rectifier_v2
+
+mu = gaussian_warp(h)
+sigma = softplus(gaussian_warp_sigma(h)) + eps
+sigma = clamp(sigma, sigma_min, sigma_max)
+r = rectifier([h, mu, log(sigma)])
+delta_x = mu + beta * sigma * tanh(r)
+```
+
+新增隔离参数：
+
+```text
+dif_sigma_min = 1e-4
+dif_sigma_max = 0.05
+dif_residual_beta = 1.0
+dif_residual_warmup = 3000
+dif_sigma_prior = 0.02
+dif_sigma_prior_w = 1e-4
+dif_debug_interval = 1000
+```
+
+代码落点：
+
+```text
+arguments/__init__.py:
+  新增 v2 参数和 dif_mode = sigma_rectifier_v2。
+
+scene/gaussian_model.py:
+  透传 v2 参数到 NonrigidDeformer。
+
+nets/mlp_delta_non_rigid.py:
+  sigma clamp。
+  beta warmup。
+  delta_x = mu + beta * sigma * tanh(rectifier)。
+  pop_dif_stats 输出 sigma / residual 诊断。
+
+train.py:
+  每轮训练前 set_dif_iteration(iteration)。
+  可选 dif_sigma_prior_loss。
+  每 dif_debug_interval 打印 DIF Stats。
+
+scripts/exps_dnarendering.sh:
+  新增 dif_sigma_rectifier_v2 模式。
+  日志仍保存到 logs/dif。
+```
+
+验证：
+
+```text
+bash -n scripts/exps_dnarendering.sh 通过。
+py_compile arguments / gaussian_model / mlp_delta_non_rigid / train 通过。
+dummy forward:
+  output shapes = [(1,5,3), (1,5,4), (1,5,3)]
+  初始 residual_norm = 0。
+  sigma_mean ≈ 0.029751。
+```
+
+运行：
+
+```text
+RUN_TIME = 20260704_170652
+
+GPU1:
+  sequences = 0044_11, 0051_09
+  log = logs/dif/20260704_170652_DNA-Rendering_dif_sigma_rectifier_v2_gpu1.log
+
+GPU2:
+  sequences = 0206_04, 0813_05
+  log = logs/dif/20260704_170652_DNA-Rendering_dif_sigma_rectifier_v2_gpu2.log
+```
+
+四序列 render 指标（novelview, iteration=25000，对比 DNA densify=1500 baseline）：
+
+| Sequence | PSNR | dPSNR | SSIM | dSSIM | LPIPS*1000 | dLPIPS*1000 |
+|---|---:|---:|---:|---:|---:|---:|
+| 0044_11 | 32.9507 | -0.0234 | 0.977865 | -0.000049 | 21.5199 | +0.1220 |
+| 0051_09 | 28.6206 | +0.0426 | 0.971323 | +0.000590 | 31.0691 | -0.5208 |
+| 0206_04 | 31.3884 | +0.0106 | 0.969837 | +0.000092 | 34.3448 | +0.2344 |
+| 0813_05 | 36.0767 | -0.0061 | 0.986871 | -0.000010 | 18.5154 | +0.0280 |
+
+平均：
+
+| Method | PSNR | SSIM | LPIPS*1000 |
+|---|---:|---:|---:|
+| baseline | 32.2532 | 0.976318 | 26.3964 |
+| dif_peak | 32.2177 | 0.976267 | 26.6768 |
+| dif_sigma_rectifier_v2 | 32.2591 | 0.976474 | 26.3623 |
+| v2 - baseline | +0.0059 | +0.000155 | -0.0341 |
+| v2 - peak | +0.0414 | +0.000206 | -0.3145 |
+
+和前三序列旧 sigma_rectifier 对比：
+
+| Method | PSNR | SSIM | LPIPS*1000 |
+|---|---:|---:|---:|
+| baseline | 30.9766 | 0.972797 | 29.0327 |
+| dif_sigma_rectifier | 30.9705 | 0.972780 | 29.1418 |
+| dif_sigma_rectifier_v2 | 30.9866 | 0.973008 | 28.9779 |
+| v2 - old rectifier | +0.0161 | +0.000228 | -0.1639 |
+
+诊断：
+
+```text
+DIF Stats 有正常输出。
+sigma_mean 大多在 0.019-0.021。
+sigma_max 大多在 0.021-0.022，未顶到 sigma_max=0.05。
+residual_norm / mu_norm 大约 0.03-0.06。
+active_ratio = 1.0。
+说明 σ 已经参与 forward，但 residual 幅度较温和。
+```
+
+阶段判断：
+
+```text
+dif_sigma_rectifier_v2 比 peak-only DIF 和旧 sigma_rectifier 更好，
+说明“让 σ 控制 residual”比只输出 μ/σ 后取 μ 更合理。
+
+但相对 baseline 的平均提升仍很小：
+  dPSNR = +0.0059
+  dSSIM = +0.000155
+  dLPIPS*1000 = -0.0341
+
+不能直接作为强第二创新点主线。
+如果继续 DIF，建议只作为候选分支，并优先看 high-motion / boundary subset。
+如果 high-motion 或 boundary 没有明显收益，则停止 DIF 主线。
+```
+
+## 2026-07-04 Token 消融实验设计与实现记录
+
+目标：
+
+```text
+根据 D-IF / token 化形变思想，新增 Part-aware Motion Token SeqAvatar 消融。
+本轮只在 DNA-Rendering 上先跑 4 个序列，不影响 baseline / Part-MoE / MSTI / AMC / TDP / DIF 默认路径。
+日志目录：
+  logs/token
+```
+
+实现边界：
+
+```text
+主实现放在 NonrigidDeformer。
+不改 renderer/rasterizer 主体。
+不改已有 Part-MoE 专家流程。
+不改已有 TDP / DIF 开关行为。
+所有 token 开关默认关闭。
+token 与 MSTI / AMC / TDP / DIF / Part-MoE 互斥。
+```
+
+新增消融模式：
+
+```text
+token_fix_stms:
+  只修 SeqAvatar 原 STMS 中 seq_xyz_conds 多尺度归一化问题。
+  原始 baseline 默认仍保持旧逻辑。
+
+token_acc:
+  token_fix_stms + 额外 seq_acc_conds。
+  acceleration = 当前尺度速度 - 上一段同尺度速度。
+
+token_part:
+  token_fix_stms + SMPL-LBS part embedding。
+  不依赖 Part-MoE 标签文件。
+
+token_codebook:
+  token_fix_stms + motion-deformation soft token codebook。
+  token 输入来自 seq_xyz_feats。
+
+token_full:
+  token_fix_stms + acc + part + codebook。
+```
+
+代码落点：
+
+```text
+arguments/__init__.py:
+  use_motion_token
+  motion_token_mode
+  motion_token_num
+  motion_token_dim
+  motion_token_part_dim
+  motion_token_acc_dim
+
+scene/dataset_readers.py:
+  仅 token_fix_stms 模式按每个 time_step 自己归一化 seq_xyz_conds。
+  仅 token_acc / token_full 生成 seq_acc_conds。
+
+gaussian_renderer/__init__.py:
+  仅 token_acc / token_full gather seq_acc_conds。
+  仅 token_part / token_full 用 KNN SMPL 顶点 LBS weight 得到 part_label。
+
+scene/gaussian_model.py:
+  透传 token 参数到 NonrigidDeformer。
+
+nets/mlp_delta_non_rigid.py:
+  MotionTokenEncoder soft codebook。
+  SeqAccEncoder。
+  SMPL part embedding。
+
+scripts/exps_dnarendering.sh:
+  token_fix_stms / token_acc / token_part / token_codebook / token_full。
+  token 日志保存到 logs/token。
+```
+
+验证：
+
+```text
+bash -n scripts/exps_dnarendering.sh 通过。
+py_compile arguments / scene / renderer / mlp_delta_non_rigid 通过。
+dummy forward:
+  token_fix_stms / token_acc / token_part / token_codebook / token_full
+  output shapes 都为 [(B,N,3), (B,N,4), (B,N,3)]。
+```
+
+运行：
+
+```text
+RUN_TIME = 20260704_062146
+GPU1:
+  0044_11, 0051_09
+  logs/token/*_gpu1.log
+GPU2:
+  0206_04, 0813_05
+  logs/token/*_gpu2.log
+```
+
+四序列 render 指标均值（novelview, iteration=25000）：
+
+| Mode | PSNR | dPSNR | SSIM | dSSIM | LPIPS*1000 | dLPIPS*1000 |
+|---|---:|---:|---:|---:|---:|---:|
+| token_fix_stms | 32.2289 | -0.0242 | 0.976370 | +0.000052 | 26.4343 | +0.0379 |
+| token_acc | 32.2658 | +0.0127 | 0.976509 | +0.000191 | 26.2656 | -0.1308 |
+| token_part | 32.2423 | -0.0109 | 0.976324 | +0.000006 | 26.4279 | +0.0315 |
+| token_codebook | 32.2337 | -0.0195 | 0.976253 | -0.000065 | 26.5647 | +0.1683 |
+| token_full | 32.2415 | -0.0116 | 0.976283 | -0.000035 | 26.3553 | -0.0411 |
+
+阶段结论：
+
+```text
+token_acc 是本轮最好的 token 系消融：
+  PSNR / SSIM / LPIPS 三项平均都优于四序列 baseline。
+
+token_full 不如 token_acc：
+  说明 part embedding + codebook 与 acc 叠加后没有继续带来收益，反而有干扰。
+
+token_codebook 单独变差：
+  当前 soft codebook token 没有证明有效。
+
+token_part 单独收益不稳定：
+  0051_09 提升明显，但 0206_04 / 0813_05 下降。
+
+建议：
+  继续 token_acc 方向；
+  暂时不要把 token_codebook 作为主创新；
+  如果继续 codebook，需要先做 token usage entropy / top-k usage / part-conditioned token 诊断，而不是直接大跑 full。
+```
+
+## 2026-07-04 token_acc DNA 六序列补跑结果
+
+补跑：
+
+```text
+RUN_TIME = 20260704_144804
+GPU1:
+  0007_04
+  logs/token/20260704_144804_DNA-Rendering_token_acc_gpu1_extra.log
+GPU2:
+  0019_10
+  logs/token/20260704_144804_DNA-Rendering_token_acc_gpu2_extra.log
+```
+
+六序列 token_acc render 指标（novelview, iteration=25000，对比 DNA baseline）：
+
+| Sequence | PSNR | dPSNR | SSIM | dSSIM | LPIPS*1000 | dLPIPS*1000 |
+|---|---:|---:|---:|---:|---:|---:|
+| 0044_11 | 32.9857 | +0.0116 | 0.977889 | -0.000025 | 21.4960 | +0.0981 |
+| 0051_09 | 28.6115 | +0.0335 | 0.971266 | +0.000533 | 31.1322 | -0.4577 |
+| 0206_04 | 31.3695 | -0.0083 | 0.969906 | +0.000161 | 33.9640 | -0.1464 |
+| 0813_05 | 36.0967 | +0.0139 | 0.986977 | +0.000096 | 18.4700 | -0.0174 |
+| 0007_04 | 29.5245 | -0.0088 | 0.958187 | -0.000133 | 45.7227 | +0.3076 |
+| 0019_10 | 35.2177 | -0.0023 | 0.980864 | +0.000185 | 21.2928 | +0.0048 |
+
+六序列均值：
+
+| Method | PSNR | SSIM | LPIPS*1000 |
+|---|---:|---:|---:|
+| baseline | 32.2943 | 0.974045 | 28.7148 |
+| token_acc | 32.3009 | 0.974181 | 28.6796 |
+| delta | +0.0066 | +0.000136 | -0.0352 |
+
+结论：
+
+```text
+token_acc 六序列平均仍是弱正向：
+  PSNR / SSIM / LPIPS 三项均略优于 baseline。
+
+但提升幅度很小：
+  6 个序列中 PSNR 只有 3 个提升；
+  LPIPS 只有 3 个明显或轻微提升；
+  0007_04 上 PSNR / SSIM / LPIPS 都变差。
+
+当前不能把 token_acc 作为强主创新直接推进。
+如果继续，需要优先看 high-motion subset / boundary subset 是否有更清晰收益。
+```
+
+## 2026-07-04 Token usage 诊断结论
+
+重要更正：
+
+```text
+当前 token_acc 并没有真正的 softmax codebook token。
+
+token_acc 实现是:
+  token_fix_stms + SeqAccEncoder(seq_acc_conds)
+  然后把 acc feature concat 到 NonrigidDeformer MLP。
+
+它没有调用 MotionTokenEncoder。
+因此 token_acc 下不存在:
+  token softmax
+  token_entropy
+  token_max_prob
+  token_usage
+```
+
+真正有 softmax token 的模式只有：
+
+```text
+token_codebook:
+  seq_xyz_feats -> MotionTokenEncoder -> softmax(codebook)
+
+token_full:
+  seq_xyz_feats + acc_feats + part_feats -> MotionTokenEncoder -> softmax(codebook)
+```
+
+已新增隔离诊断开关：
+
+```text
+arguments/__init__.py:
+  motion_token_debug_stats
+  motion_token_debug_interval
+
+nets/mlp_delta_non_rigid.py:
+  MotionTokenEncoder 缓存 last_weights。
+  pop_motion_token_stats 输出:
+    entropy_mean
+    entropy_norm
+    entropy_min / entropy_max
+    max_prob_mean
+    max_prob_min / max_prob_max
+    usage_nonzero
+    usage_max
+    usage_entropy
+    usage_entropy_norm
+    codebook_active
+  同时输出完整 top-1 usage 向量。
+
+train.py:
+  打印:
+    [MotionToken Stats][ITER ...]
+    [MotionToken Usage][ITER ...]
+
+scripts/exps_dnarendering.sh:
+  MOTION_TOKEN_DEBUG_STATS=1
+  MOTION_TOKEN_DEBUG_INTERVAL=1000
+```
+
+验证：
+
+```text
+token_acc dummy forward:
+  codebook_active = 0
+  usage = []
+
+token_codebook dummy forward:
+  codebook_active = 1
+  entropy_norm ≈ 0.999
+  max_prob_mean ≈ 0.142 for 8 tokens
+  usage_nonzero = 1
+
+这个 dummy 例子说明：
+  softmax 权重几乎均匀，但 top-1 全落到一个 token；
+  属于“权重平均 + top1 collapse”的坏情况。
+```
+
+判断：
+
+```text
+之前 token_acc 的小幅提升不能解释为“离散 motion token 被有效使用”。
+更准确解释是:
+  acceleration condition 作为额外连续特征带来弱增益；
+  或者只是增加了一点 encoder / MLP 容量。
+
+如果要证明 token/codebook 方向有效，必须重新检查 token_codebook 或 token_full:
+  MOTION_TOKEN_DEBUG_STATS=1 bash scripts/exps_dnarendering.sh token_codebook
+  MOTION_TOKEN_DEBUG_STATS=1 bash scripts/exps_dnarendering.sh token_full
+
+重点看：
+  entropy_norm 接近 1 且 max_prob 低 -> token 没有形成明确模式；
+  usage_nonzero 很小 / usage_max 很高 -> codebook collapse；
+  两者任一出现，都不能把平均指标小涨解释成真正离散运动模式。
+```
+
+## 2026-07-04 token_codebook debug 真实两序列诊断
+
+目的：
+
+```text
+先判断 soft codebook token 有没有被用起来。
+不先追完整 PSNR/SSIM/LPIPS。
+```
+
+运行：
+
+```text
+0051_09:
+  GPU1
+  logs/token/20260704_200324_DNA-Rendering_token_codebook_gpu1_debug.log
+
+0007_04:
+  GPU2
+  logs/token/20260704_200324_DNA-Rendering_token_codebook_gpu2_debug.log
+```
+
+为保证 token stats 实时落盘，`train.py` 的 MotionToken debug print 增加了 `flush=True`。
+这只影响日志刷新，不影响训练结构和数值计算。
+
+结果：
+
+| Sequence | Iter | entropy_norm | max_prob_mean | usage_nonzero | usage_max | usage_entropy_norm |
+|---|---:|---:|---:|---:|---:|---:|
+| 0051_09 | 1000 | 0.999299 | 0.035909 | 1 | 1.000000 | 0.000000 |
+| 0051_09 | 2000 | 0.999403 | 0.035444 | 3 | 0.616482 | 0.219617 |
+| 0051_09 | 3000 | 0.998992 | 0.035917 | 6 | 0.456069 | 0.319081 |
+| 0051_09 | 4000 | 0.999541 | 0.034399 | 1 | 1.000000 | 0.000000 |
+| 0051_09 | 5000 | 0.999513 | 0.034705 | 2 | 0.859564 | 0.117076 |
+| 0007_04 | 1000 | 0.998816 | 0.037452 | 2 | 0.999930 | 0.000214 |
+| 0007_04 | 2000 | 0.998896 | 0.035823 | 4 | 0.791115 | 0.188783 |
+| 0007_04 | 3000 | 0.999159 | 0.036542 | 2 | 0.973738 | 0.035057 |
+| 0007_04 | 4000 | 0.999399 | 0.034604 | 5 | 0.697306 | 0.263857 |
+| 0007_04 | 5000 | 0.999329 | 0.034749 | 4 | 0.808900 | 0.186108 |
+| 0007_04 | 6000 | 0.999414 | 0.034536 | 5 | 0.822561 | 0.163670 |
+
+解释：
+
+```text
+32 tokens 均匀 softmax 的 max_prob 约为 1 / 32 = 0.03125。
+当前 max_prob_mean 只有 0.034-0.037，entropy_norm 长期约 0.999。
+
+这说明 softmax 权重几乎是均匀分布，没有形成明确 token 选择。
+usage_nonzero 偶尔变多，但主要来自接近均匀权重下的 argmax 微小差异。
+真实 top-1 usage 仍高度集中到少数 token。
+```
+
+决策：
+
+```text
+token_codebook usage 不健康。
+本轮没有跑满 25000，也没有做最终指标评估。
+原因是当前目标是判定 codebook 是否值得继续；诊断已经满足停止条件。
+
+不建议继续把离散 token/codebook 作为主线。
+如果继续 token，应该先改 token 机制或加 usage/entropy 约束；
+否则平均指标的小涨更可能来自额外 MLP 容量，而不是离散运动模式。
+```
+
+## 2026-07-04 当前 DIF 消融超参数含义和调参依据
+
+当前代码里 DIF 只改 `NonrigidDeformer.forward_delta_x`：
+
+```text
+mu = gaussian_warp(h)
+sigma = softplus(gaussian_warp_sigma(h)) + eps
+```
+
+三种模式：
+
+```text
+peak:
+  d_xyz = mu
+  sigma 只被记录，不影响最终 delta_x。
+
+sigma_rectifier:
+  r = rectifier([h, mu, log(sigma)])
+  d_xyz = mu + sigma * tanh(r)
+
+sigma_rectifier_v2:
+  sigma = clamp(sigma, sigma_min, sigma_max)
+  beta  = linear warmup to dif_residual_beta
+  d_xyz = mu + beta * sigma * tanh(r)
+```
+
+当前关键参数：
+
+| 参数 | 当前常用值 | 含义 |
+|---|---:|---|
+| `dif_mode` | `peak` / `sigma_rectifier` / `sigma_rectifier_v2` | 决定 sigma 是否只记录、是否参与 residual、是否 clamp/warmup |
+| `dif_sigma_init` | peak: -7.0, rectifier: -4.0, v2: -3.5 | 初始化 sigma head bias；越大 residual 允许空间越大 |
+| `dif_eps` | 1e-6 | 防止 sigma/log(sigma) 数值为 0 |
+| `dif_sigma_min` | 1e-4 | v2 下 sigma 下界 |
+| `dif_sigma_max` | 0.05 | v2 下 sigma 上界，也是 residual 大小硬上限之一 |
+| `dif_residual_beta` | 1.0 | v2 residual 总强度系数 |
+| `dif_residual_warmup` | 3000 | v2 前 3000 iter 线性打开 residual |
+| `dif_sigma_prior` | 0.02 | sigma prior 目标值 |
+| `dif_sigma_prior_w` | 默认 0.0，v2 实验用过 1e-4 | 约束 log(sigma) 接近 log(prior) 的权重 |
+| `dif_debug_interval` | 1000 | 每隔多少 iter 打印 sigma/residual 统计 |
+
+sigma 初值近似：
+
+```text
+softplus(-7.0) ≈ 0.0009
+softplus(-4.0) ≈ 0.018
+softplus(-3.5) ≈ 0.030
+```
+
+调参优先级：
+
+```text
+1. 先固定使用 sigma_rectifier_v2。
+2. 看 DIF Stats:
+   sigma_mean
+   sigma_max
+   residual_mu_ratio
+   active_ratio
+3. residual 太弱:
+   提高 dif_sigma_init，如 -4.0 -> -3.5；
+   或提高 dif_sigma_max，如 0.05 -> 0.08。
+4. residual 太强或指标掉:
+   降低 dif_sigma_init，如 -3.5 -> -4.5；
+   降低 dif_sigma_max；
+   拉长 dif_residual_warmup，如 3000 -> 5000/8000。
+5. sigma 不稳定或频繁顶到 sigma_max:
+   加强 dif_sigma_prior_w，如 1e-4 -> 3e-4；
+   或降低 sigma_max。
+6. 如果 sigma_mean 被 prior 钉死但指标无收益:
+   降低 dif_sigma_prior_w；
+   否则 sigma 只是人为先验，不是有效 uncertainty。
+```
+
+当前 v2 诊断现象：
+
+```text
+sigma_mean 大多在 0.019-0.021 附近。
+residual_mu_ratio 大多约 0.03-0.06。
+说明 residual 是小修正，不是主导形变。
+这个量级比较稳，但全图收益有限；后续应优先看 high-motion / boundary subset。
+```
+
+## 2026-07-04 DIF sigma_rectifier_v2 DNA 六序列结果
+
+设置：
+
+```text
+method = dif_sigma_rectifier_v2
+dataset = DNA-Rendering
+iteration = 25000
+densify_until_iter = 1500
+logs = logs/dif
+
+0044_11,0051_09,0206_04,0813_05:
+  run = 20260704_170652
+
+0007_04,0019_10:
+  run = 20260704_203101
+```
+
+结果来自各序列：
+
+```text
+metrics/results_novelview_25000.json
+```
+
+| Sequence | PSNR | SSIM | LPIPS*1000 | dPSNR vs base | dSSIM | dLPIPS*1000 |
+|---|---:|---:|---:|---:|---:|---:|
+| 0044_11 | 32.9507 | 0.977864 | 21.5263 | -0.0234 | -0.000050 | +0.1284 |
+| 0051_09 | 28.5271 | 0.970610 | 31.5712 | -0.0509 | -0.000123 | -0.0187 |
+| 0206_04 | 31.3877 | 0.969811 | 34.3681 | +0.0099 | +0.000066 | +0.2577 |
+| 0813_05 | 36.0722 | 0.986859 | 18.5396 | -0.0106 | -0.000022 | +0.0522 |
+| 0007_04 | 29.4909 | 0.958110 | 45.1296 | -0.0424 | -0.000210 | -0.2855 |
+| 0019_10 | 35.1574 | 0.980605 | 21.4971 | -0.0626 | -0.000074 | +0.2091 |
+
+平均：
+
+| Method | PSNR | SSIM | LPIPS*1000 |
+|---|---:|---:|---:|
+| baseline | 32.2943 | 0.974045 | 28.7148 |
+| dif_sigma_rectifier_v2 | 32.2643 | 0.973976 | 28.7720 |
+| delta | -0.0300 | -0.000069 | +0.0572 |
+
+结论：
+
+```text
+dif_sigma_rectifier_v2 在六个 DNA 序列全图 novelview 平均指标上没有超过 baseline。
+PSNR/SSIM 小幅下降，LPIPS*1000 小幅变差。
+
+它对 0206_04 的 PSNR/SSIM 有轻微正向，
+对 0007_04 的 LPIPS 有正向，
+但收益不稳定，不能作为当前主线结论。
+
+如果继续 DIF，优先做 high-motion / boundary subset。
+如果局部动态区域也没有稳定提升，建议停止 DIF 主线。
+```
+
+## 2026-07-04 DIF uncertainty-loss DNA 六序列结果
+
+设置：
+
+```text
+method = dif_uncert_loss
+dataset = DNA-Rendering
+iteration = 25000
+densify_until_iter = 1500
+lambda_unc = 0.01
+s_clamp = [-6, 3]
+Delta x = mu
+sigma only enters image residual uncertainty loss
+logs = logs/dif
+run = 20260704_215303
+```
+
+实现要点：
+
+```text
+1. MLP 输出 mu/sigma，但非刚性位移仍使用 Delta x = mu。
+2. 将每个 Gaussian 的 log variance 渲染成 uncertainty map。
+3. 使用图像残差异方差 loss:
+   L_unc = r^2 * exp(-s) + s
+4. 原 RGB/L1/SSIM/LPIPS loss 不变，总 loss:
+   L = L_rgb + lambda_unc * L_unc
+5. uncertainty render 中 geometry 和主 RGB residual detach，
+   避免 uncertainty loss 直接改主几何，只监督 sigma。
+```
+
+运行日志：
+
+```text
+logs/dif/20260704_215303_DNA-Rendering_dif_uncert_loss_gpu1.log
+logs/dif/20260704_215303_DNA-Rendering_dif_uncert_loss_gpu2.log
+logs/dif/20260704_215303_DNA-Rendering_dif_uncert_loss_gpu1_retry.log
+```
+
+说明：
+
+```text
+0206_04 首次在 uncertainty RGB render backward 时触发 CUDA illegal memory access。
+定位到 logvar_color 使用 expand 产生非连续 tensor，已改为 contiguous。
+该修改不改变数学含义，只修复 CUDA rasterizer 输入内存布局。
+0206_04 retry 后完整跑完。
+```
+
+| Sequence | PSNR | SSIM | LPIPS*1000 | dPSNR vs base | dSSIM | dLPIPS*1000 |
+|---|---:|---:|---:|---:|---:|---:|
+| 0007_04 | 29.5019 | 0.958139 | 45.4081 | -0.0314 | -0.000181 | -0.0070 |
+| 0019_10 | 35.2759 | 0.980920 | 21.2660 | +0.0559 | +0.000241 | -0.0220 |
+| 0044_11 | 32.9431 | 0.977740 | 21.7349 | -0.0310 | -0.000174 | +0.3370 |
+| 0051_09 | 28.5181 | 0.970487 | 31.9282 | -0.0599 | -0.000246 | +0.3383 |
+| 0206_04 | 31.2591 | 0.968655 | 35.1748 | -0.1187 | -0.001090 | +1.0644 |
+| 0813_05 | 36.0480 | 0.986802 | 18.6788 | -0.0348 | -0.000079 | +0.1914 |
+
+平均：
+
+| Method | PSNR | SSIM | LPIPS*1000 |
+|---|---:|---:|---:|
+| baseline | 32.2943 | 0.974045 | 28.7148 |
+| dif_uncert_loss | 32.2577 | 0.973791 | 29.0318 |
+| delta | -0.0366 | -0.000255 | +0.3170 |
+
+诊断：
+
+```text
+DIF Stats 显示 sigma_mean/sigma_min/sigma_max 长期完全相同:
+sigma = 0.048588
+
+这说明当前 sigma 没有学出 point-wise uncertainty 分布，
+基本退化成全局常量 uncertainty。
+```
+
+结论：
+
+```text
+dif_uncert_loss 在 DNA 六序列全图 novelview 平均指标上没有超过 baseline。
+只有 0019_10 有轻微正向，其余序列多数下降，0206_04 下降最明显。
+
+当前结果更像是:
+sigma 没有获得有效的 spatial / point-wise 区分能力，
+uncertainty loss 只提供了弱的全局正则扰动。
+
+不建议把这个版本作为 DIF 主线。
+如果继续 DIF，需要先让 sigma 真正空间化，例如增加 sigma map 可视化、
+记录 s_map mean/std，或者改成可学习 per-Gaussian uncertainty residual。
+```
