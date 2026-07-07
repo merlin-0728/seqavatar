@@ -93,6 +93,42 @@ class MotionTokenEncoder(nn.Module):
         return stats, usage_list
 
 
+class FlowViewTokenEncoder(nn.Module):
+    def __init__(self, flow_feature_dim=4, out_dim=32, hidden_dim=64):
+        super().__init__()
+        self.flow_feature_dim = int(flow_feature_dim)
+        self.token_input_dim = self.flow_feature_dim + 3 + 3 + 1
+        self.value_mlp = nn.Sequential(
+            nn.Linear(self.token_input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, out_dim),
+            nn.ReLU(),
+        )
+        self.score_mlp = nn.Sequential(
+            nn.Linear(self.token_input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1),
+        )
+        self.last_weights = None
+
+    def forward(self, flow_tokens, current_dirs, train_dirs):
+        if flow_tokens.dim() != 4:
+            raise RuntimeError(f"flow_view_token expects [B,N,V,C], got {tuple(flow_tokens.shape)}")
+        if current_dirs is None or train_dirs is None:
+            raise RuntimeError("flow_view_token requires current_dirs and train_dirs.")
+        current_expand = current_dirs.unsqueeze(2).expand(-1, -1, flow_tokens.shape[2], -1)
+        view_cos = (current_expand * train_dirs).sum(dim=-1, keepdim=True)
+        x = torch.cat([flow_tokens, train_dirs, current_expand, view_cos], dim=-1)
+        values = self.value_mlp(x)
+        scores = self.score_mlp(x).squeeze(-1)
+        if flow_tokens.shape[-1] >= 4:
+            conf = flow_tokens[..., 3].clamp(0.0, 1.0)
+            scores = scores + torch.log(conf.clamp_min(1e-4))
+        weights = torch.softmax(scores, dim=2)
+        self.last_weights = weights.detach()
+        return torch.sum(weights.unsqueeze(-1) * values, dim=2)
+
+
 class NonrigidDeformer(nn.Module):
     def __init__(self, D=3, W=512, use_pose_cond=0, use_seq_pose_cond=0, use_seq_xyz_cond=0, 
                  pos_input_dim=63, pose_cond_dim=32, seq_pose_cond_dim=32, seq_xyz_cond_dim=96,
@@ -107,6 +143,9 @@ class NonrigidDeformer(nn.Module):
                  dif_sigma_min=1e-4, dif_sigma_max=0.05,
                  dif_residual_beta=1.0, dif_residual_warmup=0, dif_eps=1e-6,
                  use_acc_cond=False, seq_acc_cond_dim=64,
+                 use_flow_cond=False, flow_feature_dim=3, flow_cond_dim=32,
+                 flow_adapter_mode="concat", flow_gate_alpha=0.0, flow_gate_temp=0.5,
+                 flow_view_token=False, flow_view_attn_dim=32,
                  use_motion_token=False, motion_token_mode="none",
                  motion_token_use_acc=False, motion_token_use_part=False,
                  motion_token_use_codebook=False, motion_token_num=32,
@@ -138,6 +177,16 @@ class NonrigidDeformer(nn.Module):
         self.last_dif_residual = None
         self.use_acc_cond = bool(use_acc_cond) or (bool(use_motion_token) and bool(motion_token_use_acc))
         self.seq_acc_cond_dim = int(seq_acc_cond_dim)
+        self.use_flow_cond = bool(use_flow_cond)
+        self.flow_feature_dim = int(flow_feature_dim)
+        self.flow_cond_dim = int(flow_cond_dim)
+        self.flow_adapter_mode = str(flow_adapter_mode or "concat").lower()
+        self.flow_gate_alpha = float(flow_gate_alpha)
+        self.flow_gate_temp = float(flow_gate_temp)
+        self.flow_view_token = bool(flow_view_token)
+        self.flow_view_attn_dim = int(flow_view_attn_dim)
+        if self.flow_adapter_mode not in {"concat", "gated_residual"}:
+            raise ValueError(f"Unsupported flow_adapter_mode: {self.flow_adapter_mode}")
         self.use_motion_token = bool(use_motion_token)
         self.motion_token_mode = str(motion_token_mode or "none").lower()
         self.motion_token_use_acc = bool(motion_token_use_acc)
@@ -204,6 +253,23 @@ class NonrigidDeformer(nn.Module):
             if self.use_motion_token and self.motion_token_use_acc:
                 token_input_dim += acc_cond_dim
 
+        if self.use_flow_cond:
+            if self.flow_view_token:
+                self.FlowEncoder = FlowViewTokenEncoder(
+                    flow_feature_dim=self.flow_feature_dim,
+                    out_dim=self.flow_cond_dim,
+                    hidden_dim=self.flow_view_attn_dim,
+                )
+            else:
+                self.FlowEncoder = nn.Sequential(
+                    nn.Linear(self.flow_feature_dim, self.flow_cond_dim),
+                    nn.ReLU(),
+                    nn.Linear(self.flow_cond_dim, self.flow_cond_dim),
+                    nn.ReLU(),
+                )
+            if self.flow_adapter_mode == "concat":
+                self.input_ch += self.flow_cond_dim
+
         if self.use_motion_token and self.motion_token_use_part:
             self.motion_token_part_embedding = nn.Embedding(
                 int(motion_token_num_parts),
@@ -233,6 +299,13 @@ class NonrigidDeformer(nn.Module):
         self.mlp = nn.Sequential(*layers)
 
         self.gaussian_warp = nn.Linear(W, 3)
+        if self.use_flow_cond and self.flow_adapter_mode == "gated_residual":
+            self.FlowResidualAdapter = nn.Sequential(
+                nn.Linear(W + self.flow_cond_dim, W // 2),
+                nn.ReLU(),
+                nn.Linear(W // 2, 3),
+            )
+            _zero_init_linear(self.FlowResidualAdapter[-1])
         if self.use_dif:
             self.gaussian_warp_sigma = nn.Linear(W, 1)
             nn.init.zeros_(self.gaussian_warp_sigma.weight)
@@ -430,6 +503,9 @@ class NonrigidDeformer(nn.Module):
 
     def forward(self, x_emb, pose_conds=None, seq_pose_conds=None, seq_xyz_conds=None,
                 seq_acc_conds=None,
+                seq_flow_conds=None,
+                seq_flow_current_dirs=None,
+                seq_flow_train_dirs=None,
                 part_label=None, part_enabled=False, part_moe_alpha=0.0, part_moe_global_keep=None):
         feats = []
         feats.append(x_emb)
@@ -461,6 +537,16 @@ class NonrigidDeformer(nn.Module):
             feats.append(seq_acc_feats)
             if self.use_motion_token and self.motion_token_use_acc:
                 token_feats.append(seq_acc_feats)
+
+        if self.use_flow_cond:
+            if seq_flow_conds is None:
+                raise RuntimeError("seq_flow_conds is required when use_flow_cond=True.")
+            if self.flow_view_token:
+                flow_feats = self.FlowEncoder(seq_flow_conds, seq_flow_current_dirs, seq_flow_train_dirs)
+            else:
+                flow_feats = self.FlowEncoder(seq_flow_conds)
+            if self.flow_adapter_mode == "concat":
+                feats.append(flow_feats)
 
         if self.use_motion_token and self.motion_token_use_part:
             if part_label is None:
@@ -497,6 +583,21 @@ class NonrigidDeformer(nn.Module):
 
         h = self.mlp(features)
         d_xyz, d_scaling, d_rotation = self.forward_delta_x(h), self.gaussian_scaling(h), self.gaussian_rotation(h)
+        if self.use_flow_cond and self.flow_adapter_mode == "gated_residual":
+            if self.flow_view_token:
+                flow_score = (seq_flow_conds[..., 2:3] * seq_flow_conds[..., 3:4]).max(dim=2).values
+                gate_reduce_dims = (1,)
+            else:
+                flow_score = torch.norm(seq_flow_conds[..., :2], dim=-1, keepdim=True)
+                gate_reduce_dims = (1, 2)
+            flow_gate = _adaptive_motion_gate(
+                flow_score,
+                alpha=self.flow_gate_alpha,
+                temp=self.flow_gate_temp,
+                reduce_dims=gate_reduce_dims,
+            )
+            flow_residual = self.FlowResidualAdapter(torch.cat([h, flow_feats], dim=-1))
+            d_xyz = d_xyz + flow_gate * flow_residual
         
         return d_xyz, d_rotation, d_scaling
 

@@ -78,6 +78,44 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor,
                     if seq_acc_conds is None:
                         raise RuntimeError("acc condition is enabled but seq_acc_conds is missing from cond_dict.")
                     query_pts_acc_conds = seq_acc_conds[vert_ids, :,:,:].permute(0,1,3,2,4,5).contiguous()
+                query_pts_flow_conds = None
+                if getattr(pc, "use_flow_cond", False):
+                    seq_flow_conds = pc.cond_dict[pose_id].get('seq_flow_conds', None)
+                    if seq_flow_conds is None:
+                        raise RuntimeError("flow condition is enabled but seq_flow_conds is missing from cond_dict.")
+                    knn_flow = seq_flow_conds[vert_ids, :]
+                    if getattr(pc, "flow_view_token", False):
+                        query_pts_flow_conds = knn_flow.mean(dim=2).contiguous()
+                        train_centers = pc.cond_dict[pose_id].get('flow_train_camera_centers', None)
+                        if train_centers is None:
+                            raise RuntimeError("flow_view_token is enabled but flow_train_camera_centers is missing.")
+                        point_xyz = means3D.detach()
+                        query_pts_flow_current_dirs = torch.nn.functional.normalize(
+                            viewpoint_camera.camera_center.view(1, 1, 3) - point_xyz,
+                            dim=-1,
+                            eps=1e-6,
+                        )
+                        query_pts_flow_train_dirs = torch.nn.functional.normalize(
+                            train_centers.view(1, 1, train_centers.shape[0], 3) - point_xyz.unsqueeze(2),
+                            dim=-1,
+                            eps=1e-6,
+                        )
+                    else:
+                        query_pts_flow_current_dirs = None
+                        query_pts_flow_train_dirs = None
+                        flow_knn_agg = str(getattr(pc, "flow_knn_agg", "mean")).lower()
+                        if flow_knn_agg == "mean":
+                            query_pts_flow_conds = knn_flow.mean(dim=2).contiguous()
+                        elif flow_knn_agg == "mean_max":
+                            query_pts_flow_conds = torch.cat(
+                                [knn_flow.mean(dim=2), knn_flow.max(dim=2).values],
+                                dim=-1,
+                            ).contiguous()
+                        else:
+                            raise RuntimeError(f"Unsupported flow_knn_agg: {flow_knn_agg}")
+                else:
+                    query_pts_flow_current_dirs = None
+                    query_pts_flow_train_dirs = None
 
                 part_label = None
                 part_enabled = False
@@ -97,6 +135,9 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor,
                     seq_pose_conds,
                     query_pts_delta_conds,
                     seq_acc_conds=query_pts_acc_conds,
+                    seq_flow_conds=query_pts_flow_conds,
+                    seq_flow_current_dirs=query_pts_flow_current_dirs,
+                    seq_flow_train_dirs=query_pts_flow_train_dirs,
                     part_label=part_label,
                     part_enabled=part_enabled,
                     part_moe_alpha=getattr(pc, "part_moe_alpha", 0.0),

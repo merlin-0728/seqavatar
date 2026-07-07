@@ -243,7 +243,347 @@ def readCamerasI3DHuman(path, smpl_model, output_view, white_background, image_s
     return cam_infos
 
 ##################################   DNA-Rendering   ##################################
+def _project_points_to_image(points, K, c2w):
+    w2c = np.linalg.inv(c2w)
+    pts_cam = points @ w2c[:3, :3].T + w2c[:3, 3]
+    z = pts_cam[:, 2]
+    safe_z = np.where(np.abs(z) < 1e-8, 1e-8, z)
+    u = K[0, 0] * (pts_cam[:, 0] / safe_z) + K[0, 2]
+    v = K[1, 1] * (pts_cam[:, 1] / safe_z) + K[1, 2]
+    return u, v, z
+
+
+def _load_gray_scaled(path, scale):
+    img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        raise FileNotFoundError(path)
+    if scale != 1.0:
+        img = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    return img
+
+
+def _sample_flow_channels(flow, u, v):
+    map_x = u.astype(np.float32).reshape(-1, 1)
+    map_y = v.astype(np.float32).reshape(-1, 1)
+    sampled = cv2.remap(flow, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+    return sampled.reshape(-1, flow.shape[-1])
+
+
+def _build_dna_train_flow_view_token_features(
+    path,
+    train_view,
+    pose_num=100,
+    scale=0.25,
+    mag_scale=1.0,
+):
+    """Build per-train-view flow tokens without averaging the view dimension.
+
+    Returned features have shape [pose, vertex, train_view, 4], with channels:
+    [flow_u, flow_v, flow_magnitude, forward_backward_confidence].
+    """
+    feature_dim = 4
+    mag_scale = float(mag_scale)
+    cache_dir = os.path.join(path, "flow_features")
+    os.makedirs(cache_dir, exist_ok=True)
+    scale_tag = f"{scale:.3f}".replace(".", "p")
+    mag_tag = f"{mag_scale:g}".replace(".", "p")
+    view_tag = f"v{len(train_view)}"
+    cache_name = f"dna_train_farneback_viewtoken_s{scale_tag}_ms{mag_tag}_{view_tag}_fd{feature_dim}.npz"
+    cache_path = os.path.join(cache_dir, cache_name)
+    if os.path.exists(cache_path):
+        cached = np.load(cache_path, allow_pickle=True)
+        features = cached["features"].astype(np.float32, copy=False)
+        camera_centers = cached["camera_centers"].astype(np.float32, copy=False)
+        print(
+            f"[FlowCond] Loaded train-view flow-token cache: {cache_path}, "
+            f"features={features.shape}, camera_centers={camera_centers.shape}"
+        )
+        return features, camera_centers
+
+    first_model = np.load(os.path.join(path, "model", "000000.npz"), allow_pickle=True)
+    vertex_num = int(first_model["obs_xyz"].shape[0])
+    view_num = len(train_view)
+    features = np.zeros((pose_num, vertex_num, view_num, feature_dim), dtype=np.float32)
+    camera_centers = np.zeros((pose_num, view_num, 3), dtype=np.float32)
+    diag_cache = {}
+    print(f"[FlowCond] Building train-view flow-token cache with Farneback: {cache_path}")
+    print(f"[FlowCond] Keeping view dimension. Train views: {train_view}")
+
+    for pose_id in range(1, pose_num):
+        prev_model = np.load(os.path.join(path, "model", f"{pose_id - 1:06d}.npz"), allow_pickle=True)
+        prev_xyz = prev_model["obs_xyz"].astype(np.float32, copy=False)
+
+        for view_slot, view_id in enumerate(train_view):
+            prev_img_path = os.path.join(path, "images", f"{view_id:02d}", f"{pose_id - 1:06d}.png")
+            curr_img_path = os.path.join(path, "images", f"{view_id:02d}", f"{pose_id:06d}.png")
+            cam_path = os.path.join(path, "cameras", f"{view_id:02d}", f"{pose_id - 1:06d}.npz")
+            if not (os.path.exists(prev_img_path) and os.path.exists(curr_img_path) and os.path.exists(cam_path)):
+                continue
+
+            prev_gray = _load_gray_scaled(prev_img_path, scale)
+            curr_gray = _load_gray_scaled(curr_img_path, scale)
+            flow_fwd = cv2.calcOpticalFlowFarneback(
+                prev_gray, curr_gray, None,
+                pyr_scale=0.5, levels=3, winsize=15, iterations=3,
+                poly_n=5, poly_sigma=1.2, flags=0,
+            )
+            flow_bwd = cv2.calcOpticalFlowFarneback(
+                curr_gray, prev_gray, None,
+                pyr_scale=0.5, levels=3, winsize=15, iterations=3,
+                poly_n=5, poly_sigma=1.2, flags=0,
+            )
+
+            cam_params = np.load(cam_path, allow_pickle=True)
+            K = cam_params["K"]
+            c2w = np.eye(4, dtype=np.float32)
+            c2w[:3, :3] = cam_params["RT"][:3, :3]
+            c2w[:3, 3] = cam_params["RT"][:3, 3]
+            camera_centers[pose_id, view_slot] = c2w[:3, 3].astype(np.float32)
+
+            u, v, z = _project_points_to_image(prev_xyz, K, c2w)
+            u_s, v_s = u * scale, v * scale
+            h, w = flow_fwd.shape[:2]
+            valid = (z > 1e-6) & (u_s >= 0) & (u_s <= w - 1) & (v_s >= 0) & (v_s <= h - 1)
+            if not np.any(valid):
+                continue
+
+            sampled_fwd = _sample_flow_channels(flow_fwd, u_s, v_s)
+            end_u = u_s + sampled_fwd[:, 0]
+            end_v = v_s + sampled_fwd[:, 1]
+            sampled_bwd = _sample_flow_channels(flow_bwd, end_u, end_v)
+            fb_error = np.linalg.norm(sampled_fwd + sampled_bwd, axis=-1)
+            conf = np.exp(-fb_error / 2.0).astype(np.float32)
+
+            diag_key = (w, h)
+            if diag_key not in diag_cache:
+                diag_cache[diag_key] = float(np.sqrt(float(w * w + h * h)))
+            diag = max(diag_cache[diag_key], 1e-6)
+            flow_norm = sampled_fwd / diag
+            mag = np.linalg.norm(flow_norm, axis=-1)
+            valid_idx = np.where(valid)[0]
+            features[pose_id, valid_idx, view_slot, 0] = flow_norm[valid_idx, 0].astype(np.float32) * mag_scale
+            features[pose_id, valid_idx, view_slot, 1] = flow_norm[valid_idx, 1].astype(np.float32) * mag_scale
+            features[pose_id, valid_idx, view_slot, 2] = mag[valid_idx].astype(np.float32) * mag_scale
+            features[pose_id, valid_idx, view_slot, 3] = conf[valid_idx]
+
+    np.savez_compressed(
+        cache_path,
+        features=features,
+        camera_centers=camera_centers,
+        train_view=np.asarray(train_view, dtype=np.int32),
+        scale=np.asarray([scale], dtype=np.float32),
+        mag_scale=np.asarray([mag_scale], dtype=np.float32),
+    )
+    print(
+        f"[FlowCond] Saved train-view flow-token cache: {cache_path}, "
+        f"features={features.shape}, camera_centers={camera_centers.shape}"
+    )
+    return features, camera_centers
+
+
+def _build_dna_train_flow_features(
+    path,
+    train_view,
+    pose_num=100,
+    scale=0.25,
+    feature_dim=3,
+    feature_mode="mean_max_conf",
+    mag_scale=1.0,
+):
+    feature_dim = int(feature_dim)
+    feature_mode = str(feature_mode or "mean_max_conf").lower()
+    if feature_mode not in {"mean_max_conf", "mean_max_std", "uv_mag_std", "reproj_residual"}:
+        raise ValueError(f"Unsupported DNA flow feature_mode={feature_mode}")
+    expected_dims = {
+        "mean_max_conf": 3,
+        "mean_max_std": 3,
+        "uv_mag_std": 6,
+        "reproj_residual": 8,
+    }
+    expected_dim = expected_dims[feature_mode]
+    if feature_dim != expected_dim:
+        raise ValueError(f"DNA flow condition expects feature_dim={expected_dim} for {feature_mode}, got {feature_dim}")
+    mag_scale = float(mag_scale)
+
+    cache_dir = os.path.join(path, "flow_features")
+    os.makedirs(cache_dir, exist_ok=True)
+    scale_tag = f"{scale:.3f}".replace(".", "p")
+    mag_tag = f"{mag_scale:g}".replace(".", "p")
+    cache_name = f"dna_train_farneback_s{scale_tag}_{feature_mode}_ms{mag_tag}_fd{feature_dim}.npz"
+    cache_path = os.path.join(cache_dir, cache_name)
+    if os.path.exists(cache_path):
+        cached = np.load(cache_path, allow_pickle=True)
+        features = cached["features"].astype(np.float32, copy=False)
+        print(f"[FlowCond] Loaded train-view flow cache: {cache_path}, shape={features.shape}")
+        return features
+
+    first_model = np.load(os.path.join(path, "model", "000000.npz"), allow_pickle=True)
+    vertex_num = int(first_model["obs_xyz"].shape[0])
+    features = np.zeros((pose_num, vertex_num, feature_dim), dtype=np.float32)
+    diag_cache = {}
+    print(f"[FlowCond] Building train-view flow cache with Farneback: {cache_path}")
+    print(f"[FlowCond] Using train views only: {train_view}")
+
+    for pose_id in range(1, pose_num):
+        prev_model = np.load(os.path.join(path, "model", f"{pose_id - 1:06d}.npz"), allow_pickle=True)
+        curr_model = np.load(os.path.join(path, "model", f"{pose_id:06d}.npz"), allow_pickle=True)
+        prev_xyz = prev_model["obs_xyz"].astype(np.float32, copy=False)
+        curr_xyz = curr_model["obs_xyz"].astype(np.float32, copy=False)
+
+        u_sum = np.zeros((vertex_num,), dtype=np.float32)
+        v_sum = np.zeros((vertex_num,), dtype=np.float32)
+        mag_sum = np.zeros((vertex_num,), dtype=np.float32)
+        mag_sq_sum = np.zeros((vertex_num,), dtype=np.float32)
+        mag_max = np.zeros((vertex_num,), dtype=np.float32)
+        res_u_sum = np.zeros((vertex_num,), dtype=np.float32)
+        res_v_sum = np.zeros((vertex_num,), dtype=np.float32)
+        res_mag_sum = np.zeros((vertex_num,), dtype=np.float32)
+        res_mag_sq_sum = np.zeros((vertex_num,), dtype=np.float32)
+        res_mag_max = np.zeros((vertex_num,), dtype=np.float32)
+        conf_sum = np.zeros((vertex_num,), dtype=np.float32)
+        count = np.zeros((vertex_num,), dtype=np.float32)
+
+        for view_id in train_view:
+            prev_img_path = os.path.join(path, "images", f"{view_id:02d}", f"{pose_id - 1:06d}.png")
+            curr_img_path = os.path.join(path, "images", f"{view_id:02d}", f"{pose_id:06d}.png")
+            cam_path = os.path.join(path, "cameras", f"{view_id:02d}", f"{pose_id - 1:06d}.npz")
+            curr_cam_path = os.path.join(path, "cameras", f"{view_id:02d}", f"{pose_id:06d}.npz")
+            need_curr_cam = feature_mode == "reproj_residual"
+            if not (
+                os.path.exists(prev_img_path)
+                and os.path.exists(curr_img_path)
+                and os.path.exists(cam_path)
+                and (not need_curr_cam or os.path.exists(curr_cam_path))
+            ):
+                continue
+
+            prev_gray = _load_gray_scaled(prev_img_path, scale)
+            curr_gray = _load_gray_scaled(curr_img_path, scale)
+            flow_fwd = cv2.calcOpticalFlowFarneback(
+                prev_gray, curr_gray, None,
+                pyr_scale=0.5, levels=3, winsize=15, iterations=3,
+                poly_n=5, poly_sigma=1.2, flags=0,
+            )
+            flow_bwd = cv2.calcOpticalFlowFarneback(
+                curr_gray, prev_gray, None,
+                pyr_scale=0.5, levels=3, winsize=15, iterations=3,
+                poly_n=5, poly_sigma=1.2, flags=0,
+            )
+
+            cam_params = np.load(cam_path, allow_pickle=True)
+            K = cam_params["K"]
+            c2w = np.eye(4, dtype=np.float32)
+            c2w[:3, :3] = cam_params["RT"][:3, :3]
+            c2w[:3, 3] = cam_params["RT"][:3, 3]
+            u, v, z = _project_points_to_image(prev_xyz, K, c2w)
+            u_s, v_s = u * scale, v * scale
+            h, w = flow_fwd.shape[:2]
+            valid = (z > 1e-6) & (u_s >= 0) & (u_s <= w - 1) & (v_s >= 0) & (v_s <= h - 1)
+            smpl_flow = None
+            if feature_mode == "reproj_residual":
+                curr_cam_params = np.load(curr_cam_path, allow_pickle=True)
+                curr_K = curr_cam_params["K"]
+                curr_c2w = np.eye(4, dtype=np.float32)
+                curr_c2w[:3, :3] = curr_cam_params["RT"][:3, :3]
+                curr_c2w[:3, 3] = curr_cam_params["RT"][:3, 3]
+                curr_u, curr_v, curr_z = _project_points_to_image(curr_xyz, curr_K, curr_c2w)
+                curr_u_s, curr_v_s = curr_u * scale, curr_v * scale
+                valid = valid & (curr_z > 1e-6) & (curr_u_s >= 0) & (curr_u_s <= w - 1) & (curr_v_s >= 0) & (curr_v_s <= h - 1)
+                smpl_flow = np.stack([curr_u_s - u_s, curr_v_s - v_s], axis=-1)
+            if not np.any(valid):
+                continue
+
+            sampled_fwd = _sample_flow_channels(flow_fwd, u_s, v_s)
+            end_u = u_s + sampled_fwd[:, 0]
+            end_v = v_s + sampled_fwd[:, 1]
+            sampled_bwd = _sample_flow_channels(flow_bwd, end_u, end_v)
+            fb_error = np.linalg.norm(sampled_fwd + sampled_bwd, axis=-1)
+
+            diag_key = (w, h)
+            if diag_key not in diag_cache:
+                diag_cache[diag_key] = float(np.sqrt(float(w * w + h * h)))
+            diag = max(diag_cache[diag_key], 1e-6)
+            flow_norm = sampled_fwd / diag
+            mag = np.linalg.norm(flow_norm, axis=-1)
+            if smpl_flow is not None:
+                residual_norm = (sampled_fwd - smpl_flow) / diag
+                res_mag = np.linalg.norm(residual_norm, axis=-1)
+            conf = np.exp(-fb_error / 2.0).astype(np.float32)
+
+            valid_idx = np.where(valid)[0]
+            flow_valid = flow_norm[valid_idx].astype(np.float32)
+            mag_valid = mag[valid_idx].astype(np.float32)
+            conf_valid = conf[valid_idx].astype(np.float32)
+            u_sum[valid_idx] += flow_valid[:, 0]
+            v_sum[valid_idx] += flow_valid[:, 1]
+            mag_sum[valid_idx] += mag_valid
+            mag_sq_sum[valid_idx] += mag_valid * mag_valid
+            mag_max[valid_idx] = np.maximum(mag_max[valid_idx], mag_valid)
+            if smpl_flow is not None:
+                res_valid = residual_norm[valid_idx].astype(np.float32)
+                res_mag_valid = res_mag[valid_idx].astype(np.float32)
+                res_u_sum[valid_idx] += res_valid[:, 0]
+                res_v_sum[valid_idx] += res_valid[:, 1]
+                res_mag_sum[valid_idx] += res_mag_valid
+                res_mag_sq_sum[valid_idx] += res_mag_valid * res_mag_valid
+                res_mag_max[valid_idx] = np.maximum(res_mag_max[valid_idx], res_mag_valid)
+            conf_sum[valid_idx] += conf_valid
+            count[valid_idx] += 1.0
+
+        has_obs = count > 0
+        if np.any(has_obs):
+            mean_mag = mag_sum[has_obs] / count[has_obs]
+            if feature_mode == "mean_max_conf":
+                features[pose_id, has_obs, 0] = mean_mag * mag_scale
+                features[pose_id, has_obs, 1] = mag_max[has_obs] * mag_scale
+                features[pose_id, has_obs, 2] = conf_sum[has_obs] / count[has_obs]
+            elif feature_mode == "mean_max_std":
+                features[pose_id, has_obs, 0] = mean_mag * mag_scale
+                features[pose_id, has_obs, 1] = mag_max[has_obs] * mag_scale
+                var_mag = np.maximum((mag_sq_sum[has_obs] / count[has_obs]) - mean_mag * mean_mag, 0.0)
+                features[pose_id, has_obs, 2] = np.sqrt(var_mag).astype(np.float32) * mag_scale
+            elif feature_mode == "uv_mag_std":
+                mean_u = u_sum[has_obs] / count[has_obs]
+                mean_v = v_sum[has_obs] / count[has_obs]
+                var_mag = np.maximum((mag_sq_sum[has_obs] / count[has_obs]) - mean_mag * mean_mag, 0.0)
+                consistency = np.linalg.norm(np.stack([mean_u, mean_v], axis=-1), axis=-1) / np.maximum(mean_mag, 1e-6)
+                features[pose_id, has_obs, 0] = mean_u * mag_scale
+                features[pose_id, has_obs, 1] = mean_v * mag_scale
+                features[pose_id, has_obs, 2] = mean_mag * mag_scale
+                features[pose_id, has_obs, 3] = mag_max[has_obs] * mag_scale
+                features[pose_id, has_obs, 4] = np.sqrt(var_mag).astype(np.float32) * mag_scale
+                features[pose_id, has_obs, 5] = np.clip(consistency, 0.0, 1.0).astype(np.float32)
+            elif feature_mode == "reproj_residual":
+                mean_u = u_sum[has_obs] / count[has_obs]
+                mean_v = v_sum[has_obs] / count[has_obs]
+                mean_res_u = res_u_sum[has_obs] / count[has_obs]
+                mean_res_v = res_v_sum[has_obs] / count[has_obs]
+                mean_res_mag = res_mag_sum[has_obs] / count[has_obs]
+                var_res_mag = np.maximum((res_mag_sq_sum[has_obs] / count[has_obs]) - mean_res_mag * mean_res_mag, 0.0)
+                consistency = np.linalg.norm(np.stack([mean_u, mean_v], axis=-1), axis=-1) / np.maximum(mean_mag, 1e-6)
+                features[pose_id, has_obs, 0] = mean_res_u * mag_scale
+                features[pose_id, has_obs, 1] = mean_res_v * mag_scale
+                features[pose_id, has_obs, 2] = mean_res_mag * mag_scale
+                features[pose_id, has_obs, 3] = res_mag_max[has_obs] * mag_scale
+                features[pose_id, has_obs, 4] = np.sqrt(var_res_mag).astype(np.float32) * mag_scale
+                features[pose_id, has_obs, 5] = mean_u * mag_scale
+                features[pose_id, has_obs, 6] = mean_v * mag_scale
+                features[pose_id, has_obs, 7] = np.clip(consistency, 0.0, 1.0).astype(np.float32)
+
+    np.savez_compressed(
+        cache_path,
+        features=features,
+        train_view=np.asarray(train_view, dtype=np.int32),
+        scale=np.asarray([scale], dtype=np.float32),
+        feature_mode=np.asarray([feature_mode]),
+        mag_scale=np.asarray([mag_scale], dtype=np.float32),
+    )
+    print(f"[FlowCond] Saved train-view flow cache: {cache_path}, shape={features.shape}")
+    return features
+
+
 def readDNARenderingInfo(path, white_background, eval, time_steps, motion_cond_options=None):
+    motion_cond_options = dict(motion_cond_options or {})
     scene_name = os.path.basename(path)
     main_path = os.path.join(path, scene_name + '.smc')
     smc_reader = SMCReader(main_path)
@@ -264,6 +604,50 @@ def readDNARenderingInfo(path, white_background, eval, time_steps, motion_cond_o
     test_cam_infos = {}
     smpl_params_dict, cond_dict = {}, {} # observation space smpl params, conditions for non-rigid deformation
     delta_pose_xyz_cache = {} # cache for sequential condition calculation
+
+    if bool(motion_cond_options.get("use_flow_cond", False)):
+        flow_mode = str(motion_cond_options.get("flow_cond_mode", "flow")).lower()
+        feature_dim = int(motion_cond_options.get("flow_feature_dim", 3))
+        flow_knn_agg = str(motion_cond_options.get("flow_knn_agg", "mean")).lower()
+        flow_view_token = bool(motion_cond_options.get("flow_view_token", False))
+        if flow_knn_agg == "mean_max":
+            if feature_dim % 2 != 0:
+                raise ValueError(f"flow_feature_dim must be even when flow_knn_agg=mean_max, got {feature_dim}")
+            vertex_feature_dim = feature_dim // 2
+        else:
+            vertex_feature_dim = feature_dim
+        motion_cond_options["flow_vertex_feature_dim"] = int(vertex_feature_dim)
+        motion_cond_options["flow_vertex_num"] = int(canon_vertices.shape[0])
+        if flow_mode == "flow":
+            if flow_view_token:
+                if vertex_feature_dim != 4:
+                    raise ValueError(f"flow_view_token expects flow_feature_dim=4, got {vertex_feature_dim}")
+                flow_feature_map, flow_train_camera_centers = _build_dna_train_flow_view_token_features(
+                    path,
+                    train_view,
+                    pose_num=100,
+                    scale=float(motion_cond_options.get("flow_image_scale", 0.25)),
+                    mag_scale=float(motion_cond_options.get("flow_mag_scale", 1.0)),
+                )
+                motion_cond_options["flow_feature_map"] = flow_feature_map
+                motion_cond_options["flow_train_camera_centers"] = flow_train_camera_centers
+                motion_cond_options["flow_train_view_num"] = int(len(train_view))
+            else:
+                motion_cond_options["flow_feature_map"] = _build_dna_train_flow_features(
+                    path,
+                    train_view,
+                    pose_num=100,
+                    scale=float(motion_cond_options.get("flow_image_scale", 0.25)),
+                    feature_dim=vertex_feature_dim,
+                    feature_mode=str(motion_cond_options.get("flow_feature_mode", "mean_max_conf")),
+                    mag_scale=float(motion_cond_options.get("flow_mag_scale", 1.0)),
+                )
+        elif flow_mode == "zero":
+            print("[FlowCond] flow_zero mode: using zero flow features with the same FlowEncoder.")
+            if flow_view_token:
+                motion_cond_options["flow_train_view_num"] = int(len(train_view))
+        else:
+            raise ValueError(f"Unsupported flow_cond_mode: {flow_mode}")
 
     # read cameras
     print("Reading Training Transforms")
@@ -349,6 +733,36 @@ def readCamerasDNARendering(path, output_view, white_background, split='train', 
             else:
                 seq_pose_conds, seq_xyz_conds = cond_result
                 cond_dict[pose_index] = {'pose_conds': pose_conds, 'seq_pose_conds': seq_pose_conds, 'seq_xyz_conds': seq_xyz_conds}
+            if bool((motion_cond_options or {}).get("use_flow_cond", False)):
+                flow_feature_dim = int((motion_cond_options or {}).get("flow_vertex_feature_dim", (motion_cond_options or {}).get("flow_feature_dim", 3)))
+                flow_vertex_num = int((motion_cond_options or {}).get("flow_vertex_num", smpl_param['obs_xyz'].shape[0]))
+                flow_mode = str((motion_cond_options or {}).get("flow_cond_mode", "flow")).lower()
+                flow_view_token = bool((motion_cond_options or {}).get("flow_view_token", False))
+                if flow_mode == "flow":
+                    flow_map = (motion_cond_options or {}).get("flow_feature_map", None)
+                    if flow_map is None:
+                        raise RuntimeError("use_flow_cond=True and flow_cond_mode=flow, but flow_feature_map is missing.")
+                    flow_pose_id = int(np.clip(pose_index, 0, flow_map.shape[0] - 1))
+                    seq_flow_conds = torch.from_numpy(flow_map[flow_pose_id].astype(np.float32, copy=False))
+                elif flow_mode == "zero":
+                    if flow_view_token:
+                        flow_train_view_num = int((motion_cond_options or {}).get("flow_train_view_num", 1))
+                        seq_flow_conds = torch.zeros((flow_vertex_num, flow_train_view_num, flow_feature_dim), dtype=torch.float32)
+                    else:
+                        seq_flow_conds = torch.zeros((flow_vertex_num, flow_feature_dim), dtype=torch.float32)
+                else:
+                    raise ValueError(f"Unsupported flow_cond_mode: {flow_mode}")
+                cond_dict[pose_index]['seq_flow_conds'] = seq_flow_conds
+                if flow_view_token:
+                    centers = (motion_cond_options or {}).get("flow_train_camera_centers", None)
+                    if centers is not None:
+                        flow_pose_id = int(np.clip(pose_index, 0, centers.shape[0] - 1))
+                        cond_dict[pose_index]['flow_train_camera_centers'] = torch.from_numpy(
+                            centers[flow_pose_id].astype(np.float32, copy=False)
+                        )
+                    else:
+                        flow_train_view_num = int((motion_cond_options or {}).get("flow_train_view_num", 1))
+                        cond_dict[pose_index]['flow_train_camera_centers'] = torch.zeros((flow_train_view_num, 3), dtype=torch.float32)
 
         conds = cond_dict[pose_index]
         pose_conds, seq_pose_conds, seq_xyz_conds = conds['pose_conds'], conds['seq_pose_conds'], conds['seq_xyz_conds']

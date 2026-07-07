@@ -8895,3 +8895,1596 @@ uncertainty loss 只提供了弱的全局正则扰动。
 如果继续 DIF，需要先让 sigma 真正空间化，例如增加 sigma map 可视化、
 记录 s_map mean/std，或者改成可学习 per-Gaussian uncertainty residual。
 ```
+
+## 2026-07-06 Flow correctness 四卡诊断
+
+用户要求：
+
+```text
+用四张卡一起跑，验证当前光流方向和采样是否正确。
+每次回答后都要阅读并更新本 motion.md。
+```
+
+已先阅读本文件，再新增只读诊断脚本：
+
+```text
+scripts/validate_flow_correctness.py
+```
+
+诊断目的：
+
+```text
+检查当前代码里的 forward flow 是否满足:
+
+u_prev + flow_x ≈ u_cur
+v_prev + flow_y ≈ v_cur
+
+并和两个对照比较:
+
+no-flow:    u_prev ≈ u_cur
+minus-flow: u_prev - flow_x ≈ u_cur
+```
+
+诊断设置：
+
+```text
+只用 DNA train views:
+views = [0, 2, 4, ..., 46]
+
+不用 novel/test view。
+pose range = 1-99
+flow_image_scale = 0.25
+Farneback 参数与 scene/dataset_readers.py 当前 flow cache 构造一致。
+max_vertices_per_pose_view = 4096
+```
+
+四卡 tmux 分配：
+
+```text
+GPU0: 0007_04 0019_10
+GPU1: 0044_11
+GPU2: 0051_09
+GPU3: 0206_04 0813_05
+```
+
+日志：
+
+```text
+logs/flow/20260706_232244_flow_correctness_gpu0.log/json/md
+logs/flow/20260706_232244_flow_correctness_gpu1.log/json/md
+logs/flow/20260706_232244_flow_correctness_gpu2.log/json/md
+logs/flow/20260706_232244_flow_correctness_gpu3.log/json/md
+```
+
+逐序列结果：
+
+| Sequence | Count | Flow err px | No-flow err px | Minus-flow err px | Flow/No | Better than No | Better than Minus | FB err px | Flow mag px |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0007_04 | 8296992 | 0.3663 | 0.5934 | 1.1038 | 0.6173 | 0.6311 | 0.7882 | 0.0280 | 0.5616 |
+| 0019_10 | 8296992 | 1.9007 | 2.9220 | 5.1822 | 0.6505 | 0.7862 | 0.9076 | 0.4904 | 2.5619 |
+| 0044_11 | 8296992 | 0.4206 | 0.4494 | 0.7155 | 0.9361 | 0.6281 | 0.7859 | 0.0494 | 0.3921 |
+| 0051_09 | 8296992 | 0.9745 | 1.2877 | 2.2861 | 0.7568 | 0.6427 | 0.8067 | 0.1059 | 1.1828 |
+| 0206_04 | 8296992 | 0.5576 | 0.8078 | 1.4374 | 0.6902 | 0.6740 | 0.8217 | 0.0579 | 0.7371 |
+| 0813_05 | 8296992 | 1.1182 | 1.1096 | 2.1359 | 1.0078 | 0.5033 | 0.7538 | 0.1903 | 1.2038 |
+
+加权平均：
+
+| Count | Flow err px | No-flow err px | Minus-flow err px | Flow/No | Flow/Minus | Better than No | Better than Minus | FB err px | Flow mag px |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 49781952 | 0.8897 | 1.1950 | 2.1435 | 0.7764 | 0.4374 | 0.6442 | 0.8107 | 0.1537 | 1.1065 |
+
+结论：
+
+```text
+当前 flow 方向整体是正确的。
+
+证据:
+1. 加权平均 flow endpoint error = 0.8897 px，
+   小于 no-flow error = 1.1950 px。
+2. flow endpoint error 远小于 minus-flow error = 2.1435 px，
+   说明不是反方向。
+3. 64.42% 顶点样本中 forward flow 优于 no-flow；
+   81.07% 顶点样本中 forward flow 优于 minus-flow。
+
+例外:
+0813_05 上 flow err = 1.1182 px，
+no-flow err = 1.1096 px，
+二者几乎持平，说明该序列光流对 SMPL 同点投影没有明显帮助，
+可能受快速运动、外观/遮挡、Farneback 质量或 SMPL 投影误差影响。
+```
+
+后续判断：
+
+```text
+flow 没有效果不应优先归因于方向写反或完全没采到。
+更可能的问题是:
+1. 2D flow 统计特征转成 Gaussian-level condition 后信息损失较大；
+2. 多视角平均把局部方向信号抹平；
+3. Farneback 在部分序列/边界/遮挡区域质量不足；
+4. Nonrigid MLP 没有合适机制把 2D flow residual 映射成 3D Delta x。
+```
+
+## 2026-07-06 Flow failure mode 四卡诊断
+
+用户要求继续用四张卡排查 flow 没有效果是否来自：
+
+```text
+1. 2D flow 统计特征转成 Gaussian-level condition 后信息损失；
+2. 多视角平均抹平局部方向；
+3. Farneback 在遮挡 / 边界质量不足；
+4. MLP 缺少把 2D residual 映射到 3D Delta x 的有效机制。
+```
+
+新增只读诊断脚本：
+
+```text
+scripts/diagnose_flow_failure_modes.py
+```
+
+四卡 tmux 分配：
+
+```text
+GPU0: 0007_04 0019_10
+GPU1: 0044_11
+GPU2: 0051_09
+GPU3: 0206_04 0813_05
+```
+
+诊断日志：
+
+```text
+logs/flow/20260706_234404_flow_failure_diag_gpu0.log/json/md
+logs/flow/20260706_234404_flow_failure_diag_gpu1.log/json/md
+logs/flow/20260706_234404_flow_failure_diag_gpu2.log/json/md
+logs/flow/20260706_234404_flow_failure_diag_gpu3.log/json/md
+logs/flow/20260706_234404_flow_failure_diag_merged.json
+logs/flow/20260706_234404_flow_failure_diag_merged.md
+```
+
+逐序列结果：
+
+| Seq | Flow/No | Better No | FB px | High-FB | Boundary F/No | NonBoundary F/No | MV mean | MV low<0.5 | KNN mean | KNN low<0.5 | dPSNR |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0007_04 | 0.6173 | 0.6311 | 0.0280 | 0.0007 | 0.5235 | 0.7333 | 0.5987 | 0.3488 | 0.5863 | 0.3715 | 0.0140 |
+| 0019_10 | 0.6505 | 0.7862 | 0.4904 | 0.1316 | 0.6563 | 0.6196 | 0.7307 | 0.2509 | 0.7364 | 0.2418 | -0.0378 |
+| 0044_11 | 0.9361 | 0.6281 | 0.0494 | 0.0043 | 0.8383 | 1.0450 | 0.3237 | 0.7916 | 0.3202 | 0.8269 | 0.0028 |
+| 0051_09 | 0.7568 | 0.6427 | 0.1059 | 0.0126 | 0.7110 | 0.8372 | 0.6849 | 0.2930 | 0.6723 | 0.2976 | 0.0073 |
+| 0206_04 | 0.6902 | 0.6740 | 0.0579 | 0.0077 | 0.5866 | 0.9393 | 0.4106 | 0.6361 | 0.4332 | 0.6120 | -0.0101 |
+| 0813_05 | 1.0078 | 0.5033 | 0.1903 | 0.0414 | 0.9104 | 1.2982 | 0.5328 | 0.4792 | 0.5548 | 0.4358 | 0.0438 |
+
+加权 / 平均汇总：
+
+| Count | Flow/No | Better No | FB px | High-FB | Boundary F/No | NonBoundary F/No | MV mean | MV low<0.5 | KNN mean | KNN low<0.5 | dPSNR | dSSIM | dLPIPS |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 49781952 | 0.7445 | 0.6442 | 0.1537 | 0.0330 | 0.6994 | 0.8402 | 0.5469 | 0.4666 | 0.5505 | 0.4643 | 0.0034 | 0.000014 | -0.000021 |
+
+结论：
+
+```text
+1. 光流方向和基础采样不是主问题。
+   Flow/No = 0.7445，说明 forward flow 总体比 no-flow 更接近同一 SMPL vertex 的下一帧投影。
+
+2. Farneback 边界质量不是全局主瓶颈。
+   Boundary Flow/No = 0.6994，反而好于 NonBoundary Flow/No = 0.8402。
+   但 0019_10 的 High-FB ratio = 0.1316，0813_05 的 Flow/No = 1.0078，
+   说明个别快速 / 遮挡 / 复杂外观序列仍有光流质量问题。
+
+3. 多视角方向抹平是主要问题之一。
+   Multi-view consistency mean = 0.5469，
+   MV low<0.5 = 0.4666。
+   也就是接近一半可见顶点在多视角平均后方向一致性很低。
+
+4. Gaussian KNN 聚合会有信息衰减，但不是比多视角平均更严重的单独问题。
+   KNN consistency mean = 0.5505，
+   KNN low<0.5 = 0.4643，
+   和 multi-view consistency 基本一致。
+
+5. MLP 使用机制大概率也是瓶颈。
+   flow_v2 相对 flow_zero_v2 的平均提升只有:
+   dPSNR = +0.0034,
+   dSSIM = +0.000014,
+   dLPIPS = -0.000021。
+   在 flow 本身 endpoint 有效的情况下，指标几乎不动，
+   说明现有 concat flow feature 很难被 non-rigid MLP 稳定转成 3D Delta x 收益。
+```
+
+下一步建议：
+
+```text
+不要继续单纯增强 flow 数值尺度。
+如果继续 flow，应该改机制:
+1. 保留 view-wise flow tokens，不做简单多视角平均；
+2. 用 camera-ray-aware / view-direction-aware encoder，把 2D flow 转成与 3D 方向相关的特征；
+3. 只在 high-motion / boundary Gaussian 上启用 gated residual adapter；
+4. 0044_11、0206_04 这类 MV consistency 很低的序列作为反例重点观察。
+```
+
+## 2026-07-06 为什么当前 flow 做多视角平均
+
+当前代码位置：
+
+```text
+scene/dataset_readers.py::_build_dna_train_flow_features
+gaussian_renderer/__init__.py
+nets/mlp_delta_non_rigid.py
+```
+
+当前流程：
+
+```text
+1. 对 DNA train views 逐视角计算 Farneback forward flow: frame t-1 -> frame t。
+2. 把 SMPL vertex 在上一帧投影到每个 train view。
+3. 在投影点采样 2D flow。
+4. 对同一个 pose_id / vertex_id，把多个 train views 的 flow 统计成一个 view-agnostic feature。
+5. renderer 里再把 vertex-level flow feature 通过 KNN mean / mean_max 聚合到 Gaussian。
+6. NonrigidDeformer 的 FlowEncoder 接收每个 Gaussian 一个统一 flow embedding。
+```
+
+为什么一开始用了多视角平均：
+
+```text
+1. 保证 train/test 公平:
+   novel view / test view 不能使用真实图像光流。
+   如果渲染某个 novel view 时用该 view 的前后帧图像算 flow，
+   就等于引入测试图像信息，和 baseline 不公平。
+
+2. 保持 motion condition 和视角无关:
+   SeqAvatar 的 non-rigid deformation 本质上预测 3D Gaussian 的 Delta x / Delta s / Delta r，
+   这些形变应该是同一 pose 下对所有相机共享的。
+   多视角平均后得到的是每个 SMPL vertex 一个统一 motion condition，
+   方便所有 camera 复用。
+
+3. 形状和原 STMS 接口一致:
+   当前 cond_dict 里保存的是:
+   seq_flow_conds: [vertex_num, feature_dim]
+   renderer 再取:
+   seq_flow_conds[vert_ids] -> KNN 聚合 -> [num_gaussian, feature_dim]
+   这样最小改动就能接到 NonrigidDeformer。
+
+4. 多视角可见性不一致:
+   某个 vertex 在不同 train view 中可能可见、遮挡、出界。
+   平均 / max / std 是一种简单鲁棒统计，避免单个视角噪声过大。
+```
+
+但诊断显示，多视角平均会带来明显问题：
+
+```text
+Multi-view consistency mean = 0.5469
+MV low<0.5 = 0.4666
+```
+
+也就是接近一半顶点在多视角平均后方向一致性很低，说明 2D flow 方向确实被不同相机视角抵消或压扁。
+
+是否可以不平均：
+
+```text
+可以，但不能直接用当前渲染 view 的真实 flow。
+原因是 novel/test view 没有允许使用的 GT flow，直接用会泄漏测试图像信息。
+```
+
+更合理的替代设计：
+
+```text
+1. View-wise flow tokens:
+   把 flow feature 从:
+   [pose, vertex, C]
+   改成:
+   [pose, vertex, V_train, C]
+   不在 dataset reader 里提前平均。
+
+2. View-direction-aware attention:
+   对当前渲染相机，根据 camera direction / ray direction / SMPL vertex normal
+   从 V_train 个 flow token 中自适应加权。
+   这样仍然只使用 train views 的 flow，不用 test view 图像。
+
+3. Confidence-aware top-k:
+   用 forward-backward consistency、可见性、视角夹角选择 top-k train views，
+   再做 attention 或 weighted sum。
+
+4. 保留 mean/std/consistency 作为辅助统计:
+   不把它作为唯一 flow，而是作为 token quality / gate input。
+```
+
+结论：
+
+```text
+多视角平均不是理论上必须的。
+它是为了公平性、接口简单、视角无关 3D 形变和鲁棒性做的工程折中。
+当前实验说明这个折中损失了太多方向信息。
+下一步如果继续 flow，应该从 view-wise token + view-aware aggregation 做起，
+而不是继续放大平均后的 flow 数值。
+```
+
+## 2026-07-06 view-wise token + view-aware aggregation 具体改动
+
+核心张量：
+
+```text
+当前:
+flow_feature_map: [pose_num, vertex_num, C]
+seq_flow_conds:   [vertex_num, C]
+Gaussian query:   [N, C]
+
+建议:
+flow_feature_map: [pose_num, vertex_num, V_train, C]
+seq_flow_conds:   [vertex_num, V_train, C]
+Gaussian query:   [N, V_train, C] 或 [N, K, V_train, C] 后聚合
+```
+
+这里的：
+
+```text
+pose      = 当前帧 id
+vertex    = SMPL / SMPL-X 顶点 id
+V_train   = 只来自训练视角，例如 DNA 的 24 个 train views: [0,2,...,46]
+C         = 每个视角的 flow feature，例如 [u, v, mag, fb_conf, visibility, view_dir...]
+N         = 当前渲染使用的 Gaussian 数量
+K         = 每个 Gaussian 的 SMPL KNN 顶点数
+```
+
+需要改的位置：
+
+```text
+1. scene/dataset_readers.py::_build_dna_train_flow_features
+   当前在 view loop 里累加 u_sum/v_sum/mag_sum/count，
+   最后写成 [pose, vertex, C]。
+   新版本应该为每个 view_id 单独写入:
+   features[pose_id, valid_idx, view_slot, :] = per-view feature
+   同时保存:
+   train_view ids
+   visibility mask
+   confidence / fb_error
+   train camera center or view direction metadata
+
+2. scene/dataset_readers.py::readDNARenderingInfo
+   当前 motion_cond_options["flow_feature_map"] 是 [P,V,C]。
+   新增 flow_feature_mode 或 flow_view_agg:
+   flow_feature_map 变成 [P,V,V_train,C]。
+   flow_vertex_feature_dim 仍表示单视角 C，不是 V_train*C。
+
+3. scene/dataset_readers.py::readCamerasDNARendering
+   当前:
+   seq_flow_conds = flow_map[flow_pose_id]  # [vertex_num, C]
+   新版本:
+   seq_flow_conds = flow_map[flow_pose_id]  # [vertex_num, V_train, C]
+   cond_dict[pose_index]["seq_flow_conds"] 保留 view 维。
+
+4. gaussian_renderer/__init__.py
+   当前:
+   knn_flow = seq_flow_conds[vert_ids, :]  # [N, K, C]
+   query_pts_flow_conds = knn_flow.mean(dim=2)  # [N, C]
+
+   新版本:
+   knn_flow = seq_flow_conds[vert_ids, :]  # [N, K, V_train, C]
+   先做 KNN 聚合:
+   vertex/view token = knn_flow.mean(dim=2)  # [N, V_train, C]
+   然后传给 NonrigidDeformer。
+
+5. gaussian_renderer/__init__.py 还要把当前渲染相机信息传给 deformer
+   例如:
+   current_camera_center
+   current ray direction / Gaussian-to-camera direction
+   或当前 view id / train view camera centers
+   用于 view-aware attention。
+
+6. nets/mlp_delta_non_rigid.py::NonrigidDeformer
+   当前 FlowEncoder 是:
+   Linear(C -> flow_cond_dim)
+   输入 [N,C]。
+
+   新版本建议新增:
+   FlowTokenEncoder: Linear(C + view_geometry_dim -> D)
+   FlowViewAttention: query=current_view_geometry, key=train_view_geometry/token, value=flow token
+   输出:
+   flow_feats: [N, flow_cond_dim]
+
+   之后仍然保持原接口:
+   feats.append(flow_feats)
+   或 gated residual adapter。
+
+7. arguments/__init__.py 和 scripts/exps_dnarendering.sh
+   新增 ablation 名称，例如:
+   flow_view_token
+   flow_view_token_gate
+   新增参数:
+   --flow_view_token
+   --flow_view_topk
+   --flow_view_attn_dim
+   --flow_view_use_conf
+```
+
+公平性原则：
+
+```text
+可以使用 train views 计算出来的 flow tokens。
+不能在 novel/test view 上用该 view 的真实前后帧图像计算 flow。
+view-aware aggregation 只能根据当前相机几何信息去选择 train-view tokens，
+不能读取当前 test image。
+```
+
+推荐最小消融：
+
+```text
+flow_view_token_zero:
+  保留同样网络容量，但 flow tokens 全 0。
+
+flow_view_token:
+  [pose, vertex, V_train, C] + view-aware attention。
+
+flow_view_token_gate:
+  在 flow_view_token 基础上，只通过 zero-init gated residual 影响 Delta x。
+```
+
+## 2026-07-06 view-wise token 快速 headroom 验证
+
+用户问能不能快速验证：
+
+```text
+[pose, vertex, V_train, C] 是否有用。
+```
+
+新增只读诊断脚本：
+
+```text
+scripts/diagnose_flow_view_token_headroom.py
+```
+
+诊断方式：
+
+```text
+不训练网络，不使用 novel/test views。
+只用 DNA train views。
+
+把 train views 拆成:
+source views: [0,4,8,...,44]
+held-out validation train views: [2,6,10,...,46]
+
+source views 上计算 per-view flow token。
+用每个 source view 的相机投影 Jacobian J，把 2D flow 约束写成:
+
+J_i Delta X ≈ flow_i
+
+比较两种求解:
+
+1. collapsed:
+   先把不同 source views 的 flow/Jacobian 平均，
+   再解 Delta X。
+   这模拟提前压扁 view 维度。
+
+2. viewwise:
+   保留每个 source view 的独立 token，
+   stack 多个 J_i 和 flow_i 后最小二乘解 Delta X。
+   这模拟 [pose, vertex, V_train, C] 中的 view-wise 信息被利用。
+
+最后把 Delta X 投影到 held-out validation train views，
+比较和真实当前帧 SMPL vertex 投影的 endpoint error。
+```
+
+四卡快速运行：
+
+```text
+logs/flow/20260706_235505_flow_view_headroom_gpu0.log/json/md
+logs/flow/20260706_235505_flow_view_headroom_gpu1.log/json/md
+logs/flow/20260706_235505_flow_view_headroom_gpu2.log/json/md
+logs/flow/20260706_235505_flow_view_headroom_gpu3.log/json/md
+logs/flow/20260706_235505_flow_view_headroom_merged.json
+logs/flow/20260706_235505_flow_view_headroom_merged.md
+```
+
+设置：
+
+```text
+pose_step = 5
+max_vertices = 2048
+scale = 0.25
+use_conf_weight = True
+```
+
+结果：
+
+| Seq | No px | Collapsed px | Viewwise px | Best-conf px | SMPL oracle px | Viewwise/No | Viewwise/Collapsed |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 0007_04 | 0.5907 | 26.9525 | 0.2964 | 0.4063 | 0.0000 | 0.5017 | 0.0110 |
+| 0019_10 | 3.0843 | 105.1044 | 1.8264 | 2.2496 | 0.0000 | 0.5922 | 0.0174 |
+| 0044_11 | 0.4276 | 30.8881 | 0.3367 | 0.4145 | 0.0000 | 0.7873 | 0.0109 |
+| 0051_09 | 1.3197 | 143.4352 | 0.8485 | 1.0389 | 0.0000 | 0.6429 | 0.0059 |
+| 0206_04 | 0.7869 | 88.5781 | 0.4583 | 0.6901 | 0.0000 | 0.5824 | 0.0052 |
+| 0813_05 | 0.9718 | 85.4189 | 0.8296 | 0.9798 | 0.0000 | 0.8537 | 0.0097 |
+
+汇总：
+
+| Count | No px | Collapsed px | Viewwise px | Best-conf px | Viewwise/No | Best-conf/No | Viewwise/Collapsed |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2514240 | 1.1968 | 79.4921 | 0.7660 | 0.9632 | 0.6400 | 0.8048 | 0.0096 |
+
+结论：
+
+```text
+1. [pose, vertex, V_train, C] 有明显信息价值。
+   viewwise endpoint error = 0.7660 px，
+   no-motion endpoint error = 1.1968 px，
+   viewwise/no-motion = 0.6400。
+   说明只用 train views 的 view-wise flow token，
+   已经能在 held-out train views 上恢复更合理的 3D motion。
+
+2. collapsed 极差，说明不能把不同视角的 2D flow/Jacobian 提前平均。
+   collapsed endpoint error = 79.4921 px，
+   viewwise/collapsed = 0.0096。
+   这个结果非常明确地支持:
+   不应该把 view 维度压成一个 view-agnostic vector。
+
+3. best-conf 单视角也比 no-motion 好，但弱于 multi-view viewwise。
+   best-conf/no-motion = 0.8048，
+   viewwise/no-motion = 0.6400。
+   说明只选一个最高置信视角不如保留多个 view tokens 后联合使用。
+
+4. 这个实验是 headroom 诊断，不等价于最终训练一定提升。
+   但它证明了:
+   flow 信息本身不是没用，
+   主要问题是当前网络把多视角 flow 过早压缩/平均，
+   导致方向和几何约束丢失。
+```
+
+下一步：
+
+```text
+可以做正式消融:
+
+flow_view_token_zero
+flow_view_token
+flow_view_token_gate
+
+其中 flow_view_token 应该保留:
+[pose, vertex, V_train, C]
+
+并在 NonrigidDeformer 中用 view-aware attention / camera-ray-aware encoder
+把 view-wise 2D token 聚合成每个 Gaussian 的 flow embedding。
+```
+
+## 2026-07-07 flow_view_token 六序列正式实验启动
+
+用户要求：
+
+```text
+进行六个序列的完整 [pose, vertex, V_train, C] 消融实验，并给出评价指标。
+随后要求先开 tmux 启动代码。
+```
+
+已实现独立消融：
+
+```text
+scripts/exps_dnarendering.sh flow_view_token
+```
+
+核心改动：
+
+```text
+1. 新增参数:
+   --flow_view_token
+   --flow_view_attn_dim
+
+2. 数据 cache:
+   scene/dataset_readers.py 新增 _build_dna_train_flow_view_token_features
+   flow_feature_map: [pose, vertex, V_train, 4]
+   4 个 channel = [flow_u, flow_v, flow_magnitude, forward_backward_confidence]
+
+3. renderer:
+   gaussian_renderer/__init__.py
+   KNN 只聚合 SMPL 顶点维:
+   [N, K, V_train, C] -> [N, V_train, C]
+   不再平均 V_train。
+
+4. view-aware aggregation:
+   nets/mlp_delta_non_rigid.py 新增 FlowViewTokenEncoder
+   使用当前相机方向和 train-view 相机方向做 attention，
+   输出统一 flow_feats: [B, N, flow_cond_dim]。
+
+5. baseline 和旧 flow 实验不受影响:
+   只有 --flow_view_token 打开时才走新分支。
+```
+
+smoke test：
+
+```text
+0007_04, iterations=1, SEQAVATAR_SKIP_LOAD_TEST_CAMERAS=1
+结果: 训练 1 iter 成功，说明数据读取、cache、renderer、deformer 前向均通过。
+```
+
+正式 tmux run：
+
+```text
+RUN_TIME = 20260707_002336
+
+GPU0: 0007_04 0019_10
+GPU1: 0044_11
+GPU2: 0051_09
+GPU3: 0206_04 0813_05
+```
+
+主日志：
+
+```text
+logs/flow/20260707_002336_DNA-Rendering_flow_view_token_gpu0.log
+logs/flow/20260707_002336_DNA-Rendering_flow_view_token_gpu1.log
+logs/flow/20260707_002336_DNA-Rendering_flow_view_token_gpu2.log
+logs/flow/20260707_002336_DNA-Rendering_flow_view_token_gpu3.log
+```
+
+实验参数：
+
+```text
+FLOW_VIEW_TOKEN = 1
+FLOW_FEATURE_DIM = 4
+FLOW_COND_DIM = 64
+FLOW_VIEW_ATTN_DIM = 64
+FLOW_IMAGE_SCALE = 0.25
+FLOW_MAG_SCALE = 100
+FLOW_KNN_AGG = mean
+FLOW_ADAPTER_MODE = concat
+iterations = 25000
+densify_until_iter = 1500
+seq_len = 8
+seq_xyz_knn = 8
+time_step_num = 3
+```
+
+当前状态：
+
+```text
+四个 tmux session 已启动:
+fvt_gpu0
+fvt_gpu1
+fvt_gpu2
+fvt_gpu3
+
+启动日志显示参数正确，任务正在运行。
+```
+
+## 2026-07-07 flow_view_token 首轮运行状态
+
+用户询问：
+
+```text
+跑完了吗，结果怎么样
+```
+
+结论：
+
+```text
+没有完整跑完六个序列。
+首轮 run = 20260707_002336 中，3 个序列完成，2 个序列训练失败，1 个序列未启动。
+```
+
+完成序列：
+
+| Seq | PSNR | SSIM | LPIPS |
+|---|---:|---:|---:|
+| 0007_04 | 29.4403 | 0.958643 | 0.043546 |
+| 0019_10 | 35.3097 | 0.981567 | 0.019743 |
+| 0051_09 | 28.5804 | 0.970688 | 0.031388 |
+
+相对 flow_v2 的变化：
+
+| Seq | dPSNR | dSSIM | dLPIPS |
+|---|---:|---:|---:|
+| 0007_04 | -0.1432 | +0.000085 | -0.001172 |
+| 0019_10 | +0.1210 | +0.000873 | -0.001692 |
+| 0051_09 | +0.0460 | +0.000089 | -0.000177 |
+
+失败序列：
+
+```text
+0044_11:
+  训练约 1400 iter 时 OOM。
+  报错位置在 knn_cuda:
+  torch.cuda.OutOfMemoryError: Tried to allocate 2.39 GiB.
+
+0206_04:
+  训练约 4100 iter 时 CUDA illegal memory access。
+  报错发生在 loss.backward()，大概率也是高点数/显存压力后的 CUDA 异常。
+
+0813_05:
+  因 GPU3 上 0206_04 失败后脚本退出，未启动。
+```
+
+判断：
+
+```text
+flow_view_token 在已完成的 3 个序列上不是一致提升:
+0007_04 PSNR 下降，但 LPIPS 变好；
+0019_10 和 0051_09 三项基本正向。
+
+这说明 view-wise token 有一定潜力，
+但当前 concat 版本显存压力太大，不能直接作为六序列稳定版本。
+```
+
+下一步：
+
+```text
+建议做更省显存的 flow_view_token_gate:
+1. flow_feats 不 concat 到主 MLP 输入；
+2. 用 zero-init gated residual 只修正 Delta x；
+3. flow_cond_dim / flow_view_attn_dim 可先降到 32；
+4. 对 0044_11、0206_04、0813_05 重跑。
+
+这样更接近“附加 flow residual adapter”，也更公平稳定。
+```
+
+## 2026-07-07 flow_view_token_gate 省显存重跑
+
+用户要求：
+
+```text
+改成更省显存的方法重跑六个序列
+```
+
+新增消融模式：
+
+```bash
+bash scripts/exps_dnarendering.sh flow_view_token_gate
+```
+
+相比 `flow_view_token` 的省显存改动：
+
+```text
+FLOW_ADAPTER_MODE = gated_residual
+FLOW_COND_DIM = 32
+FLOW_VIEW_ATTN_DIM = 32
+IMAGE_DATA_DEVICE = cpu
+```
+
+含义：
+
+```text
+1. view-wise flow token 仍然使用 [u, v, mag, fb_conf]。
+2. 不再把 flow embedding concat 到主 non-rigid MLP 输入。
+3. 改为 zero-init FlowResidualAdapter，只对 Delta x 做 gated residual 修正。
+4. 降低 flow token encoder/attention 维度，减少激活显存。
+5. 图片默认放 CPU，降低训练时 GPU 常驻显存。
+```
+
+短测：
+
+```text
+RUN_TIME = 20260707_fvtg_smoke
+GPU = 2
+SEQ = 0007_04
+ITER = 1
+
+结果：train + render 均通过。
+```
+
+正式 run：
+
+```text
+RUN_TIME = 20260707_130935
+
+GPU2: 0007_04 0019_10 0044_11
+GPU3: 0051_09 0206_04 0813_05
+```
+
+主日志：
+
+```text
+logs/flow/20260707_130935_DNA-Rendering_flow_view_token_gate_gpu2.log
+logs/flow/20260707_130935_DNA-Rendering_flow_view_token_gate_gpu3.log
+```
+
+当前状态：
+
+```text
+tmux session:
+fvtg_gpu2
+fvtg_gpu3
+
+两个 session 已启动，参数检查正确，正在训练首个序列。
+GPU0/GPU1 有其他 Python 进程占用，未使用。
+```
+
+### flow_view_token_gate 的方法含义
+
+核心创新点：
+
+```text
+把多训练视角光流从“平均成一个弱特征”，改成“view-wise token + view-aware aggregation”。
+每个 Gaussian/query point 保留来自不同训练相机的 flow token，
+再根据当前渲染视角和训练视角的方向关系，自适应选择更可信的视角 token。
+```
+
+当前实现：
+
+```text
+renderer:
+  seq_flow_conds[pose, vertex, V_train, 4]
+  4 channels = [u, v, mag, fb_conf]
+  先对 KNN vertex 维度 mean，得到 [query_point, V_train, 4]
+  同时计算 current view direction 和 train view direction
+
+FlowViewTokenEncoder:
+  输入 [flow token, train_dir, current_dir, cos(current_dir, train_dir)]
+  value_mlp 产生每个训练视角的 flow embedding
+  score_mlp 产生视角权重
+  score 加 log(conf)，降低低置信 flow 的权重
+  softmax 后加权求和，得到当前视角相关的 flow embedding
+
+NonrigidDeformer:
+  baseline motion branch 仍输出原始 Delta x
+  flow embedding 不 concat 到主 MLP
+  用 zero-init FlowResidualAdapter 输出 residual Delta x
+  最终 Delta x = Delta x_base + gate * residual_flow
+```
+
+相比 `flow_view_token` 的优化：
+
+```text
+1. 避免多视角平均抹平方向信息；
+2. 引入当前视角相关的动态视角选择；
+3. 用 flow confidence 抑制低质量 Farneback flow；
+4. flow 只修正 Delta x，不直接影响 rotation/scaling；
+5. residual adapter zero-init，初始接近 baseline；
+6. 不把 flow embedding concat 到主 MLP，降低显存和对 baseline 表达的扰动；
+7. flow_cond_dim / flow_view_attn_dim 从 64 降到 32，降低激活显存；
+8. 图片放 CPU，降低 GPU 常驻显存。
+```
+
+### flow 不 concat 后如何进入网络
+
+`flow_view_token_gate` 中，光流不进入主 MLP 的输入拼接：
+
+```text
+features = [x_emb, pose_feats, seq_pose_feats, seq_xyz_feats]
+h = main_mlp(features)
+Delta x_base = gaussian_warp(h)
+```
+
+光流单独进入一条 residual adapter：
+
+```text
+flow_feats = FlowViewTokenEncoder(flow_tokens, current_dirs, train_dirs)
+flow_residual = FlowResidualAdapter([h, flow_feats])
+Delta x = Delta x_base + flow_gate * flow_residual
+```
+
+其中：
+
+```text
+flow_gate 由 flow magnitude * flow confidence 得到，
+用于让高运动/高置信区域更强地使用 flow residual。
+```
+
+因此光流不是被丢弃，而是从“主 MLP 条件输入”改成了“Delta x 后置残差修正”。
+
+### 这里 token 的作用
+
+`flow_view_token_gate` 里的 token 不是 motion-token/codebook 里的可学习离散 token。
+
+这里的 token 指：
+
+```text
+同一个 pose、同一个 SMPL vertex，在不同训练相机视角下观测到的一组 flow feature。
+```
+
+形状：
+
+```text
+seq_flow_conds: [pose, vertex, V_train, 4]
+4 = [flow_u, flow_v, flow_magnitude, forward_backward_confidence]
+```
+
+作用：
+
+```text
+1. 保留每个训练视角自己的 flow 观测，避免直接多视角平均。
+2. 让网络根据当前 novel view 和各训练 view 的方向关系选择更相关的 token。
+3. 让低 confidence 的 token 在 softmax score 中被压低。
+4. 聚合后得到一个 current-view-aware 的 flow_feats，用于修正 Delta x。
+```
+
+可以理解为：
+
+```text
+token = view-specific flow observation
+token aggregation = 当前视角下的多视角 flow 选择/融合
+```
+
+### 为什么以前做多视角平均，现在不直接平均
+
+非 token 版 flow 的设计目标是得到一个固定长度的 Gaussian/vertex-level condition：
+
+```text
+[pose, vertex, C]
+```
+
+所以构造时会把多个训练视角的 flow 统计成 mean/max/std/conf 等特征：
+
+```text
+mean_u, mean_v, mean_mag, max_mag, std_mag, mean_conf
+```
+
+这样做的原因：
+
+```text
+1. 形状简单，和原 SeqAvatar 的 per-vertex/per-Gaussian condition 接口兼容；
+2. 显存和计算量低；
+3. 多视角平均能抑制单个视角的 Farneback 噪声；
+4. 不需要在 non-rigid MLP 中显式建模相机视角关系。
+```
+
+问题：
+
+```text
+1. 不同相机下 2D flow 方向本来就不在同一个坐标系；
+2. 正负方向可能互相抵消；
+3. 遮挡/边界错误 flow 会被混进平均值；
+4. novel view 更接近某几个 train view，但平均后无法偏向这些视角；
+5. 最终只剩一个弱统计量，局部方向信息损失明显。
+```
+
+`flow_view_token_gate` 不再直接平均训练视角维度：
+
+```text
+[pose, vertex, V_train, 4]
+```
+
+保留每个训练视角自己的 token，再用：
+
+```text
+current_dir
+train_dir
+cos(current_dir, train_dir)
+flow confidence
+```
+
+做 view-aware softmax aggregation。这样当前 novel view 可以更依赖相近/可信的训练视角，而不是把所有训练视角一视同仁平均。
+
+注意：
+
+```text
+当前仍然对 KNN vertex 维度做 mean，这是空间局部聚合；
+不直接平均的是 train-view 维度，这是多视角观测聚合。
+```
+
+### 测试视角是否参考接近训练视角
+
+是，但不是硬最近邻。
+
+渲染 novel/test view 时，renderer 会计算：
+
+```text
+current_dir = current_camera_center - query_point
+train_dir   = train_camera_center - query_point
+view_cos    = dot(current_dir, train_dir)
+```
+
+然后 `FlowViewTokenEncoder` 对每个训练视角的 token 预测 softmax weight：
+
+```text
+weight_v = softmax(score([flow_token_v, train_dir_v, current_dir, view_cos_v]) + log(conf_v))
+```
+
+因此当前测试视角可以更依赖：
+
+```text
+1. 视角方向更接近当前 view 的训练相机；
+2. flow confidence 更高的训练相机；
+3. flow token 内容更适合当前点的训练相机。
+```
+
+最终是 soft aggregation：
+
+```text
+flow_feats = sum_v weight_v * value_v
+```
+
+不是：
+
+```text
+直接选择最近的一个训练视角
+```
+
+权重计算细节：
+
+```text
+对每个 query point 和每个训练视角 v：
+
+current_dir = normalize(current_camera_center - point)
+train_dir_v = normalize(train_camera_center_v - point)
+view_cos_v = dot(current_dir, train_dir_v)
+
+x_v = [flow_token_v, train_dir_v, current_dir, view_cos_v]
+raw_score_v = score_mlp(x_v)
+score_v = raw_score_v + log(conf_v)
+weight_v = softmax(score_v over V_train)
+value_v = value_mlp(x_v)
+
+flow_feats = sum_v weight_v * value_v
+```
+
+因此：
+
+```text
+view_cos 提供“当前视角和训练视角是否接近”的几何信息；
+score_mlp 学习如何利用 flow/token/view 信息打分；
+log(conf) 是显式置信度 bias；
+softmax 保证所有训练视角权重和为 1。
+```
+
+### 光流是否参与训练
+
+光流参与训练和测试，但方式不同：
+
+```text
+训练阶段:
+  flow token 作为固定输入 condition 进入 renderer/non-rigid deformer
+  FlowViewTokenEncoder 和 FlowResidualAdapter 的参数参与反向传播
+  RGB/SSIM/LPIPS 等渲染 loss 会通过 Delta x 回传到 flow 分支参数
+
+测试阶段:
+  没有优化和反向传播
+  使用训练好的 FlowViewTokenEncoder/FlowResidualAdapter
+  根据当前测试视角聚合训练视角 flow token，前向预测 Delta x
+```
+
+需要区分：
+
+```text
+Farneback flow 特征本身是预计算/缓存的，不是可学习参数；
+学习的是如何编码、选择和使用这些 flow token 的网络参数。
+```
+
+因此它不是“只参与测试阶段优化”。测试阶段没有优化，只有 inference。
+
+### 测试视角权重是否造成数据泄露
+
+当前实现不使用测试图像或测试 GT 来计算 flow token/权重。
+
+flow token 构造：
+
+```text
+只遍历 train_view
+使用 train_view 下的前后帧图像计算 Farneback flow
+缓存为 [pose, vertex, V_train, 4]
+```
+
+测试/novel view 渲染时权重使用：
+
+```text
+current_camera_center
+train_camera_centers
+query_point
+flow_token/conf from train views
+```
+
+其中 `current_camera_center` 是渲染测试视角本来必须给定的相机参数，不是测试图像内容，也不是 GT 颜色/误差。
+
+因此：
+
+```text
+使用测试相机参数做 view-aware aggregation 是公平的；
+使用测试图像/测试 GT 计算 flow 或调权重才会构成泄露。
+```
+
+需要避免的情况：
+
+```text
+1. 用 test_view 的前后帧图像计算 flow token；
+2. 用 test GT 残差/指标动态选择训练视角；
+3. 训练过程中根据 test 指标调参并反复选择 checkpoint。
+```
+
+### FlowViewTokenEncoder 和 FlowResidualAdapter
+
+`FlowViewTokenEncoder`：
+
+```text
+作用：把 [query_point, V_train, 4] 的多训练视角 flow token
+编码成一个当前视角相关的 flow_feats。
+```
+
+内部有两条小 MLP：
+
+```text
+value_mlp:  把每个训练视角 token 编成 value embedding
+score_mlp:  给每个训练视角 token 打分
+```
+
+然后：
+
+```text
+weights = softmax(score over V_train)
+flow_feats = sum(weights * values)
+```
+
+`FlowResidualAdapter`：
+
+```text
+作用：把主 MLP 的隐藏特征 h 和 flow_feats 融合，
+预测一个只作用在 Delta x 上的 flow residual。
+```
+
+公式：
+
+```text
+flow_residual = FlowResidualAdapter([h, flow_feats])
+Delta x = Delta x_base + flow_gate * flow_residual
+```
+
+区别：
+
+```text
+FlowViewTokenEncoder 负责“怎么从多视角 flow 中提取当前视角相关特征”；
+FlowResidualAdapter 负责“怎么把这个 flow 特征转成 3D Gaussian 位移修正”。
+```
+
+### 为什么要选/融当前视角最有用的 flow_feats，以及是否发生在训练阶段
+
+需要做 view-aware flow fusion 的原因：
+
+```text
+同一个 3D 运动投影到不同相机后，2D flow 的方向和幅值可能不同；
+某些训练视角可能遮挡、边界错误或 Farneback flow 质量差；
+当前渲染视角通常更应该参考几何上相近且 flow 可信的训练视角。
+```
+
+训练阶段也会执行这一步：
+
+```text
+当前渲染视角 = 当前 sampled training camera
+FlowViewTokenEncoder 根据这个 training camera 的 current_dir
+对所有 train-view flow token 做 soft aggregation
+渲染 loss 反传，学习 score_mlp/value_mlp/FlowResidualAdapter
+```
+
+测试阶段也执行同一套逻辑：
+
+```text
+当前渲染视角 = novel/test camera
+使用训练好的 score_mlp/value_mlp/FlowResidualAdapter
+根据测试相机 current_dir 聚合 train-view flow token
+只前向推理，不反传、不优化
+```
+
+因此：
+
+```text
+训练阶段学习“什么样的视角/flow token 应该被使用”；
+测试阶段把这个学到的选择/融合规则应用到 novel view。
+```
+
+## 2026-07-07 flow_view_token_gate 六序列结果与退步分析
+
+正式 run：
+
+```text
+RUN_TIME = 20260707_130935
+metric source = final render.py novelview line
+```
+
+结果：
+
+| Seq | PSNR | SSIM | LPIPS*1000 |
+|---|---:|---:|---:|
+| 0007_04 | 29.317873255411783 | 0.9576325843731562 | 45.32317832733194 |
+| 0019_10 | 34.97342376708984 | 0.9803403884172439 | 20.895286307980616 |
+| 0044_11 | 32.742493375142416 | 0.9769579683740933 | 21.54705491072188 |
+| 0051_09 | 28.582598241170246 | 0.9710059568285941 | 30.98546270436297 |
+| 0206_04 | 31.151081736882528 | 0.9686013981699944 | 34.89717349099617 |
+| 0813_05 | 35.84581235249837 | 0.9863598431150118 | 18.668820274372894 |
+
+相对 `flow_v2` final render 的平均变化：
+
+```text
+dPSNR = -0.20612663957807756
+dSSIM = -0.0007268581125471537
+dLPIPS*1000 = +0.1745537414939887
+```
+
+判断：
+
+```text
+flow_view_token_gate 相比 flow_v2，PSNR/SSIM 整体退步；
+LPIPS 不是单调退步，0019_10/0044_11/0051_09 的 LPIPS 反而略好，
+但 0007_04/0206_04/0813_05 变差，平均也略差。
+```
+
+主要原因：
+
+```text
+1. gated residual 版本比 concat 版本更保守：
+   flow_feats 不进入主 MLP，只能通过 Delta x residual 起作用。
+
+2. FlowResidualAdapter zero-init，初始接近 baseline：
+   稳定、省显存，但也可能导致 flow 分支学习慢、贡献弱。
+
+3. flow_cond_dim / flow_view_attn_dim 从 64 降到 32：
+   降低显存的同时降低了 view token 表达容量。
+
+4. flow 只修正 Delta x，不修正 rotation/scaling：
+   如果 flow 对局部形变姿态、尺度也有帮助，这个版本用不上。
+
+5. 训练阶段 current view 是 train camera，测试阶段 current view 是 novel camera：
+   模型训练时容易依赖训练视角 token 的分布，
+   测试时需要用方向相似性插值到 novel view，泛化难度更高。
+
+6. 2D flow 到 3D Delta x 的映射仍然弱监督：
+   没有显式相机投影 Jacobian 或 3D 几何约束，
+   只靠 RGB/SSIM/LPIPS 反传学习，容易变成噪声 residual。
+
+7. 全图指标不一定能体现局部边界收益：
+   flow 最可能帮助 high-motion/boundary 区域，
+   但若对低运动区域产生轻微扰动，全图 PSNR/SSIM 会下降。
+```
+
+额外观察：
+
+```text
+日志里每个序列有两次 novelview 指标：
+1. train.py 内部 iteration 25000 eval；
+2. render.py 重载 checkpoint 后 final eval。
+
+flow_view_token_gate 的 final render 指标普遍低于 train 内部 eval，
+这个差距比 flow_v2 更明显，后续如果继续这条线，需要检查重载后 flow 分支、
+render 环境和训练内评估的口径差异。
+```
+
+### flow_view_token_gate 两次 novelview 指标为什么差很多
+
+同一序列会出现两行：
+
+```text
+train.py 内部评估:
+[ITER 25000] Evaluating novelview #120: L1 ... PSNR ... SSIM ... LPIPS ...
+
+render.py 最终评估:
+[ITER 25000] Evaluating novelview #120: PSNR ... SSIM ... LPIPS ...
+```
+
+区别：
+
+```text
+第一行来自 train.py 的 training_report，
+直接用当前内存中的 gaussians，对每个 viewpoint 重新调用 render，
+因此 flow_view_token_gate 会根据当前 viewpoint.camera_center 重新计算 view-aware flow_feats 和 d_nonrigid。
+```
+
+```text
+第二行来自 render.py，
+会先尝试读取 smpl_rot/iteration_25000/smpl_rot.pickle，
+如果存在 cached_pose，就复用缓存的 d_nonrigid/transforms/translation。
+```
+
+问题：
+
+```text
+smpl_rot 缓存目前只按 pose_id 存：
+smpl_rot[name][viewpoint.pose_id]
+
+但 flow_view_token_gate 的 d_nonrigid 不是只由 pose_id 决定，
+它还依赖当前渲染相机的 camera_center/current_dir。
+同一个 pose 在不同 novel view 下应该有不同的 flow_feats/d_nonrigid。
+```
+
+所以：
+
+```text
+baseline / flow_v2:
+  d_nonrigid 基本只依赖 pose/time/Gaussian，本身 view-independent，
+  按 pose_id 缓存是安全的，两次指标接近。
+
+flow_view_token_gate:
+  d_nonrigid 依赖当前 view direction，是 view-dependent，
+  按 pose_id 复用缓存会把某个 view 的 d_nonrigid 用到其他 view，
+  final render.py 指标会被错误拉低。
+```
+
+因此当前 final render.py 指标偏低不一定代表模型本身退步那么多，
+而是包含了 view-dependent deformer 与 pose-only cache 不兼容的问题。
+
+修复方式：
+
+```text
+1. 对 flow_view_token 模式，render.py 禁用 smpl_rot cached d_nonrigid，逐 view 重新计算；
+或
+2. 把 smpl_rot 缓存 key 从 pose_id 改成 view/image 级别，例如 image_name；
+或
+3. 缓存时保存每个 viewpoint 的 d_nonrigid，而不是每个 pose_id 一个。
+```
+
+## 2026-07-07 flow_view_token_gate 修复缓存后重新 render
+
+修复：
+
+```text
+render.py 中新增 use_cached_smpl_rot 参数。
+当 dataset.flow_view_token=True 时，禁用 smpl_rot.pickle 的 cached d_nonrigid，
+逐 view 重新计算 view-dependent deformation。
+```
+
+原因：
+
+```text
+flow_view_token_gate 的 d_nonrigid 依赖 current camera direction；
+不能按 pose_id 复用缓存。
+```
+
+重新 render：
+
+```text
+RUN_TIME = 20260707_130935_fixcache2
+只重新 render，不重新训练。
+
+GPU2: 0007_04 0019_10 0044_11
+GPU3: 0051_09 0206_04 0813_05
+```
+
+日志：
+
+```text
+logs/flow/20260707_130935_fixcache2_DNA-Rendering_flow_view_token_gate_rerender_gpu2.log
+logs/flow/20260707_130935_fixcache2_DNA-Rendering_flow_view_token_gate_rerender_gpu3.log
+```
+
+新指标：
+
+| Seq | PSNR | SSIM | LPIPS*1000 |
+|---|---:|---:|---:|
+| 0007_04 | 29.471817175547283 | 0.9583463624119758 | 45.00734627557298 |
+| 0019_10 | 35.17044941584269 | 0.9809931129217148 | 20.727710674206416 |
+| 0044_11 | 33.11308762232463 | 0.9782881841063499 | 21.24801229995986 |
+| 0051_09 | 28.70041260719299 | 0.9714362770318985 | 30.91066910419613 |
+| 0206_04 | 31.28996731440226 | 0.9691613654295603 | 34.758041085054474 |
+| 0813_05 | 36.10585141181946 | 0.987101540962855 | 18.47232578632732 |
+
+平均：
+
+```text
+PSNR = 32.30859759118822
+SSIM = 0.9742211404773924
+LPIPS*1000 = 28.520684204219535
+```
+
+相对 `flow_v2` final render 的平均变化：
+
+```text
+dPSNR = +0.0002571635776102236
+dSSIM = +0.000011259151829590142
+dLPIPS*1000 = -0.024258056914225296
+```
+
+结论：
+
+```text
+修复缓存后，flow_view_token_gate 并没有明显退步；
+整体和 flow_v2 基本持平，LPIPS 平均略好。
+之前 final render 大幅下降主要是 pose-only smpl_rot cache 与 view-dependent flow deformer 不兼容导致的评估错误。
+```
+
+### flow_view_token_gate 变好说明什么
+
+当前结果说明：
+
+```text
+1. view-wise flow token 这条线没有被否定；
+2. 多视角直接平均确实可能损失信息，按当前视角做 view-aware aggregation 是可行的；
+3. pose-only smpl_rot cache 不适用于 view-dependent deformation，评估时必须逐 view 重新计算；
+4. gated residual 版本虽然省显存、稳定，但全图平均指标只和 flow_v2 基本持平，还不能证明是强主线。
+```
+
+它没有说明：
+
+```text
+1. flow_view_token_gate 已经明显优于 baseline/flow_v2；
+2. token attention 一定学到了理想的视角选择；
+3. flow 对所有区域都有帮助。
+```
+
+下一步改进方向：
+
+```text
+1. 先做 high-motion subset / boundary subset，判断收益是否集中在快速运动和边界区域；
+2. 记录 view-token attention 的 entropy/max weight/nearest-view correlation，确认是否真的在选择视角；
+3. 保留省显存 gated residual，但提高 flow_cond_dim 或 adapter 容量，测试 32 -> 64；
+4. 让 flow residual 只作用于高 motion/high confidence 区域，降低低运动区域扰动；
+5. 引入 2D-to-3D 几何提示，例如投影 Jacobian / camera ray direction，把 2D flow 更明确地映射到 Delta x；
+6. 对 render 缓存做长期修复：view-dependent 方法按 image_name 缓存，view-independent 方法仍按 pose_id 缓存。
+```
+
+## 2026-07-07 output 清理
+
+用户要求：
+
+```text
+删除之前失败的 flow/acc/dif 相关 output，只保留 logs 里面的日志
+```
+
+执行策略：
+
+```text
+只删除 output 下失败/临时目录：
+1. smoke 输出；
+2. 缺少 final novelview metrics 的中断 run；
+3. 缺少 point_cloud 或 mlp_ckpt 的不完整 run。
+
+不删除 logs/flow、logs/acc、logs/dif。
+不删除已有完整指标的正式 output。
+```
+
+已删除的主要目录：
+
+```text
+0007_04: flow_smoke, flow_smoke_real, flow_v2_smoke, flow_view_token_smoke,
+         flow_view_token_gate/20260707_fvtg_smoke
+
+0044_11: dif_delta_x_mean failed runs, dif_delta_x_sample failed runs,
+         dif_uncert_loss_smoke, flow_view_token/20260707_002336
+
+0206_04: dif/20260704_001710, dif_delta_x_mean/sample failed runs,
+         dif_sigma_rectifier/20260704_042454,
+         flow_dir_zero/20260706_112355, flow_res/20260706_112355,
+         flow_res_gate_smoke, flow_view_token/20260707_002336
+
+0813_05: flow_res_zero/20260706_112355
+```
+
+复查：
+
+```text
+NO_FAILED_OR_TEMP_CANDIDATES_LEFT
+logs/flow、logs/acc、logs/dif 保留。
+```
+
+## 2026-07-07 output 二次清理
+
+用户要求：
+
+```text
+只保留 flow_view_token_gate 的实验输出，删除 flow/acc/dif 相关的其他 output。
+```
+
+执行结果：
+
+```text
+删除 output 下所有 flow*/acc/fix_stms/dif* 相关实验目录，
+但保留 flow_view_token_gate。
+日志目录 logs/flow、logs/acc、logs/dif 未删除。
+```
+
+复查后 output 中相关目录只剩：
+
+```text
+output/DNA-Rendering/0007_04/flow_view_token_gate
+output/DNA-Rendering/0019_10/flow_view_token_gate
+output/DNA-Rendering/0044_11/flow_view_token_gate
+output/DNA-Rendering/0051_09/flow_view_token_gate
+output/DNA-Rendering/0206_04/flow_view_token_gate
+output/DNA-Rendering/0813_05/flow_view_token_gate
+```
+
+日志复查：
+
+```text
+main_flow_log_ok
+rerender_log_ok
+acc_log_ok
+dif_log_ok
+```
+
+## 2026-07-07 flow_view_token_gate 局部子集和 attention 诊断
+
+用户要求：
+
+```text
+在 tmux 做 high-motion subset / boundary subset；
+判断 flow 有没有价值；
+同时记录 view-token attention：
+entropy、max weight、top-k view usage、
+selected view 和 nearest train view 的相关性。
+```
+
+新增只读诊断脚本：
+
+```text
+scripts/evaluate_flow_view_token_gate_subsets.py
+```
+
+脚本不训练、不改 renderer、不改 checkpoint：
+
+```text
+subset 模式：
+读取已有 baseline PNG 和 flow_view_token_gate PNG；
+high-motion subset 用 DNA train flow token cache 的 mag * conf 对 frame 排序；
+boundary subset 用 bkgd_mask 生成边界带。
+
+attention 模式：
+加载 flow_view_token_gate checkpoint；
+forward novelview；
+读取 FlowViewTokenEncoder.last_weights；
+统计 entropy_norm、max_weight、top-k usage、
+selected view 与 nearest train view 的关系。
+```
+
+运行方式：
+
+```text
+tmux: fvtg_diag_gpu2 / fvtg_diag_gpu3
+GPU2: 0007_04, 0019_10, 0044_11 attention + 六序列 subset
+GPU3: 0051_09, 0206_04, 0813_05 attention
+```
+
+输出日志：
+
+```text
+logs/flow/flow_view_token_gate_subset_20260707_160037_subset.json
+logs/flow/flow_view_token_gate_subset_20260707_160037_subset.md
+logs/flow/flow_view_token_gate_attention_20260707_160037_gpu2_attention.json
+logs/flow/flow_view_token_gate_attention_20260707_160037_gpu2_attention.md
+logs/flow/flow_view_token_gate_attention_20260707_160037_gpu3_attention.json
+logs/flow/flow_view_token_gate_attention_20260707_160037_gpu3_attention.md
+logs/flow/flow_view_token_gate_subset_attention_20260707_160037_merged.json
+logs/flow/flow_view_token_gate_subset_attention_20260707_160037_merged.md
+```
+
+六序列 subset 结果：
+
+```text
+all:
+baseline PSNR 32.25455351260485, SSIM 0.9743331546584765, LPIPS*1000 28.55004239827394
+flow     PSNR 32.18954739313431, SSIM 0.9741886029640834, LPIPS*1000 28.501162896605415
+delta    PSNR -0.06500611947053869, SSIM -0.00014455169439309135, LPIPS*1000 -0.048879501668527836
+
+high-motion:
+baseline PSNR 31.816132939739635, SSIM 0.9715528466083385, LPIPS*1000 32.13674513864573
+flow     PSNR 31.70018997332318, SSIM 0.9712258701523145, LPIPS*1000 32.15430939087161
+delta    PSNR -0.11594296641645485, SSIM -0.0003269764560239752, LPIPS*1000 +0.017564252225883703
+
+boundary:
+baseline PSNR 19.844870144273074, SSIM 0.9894559508396519, LPIPS*1000 14.294008712103178
+flow     PSNR 19.785800990500412, SSIM 0.9894067363606558, LPIPS*1000 14.27487218752503
+delta    PSNR -0.05906915377266131, SSIM -0.000049214478996084665, LPIPS*1000 -0.019136524578146005
+```
+
+attention 六序列平均：
+
+```text
+entropy_norm: 0.9781577215108005
+max_weight: 0.07108042868772026
+selected_nearest_match: 0.08605143038020864
+selected_view_cos: -0.16560650191875145
+nearest_view_cos: 0.9369059992257713
+weight_viewcos_pearson: -0.21634913811475961
+```
+
+逐序列 attention 现象：
+
+```text
+0007_04 entropy_norm 0.9944346647079051, max_weight 0.05678725287646341
+0019_10 entropy_norm 0.9709747840588128, max_weight 0.079299566416514
+0044_11 entropy_norm 0.9343957852540513, max_weight 0.1108438794252653
+0051_09 entropy_norm 0.9927370700935279, max_weight 0.05714296248626083
+0206_04 entropy_norm 0.9841622875313027, max_weight 0.06463934109404752
+0813_05 entropy_norm 0.9922417374192029, max_weight 0.057769569827770484
+```
+
+结论：
+
+```text
+1. high-motion subset 没有提升，PSNR/SSIM 下降，LPIPS 也没有改善。
+2. boundary subset 没有稳定提升，只是 LPIPS 极小幅下降，PSNR/SSIM 仍下降。
+3. attention entropy_norm 接近 1，max_weight 接近均匀分布 1/24=0.0417，说明 view-token 权重很分散。
+4. selected_nearest_match 只有约 8.6%，selected_view_cos 远低于 nearest_view_cos，且平均 weight_viewcos_pearson 为负。
+5. 当前 flow_view_token_gate 没有学会选择几何上接近或可信的训练视角。
+```
+
+后续判断：
+
+```text
+当前 flow_view_token_gate 的提升/变化不能证明 flow 主线有效；
+它更像是弱 residual 容量带来的全局微调，而不是有效的 view-aware optical-flow motion condition。
+
+如果继续 flow，应优先修 attention 机制：
+1. 加 view-geometry prior，例如 score += beta * view_cos；
+2. 加 temperature 或 entropy regularization，避免近似均匀；
+3. 做 top-k sparse view selection；
+4. 显式监督/约束 selected view 接近 nearest/high-confidence view；
+5. 或放弃 view-token，回到更直接的 high-motion gated residual / acceleration motion 分支。
+```

@@ -20,6 +20,10 @@ set -euo pipefail
 #   bash scripts/exps_dnarendering.sh dif_uncert_loss
 #   bash scripts/exps_dnarendering.sh fix_stms
 #   bash scripts/exps_dnarendering.sh acc
+#   bash scripts/exps_dnarendering.sh flow_zero
+#   bash scripts/exps_dnarendering.sh flow
+#   bash scripts/exps_dnarendering.sh flow_view_token
+#   bash scripts/exps_dnarendering.sh flow_view_token_gate
 #   bash scripts/exps_dnarendering.sh token_fix_stms
 #   bash scripts/exps_dnarendering.sh token_acc
 #   bash scripts/exps_dnarendering.sh token_part
@@ -72,6 +76,19 @@ dif_debug_interval=${DIF_DEBUG_INTERVAL:-1000}
 fix_stms=0
 use_acc_cond=0
 seq_acc_cond_dim=${SEQ_ACC_COND_DIM:-64}
+use_flow_cond=0
+flow_cond_mode=${FLOW_COND_MODE:-flow}
+flow_cond_dim=${FLOW_COND_DIM:-32}
+flow_feature_dim=${FLOW_FEATURE_DIM:-3}
+flow_image_scale=${FLOW_IMAGE_SCALE:-0.25}
+flow_mag_scale=${FLOW_MAG_SCALE:-1.0}
+flow_feature_mode=${FLOW_FEATURE_MODE:-mean_max_conf}
+flow_knn_agg=${FLOW_KNN_AGG:-mean}
+flow_adapter_mode=${FLOW_ADAPTER_MODE:-concat}
+flow_gate_alpha=${FLOW_GATE_ALPHA:-0.0}
+flow_gate_temp=${FLOW_GATE_TEMP:-0.5}
+flow_view_token=${FLOW_VIEW_TOKEN:-0}
+flow_view_attn_dim=${FLOW_VIEW_ATTN_DIM:-32}
 use_motion_token=0
 motion_token_mode=none
 motion_token_num=${MOTION_TOKEN_NUM:-32}
@@ -176,6 +193,234 @@ case "$MODE" in
         use_acc_cond=1
         final_eval_only=1
         ;;
+    flow_zero)
+        experiment_name=flow_zero
+        part_moe_enabled=0
+        use_flow_cond=1
+        flow_cond_mode=zero
+        final_eval_only=1
+        ;;
+    flow)
+        experiment_name=flow
+        part_moe_enabled=0
+        use_flow_cond=1
+        flow_cond_mode=flow
+        final_eval_only=1
+        ;;
+    flow_zero_v2)
+        experiment_name=flow_zero_v2
+        part_moe_enabled=0
+        use_flow_cond=1
+        flow_cond_mode=zero
+        flow_feature_mode=mean_max_std
+        flow_mag_scale=100
+        flow_feature_dim=3
+        flow_knn_agg=mean
+        final_eval_only=1
+        ;;
+    flow_v2)
+        experiment_name=flow_v2
+        part_moe_enabled=0
+        use_flow_cond=1
+        flow_cond_mode=flow
+        flow_feature_mode=mean_max_std
+        flow_mag_scale=100
+        flow_feature_dim=3
+        flow_knn_agg=mean
+        final_eval_only=1
+        ;;
+    flow_view_token_zero)
+        experiment_name=flow_view_token_zero
+        part_moe_enabled=0
+        use_flow_cond=1
+        flow_cond_mode=zero
+        flow_view_token=1
+        flow_feature_dim=4
+        flow_feature_mode=uv_mag_std
+        flow_mag_scale=100
+        flow_knn_agg=mean
+        flow_cond_dim=${FLOW_COND_DIM:-64}
+        flow_view_attn_dim=${FLOW_VIEW_ATTN_DIM:-64}
+        final_eval_only=1
+        ;;
+    flow_view_token)
+        experiment_name=flow_view_token
+        part_moe_enabled=0
+        use_flow_cond=1
+        flow_cond_mode=flow
+        flow_view_token=1
+        flow_feature_dim=4
+        flow_feature_mode=uv_mag_std
+        flow_mag_scale=100
+        flow_knn_agg=mean
+        flow_cond_dim=${FLOW_COND_DIM:-64}
+        flow_view_attn_dim=${FLOW_VIEW_ATTN_DIM:-64}
+        final_eval_only=1
+        ;;
+    flow_view_token_gate)
+        experiment_name=flow_view_token_gate
+        part_moe_enabled=0
+        use_flow_cond=1
+        flow_cond_mode=flow
+        flow_view_token=1
+        flow_feature_dim=4
+        flow_feature_mode=uv_mag_std
+        flow_mag_scale=100
+        flow_knn_agg=mean
+        flow_cond_dim=${FLOW_COND_DIM:-32}
+        flow_view_attn_dim=${FLOW_VIEW_ATTN_DIM:-32}
+        flow_adapter_mode=gated_residual
+        flow_gate_alpha=${FLOW_GATE_ALPHA:-0.0}
+        flow_gate_temp=${FLOW_GATE_TEMP:-0.5}
+        IMAGE_DATA_DEVICE=${IMAGE_DATA_DEVICE:-cpu}
+        final_eval_only=1
+        ;;
+    flow_zero_v2_dim64)
+        experiment_name=flow_zero_v2_dim64
+        part_moe_enabled=0
+        use_flow_cond=1
+        flow_cond_mode=zero
+        flow_cond_dim=64
+        flow_feature_mode=mean_max_std
+        flow_mag_scale=100
+        flow_feature_dim=3
+        flow_knn_agg=mean
+        final_eval_only=1
+        ;;
+    flow_v2_dim64)
+        experiment_name=flow_v2_dim64
+        part_moe_enabled=0
+        use_flow_cond=1
+        flow_cond_mode=flow
+        flow_cond_dim=64
+        flow_feature_mode=mean_max_std
+        flow_mag_scale=100
+        flow_feature_dim=3
+        flow_knn_agg=mean
+        final_eval_only=1
+        ;;
+    flow_zero_v2_scale05)
+        experiment_name=flow_zero_v2_scale05
+        part_moe_enabled=0
+        use_flow_cond=1
+        flow_cond_mode=zero
+        flow_cond_dim=64
+        flow_image_scale=0.5
+        flow_feature_mode=mean_max_std
+        flow_mag_scale=100
+        flow_feature_dim=3
+        flow_knn_agg=mean
+        final_eval_only=1
+        ;;
+    flow_v2_scale05)
+        experiment_name=flow_v2_scale05
+        part_moe_enabled=0
+        use_flow_cond=1
+        flow_cond_mode=flow
+        flow_cond_dim=64
+        flow_image_scale=0.5
+        flow_feature_mode=mean_max_std
+        flow_mag_scale=100
+        flow_feature_dim=3
+        flow_knn_agg=mean
+        final_eval_only=1
+        ;;
+    flow_zero_v2_knn)
+        experiment_name=flow_zero_v2_knn
+        part_moe_enabled=0
+        use_flow_cond=1
+        flow_cond_mode=zero
+        flow_cond_dim=64
+        flow_feature_mode=mean_max_std
+        flow_mag_scale=100
+        flow_feature_dim=6
+        flow_knn_agg=mean_max
+        final_eval_only=1
+        ;;
+    flow_v2_knn)
+        experiment_name=flow_v2_knn
+        part_moe_enabled=0
+        use_flow_cond=1
+        flow_cond_mode=flow
+        flow_cond_dim=64
+        flow_feature_mode=mean_max_std
+        flow_mag_scale=100
+        flow_feature_dim=6
+        flow_knn_agg=mean_max
+        final_eval_only=1
+        ;;
+    flow_dir_zero)
+        experiment_name=flow_dir_zero
+        part_moe_enabled=0
+        use_flow_cond=1
+        flow_cond_mode=zero
+        flow_feature_mode=uv_mag_std
+        flow_mag_scale=100
+        flow_feature_dim=6
+        flow_knn_agg=mean
+        final_eval_only=1
+        ;;
+    flow_dir)
+        experiment_name=flow_dir
+        part_moe_enabled=0
+        use_flow_cond=1
+        flow_cond_mode=flow
+        flow_feature_mode=uv_mag_std
+        flow_mag_scale=100
+        flow_feature_dim=6
+        flow_knn_agg=mean
+        final_eval_only=1
+        ;;
+    flow_res_zero)
+        experiment_name=flow_res_zero
+        part_moe_enabled=0
+        use_flow_cond=1
+        flow_cond_mode=zero
+        flow_feature_mode=reproj_residual
+        flow_mag_scale=100
+        flow_feature_dim=8
+        flow_knn_agg=mean
+        final_eval_only=1
+        ;;
+    flow_res)
+        experiment_name=flow_res
+        part_moe_enabled=0
+        use_flow_cond=1
+        flow_cond_mode=flow
+        flow_feature_mode=reproj_residual
+        flow_mag_scale=100
+        flow_feature_dim=8
+        flow_knn_agg=mean
+        final_eval_only=1
+        ;;
+    flow_res_gate_zero)
+        experiment_name=flow_res_gate_zero
+        part_moe_enabled=0
+        use_flow_cond=1
+        flow_cond_mode=zero
+        flow_feature_mode=reproj_residual
+        flow_mag_scale=100
+        flow_feature_dim=8
+        flow_knn_agg=mean
+        flow_adapter_mode=gated_residual
+        flow_gate_alpha=0.0
+        flow_gate_temp=0.5
+        final_eval_only=1
+        ;;
+    flow_res_gate)
+        experiment_name=flow_res_gate
+        part_moe_enabled=0
+        use_flow_cond=1
+        flow_cond_mode=flow
+        flow_feature_mode=reproj_residual
+        flow_mag_scale=100
+        flow_feature_dim=8
+        flow_knn_agg=mean
+        flow_adapter_mode=gated_residual
+        flow_gate_alpha=0.0
+        flow_gate_temp=0.5
+        final_eval_only=1
+        ;;
     token_fix_stms)
         experiment_name=token_fix_stms
         part_moe_enabled=0
@@ -248,7 +493,7 @@ case "$MODE" in
         ;;
     *)
         echo "[ERROR] Unknown mode: $MODE"
-        echo "        Supported modes: orginal, msti, amc_pair, amc_causal, tdp, tdp_semantic, tdp_adapter, dif, dif_sigma_rectifier, dif_sigma_rectifier_v2, dif_uncert_loss, fix_stms, acc, token_fix_stms, token_acc, token_part, token_codebook, token_full, use_part_moe, part_moe_leg, part_moe_leg_msti, part_moe_foot, part_moe_arm"
+        echo "        Supported modes: orginal, msti, amc_pair, amc_causal, tdp, tdp_semantic, tdp_adapter, dif, dif_sigma_rectifier, dif_sigma_rectifier_v2, dif_uncert_loss, fix_stms, acc, flow_zero, flow, flow_view_token_zero, flow_view_token, flow_view_token_gate, token_fix_stms, token_acc, token_part, token_codebook, token_full, use_part_moe, part_moe_leg, part_moe_leg_msti, part_moe_foot, part_moe_arm"
         exit 1
         ;;
 esac
@@ -265,6 +510,7 @@ AMC_LOG_DIR=${AMC_LOG_DIR:-/media/image/mxz/human/SeqAvatar/logs/AMC}
 TDP_LOG_DIR=${TDP_LOG_DIR:-/media/image/mxz/human/SeqAvatar/logs/TDP}
 DIF_LOG_DIR=${DIF_LOG_DIR:-/media/image/mxz/human/SeqAvatar/logs/dif}
 ACC_LOG_DIR=${ACC_LOG_DIR:-/media/image/mxz/human/SeqAvatar/logs/acc}
+FLOW_LOG_DIR=${FLOW_LOG_DIR:-/media/image/mxz/human/SeqAvatar/logs/flow}
 TOKEN_LOG_DIR=${TOKEN_LOG_DIR:-/media/image/mxz/human/SeqAvatar/logs/token}
 GLOBAL_LOG_SUFFIX=${GLOBAL_LOG_SUFFIX:-${LOG_SUFFIX:-}}
 if [ -n "$GLOBAL_LOG_SUFFIX" ] && [[ "$GLOBAL_LOG_SUFFIX" != _* ]]; then
@@ -286,8 +532,8 @@ skip_load_test_cameras=${SKIP_LOAD_TEST_CAMERAS:-0}
 image_data_device=${IMAGE_DATA_DEVICE:-cuda}
 
 # ================= 训练参数 =================
-iter=25000
-densify_until_iter=1500
+iter=${ITER:-25000}
+densify_until_iter=${DENSIFY_UNTIL_ITER:-1500}
 
 
 seq_len=8
@@ -295,8 +541,8 @@ seq_xyz_knn=8
 time_step_num=3
 max_time_step=3
 minimal_time_step=1
-if [ $((use_msti + use_amc_pair + use_amc_causal + use_tdp + use_motion_token + use_acc_cond)) -gt 1 ]; then
-    echo "[ERROR] use_msti, use_amc_pair, use_amc_causal, use_tdp, use_motion_token, and use_acc_cond are mutually exclusive."
+if [ $((use_msti + use_amc_pair + use_amc_causal + use_tdp + use_motion_token + use_acc_cond + use_flow_cond)) -gt 1 ]; then
+    echo "[ERROR] use_msti, use_amc_pair, use_amc_causal, use_tdp, use_motion_token, use_acc_cond, and use_flow_cond are mutually exclusive."
     exit 1
 elif [ "$use_msti" = "1" ]; then
     if [ "$msti_mode" = "lite" ]; then
@@ -366,6 +612,9 @@ elif [ "$use_dif" = "1" ]; then
 elif [ "$fix_stms" = "1" ] || [ "$use_acc_cond" = "1" ]; then
     GLOBAL_LOG_DIR="$ACC_LOG_DIR"
     GLOBAL_LOG_FILE="$GLOBAL_LOG_DIR/${RUN_TIME}_DNA-Rendering_${experiment_name}${GLOBAL_LOG_SUFFIX}.log"
+elif [ "$use_flow_cond" = "1" ]; then
+    GLOBAL_LOG_DIR="$FLOW_LOG_DIR"
+    GLOBAL_LOG_FILE="$GLOBAL_LOG_DIR/${RUN_TIME}_DNA-Rendering_${experiment_name}${GLOBAL_LOG_SUFFIX}.log"
 elif [ "$use_motion_token" = "1" ]; then
     GLOBAL_LOG_DIR="$TOKEN_LOG_DIR"
     GLOBAL_LOG_FILE="$GLOBAL_LOG_DIR/${RUN_TIME}_DNA-Rendering_${experiment_name}${GLOBAL_LOG_SUFFIX}.log"
@@ -434,6 +683,19 @@ echo "[INFO] DIF_DEBUG_INTERVAL: $dif_debug_interval"
 echo "[INFO] FIX_STMS: $fix_stms"
 echo "[INFO] USE_ACC_COND: $use_acc_cond"
 echo "[INFO] SEQ_ACC_COND_DIM: $seq_acc_cond_dim"
+echo "[INFO] USE_FLOW_COND: $use_flow_cond"
+echo "[INFO] FLOW_COND_MODE: $flow_cond_mode"
+echo "[INFO] FLOW_COND_DIM: $flow_cond_dim"
+echo "[INFO] FLOW_FEATURE_DIM: $flow_feature_dim"
+echo "[INFO] FLOW_IMAGE_SCALE: $flow_image_scale"
+echo "[INFO] FLOW_MAG_SCALE: $flow_mag_scale"
+echo "[INFO] FLOW_FEATURE_MODE: $flow_feature_mode"
+echo "[INFO] FLOW_KNN_AGG: $flow_knn_agg"
+echo "[INFO] FLOW_ADAPTER_MODE: $flow_adapter_mode"
+echo "[INFO] FLOW_GATE_ALPHA: $flow_gate_alpha"
+echo "[INFO] FLOW_GATE_TEMP: $flow_gate_temp"
+echo "[INFO] FLOW_VIEW_TOKEN: $flow_view_token"
+echo "[INFO] FLOW_VIEW_ATTN_DIM: $flow_view_attn_dim"
 echo "[INFO] USE_MOTION_TOKEN: $use_motion_token"
 echo "[INFO] MOTION_TOKEN_MODE: $motion_token_mode"
 echo "[INFO] MOTION_TOKEN_NUM: $motion_token_num"
@@ -568,6 +830,27 @@ if [ "$use_acc_cond" = "1" ]; then
     )
 fi
 
+FLOW_ARGS=()
+if [ "$use_flow_cond" = "1" ]; then
+    FLOW_ARGS=(
+        --use_flow_cond
+        --flow_cond_mode "$flow_cond_mode"
+        --flow_cond_dim "$flow_cond_dim"
+        --flow_feature_dim "$flow_feature_dim"
+        --flow_image_scale "$flow_image_scale"
+        --flow_mag_scale "$flow_mag_scale"
+        --flow_feature_mode "$flow_feature_mode"
+        --flow_knn_agg "$flow_knn_agg"
+        --flow_adapter_mode "$flow_adapter_mode"
+        --flow_gate_alpha "$flow_gate_alpha"
+        --flow_gate_temp "$flow_gate_temp"
+        --flow_view_attn_dim "$flow_view_attn_dim"
+    )
+    if [ "$flow_view_token" = "1" ]; then
+        FLOW_ARGS+=(--flow_view_token)
+    fi
+fi
+
 TOKEN_ARGS=()
 if [ "$use_motion_token" = "1" ]; then
     TOKEN_ARGS=(
@@ -615,7 +898,7 @@ for SEQUENCE in "${SEQUENCES[@]}"; do
         fi
     fi
 
-    if [ "$use_msti" != "1" ] && [ "$use_amc_pair" != "1" ] && [ "$use_amc_causal" != "1" ] && [ "$use_tdp" != "1" ] && [ "$use_dif" != "1" ] && [ "$fix_stms" != "1" ] && [ "$use_acc_cond" != "1" ] && [ "$use_motion_token" != "1" ]; then
+    if [ "$use_msti" != "1" ] && [ "$use_amc_pair" != "1" ] && [ "$use_amc_causal" != "1" ] && [ "$use_tdp" != "1" ] && [ "$use_dif" != "1" ] && [ "$fix_stms" != "1" ] && [ "$use_acc_cond" != "1" ] && [ "$use_flow_cond" != "1" ] && [ "$use_motion_token" != "1" ]; then
         mkdir -p "$model_path/logs"
     fi
 
@@ -642,7 +925,7 @@ for SEQUENCE in "${SEQUENCES[@]}"; do
     echo "================================================="
 
     echo "[INFO] Training on GPU $GPU_id for sequence $SEQUENCE"
-    if [ "$use_msti" = "1" ] || [ "$use_amc_pair" = "1" ] || [ "$use_amc_causal" = "1" ] || [ "$use_tdp" = "1" ] || [ "$use_dif" = "1" ] || [ "$fix_stms" = "1" ] || [ "$use_acc_cond" = "1" ] || [ "$use_motion_token" = "1" ]; then
+    if [ "$use_msti" = "1" ] || [ "$use_amc_pair" = "1" ] || [ "$use_amc_causal" = "1" ] || [ "$use_tdp" = "1" ] || [ "$use_dif" = "1" ] || [ "$fix_stms" = "1" ] || [ "$use_acc_cond" = "1" ] || [ "$use_flow_cond" = "1" ] || [ "$use_motion_token" = "1" ]; then
         if env "${TRAIN_ENV[@]}" "$PYTHON_BIN" train.py \
             -s "$dataset_path" --eval --exp_name "$exp_name" \
             "${COMMON_TRAIN_ARGS[@]}" \
@@ -651,6 +934,7 @@ for SEQUENCE in "${SEQUENCES[@]}"; do
             "${TDP_ARGS[@]}" \
             "${DIF_ARGS[@]}" \
             "${ACC_ARGS[@]}" \
+            "${FLOW_ARGS[@]}" \
             "${TOKEN_ARGS[@]}" \
             "${PART_MOE_ARGS[@]}"
         then
@@ -673,13 +957,14 @@ for SEQUENCE in "${SEQUENCES[@]}"; do
             "${TDP_ARGS[@]}" \
             "${DIF_ARGS[@]}" \
             "${ACC_ARGS[@]}" \
+            "${FLOW_ARGS[@]}" \
             "${TOKEN_ARGS[@]}" \
             "${PART_MOE_ARGS[@]}" \
             2>&1 | tee "$model_path/logs/train_${SEQUENCE}_${experiment_name}.log"
     fi
 
     echo "[INFO] Evaluating on GPU $GPU_id for sequence $SEQUENCE"
-    if [ "$use_msti" = "1" ] || [ "$use_amc_pair" = "1" ] || [ "$use_amc_causal" = "1" ] || [ "$use_tdp" = "1" ] || [ "$use_dif" = "1" ] || [ "$fix_stms" = "1" ] || [ "$use_acc_cond" = "1" ] || [ "$use_motion_token" = "1" ]; then
+    if [ "$use_msti" = "1" ] || [ "$use_amc_pair" = "1" ] || [ "$use_amc_causal" = "1" ] || [ "$use_tdp" = "1" ] || [ "$use_dif" = "1" ] || [ "$fix_stms" = "1" ] || [ "$use_acc_cond" = "1" ] || [ "$use_flow_cond" = "1" ] || [ "$use_motion_token" = "1" ]; then
         if CUDA_VISIBLE_DEVICES=$GPU_id "$PYTHON_BIN" render.py \
             -s "$dataset_path" -m "$model_path" \
             "${COMMON_RENDER_ARGS[@]}" \
@@ -688,6 +973,7 @@ for SEQUENCE in "${SEQUENCES[@]}"; do
             "${TDP_ARGS[@]}" \
             "${DIF_ARGS[@]}" \
             "${ACC_ARGS[@]}" \
+            "${FLOW_ARGS[@]}" \
             "${TOKEN_ARGS[@]}" \
             "${PART_MOE_ARGS[@]}"
         then
@@ -710,6 +996,7 @@ for SEQUENCE in "${SEQUENCES[@]}"; do
             "${TDP_ARGS[@]}" \
             "${DIF_ARGS[@]}" \
             "${ACC_ARGS[@]}" \
+            "${FLOW_ARGS[@]}" \
             "${TOKEN_ARGS[@]}" \
             "${PART_MOE_ARGS[@]}" \
             2>&1 | tee "$model_path/logs/render_${SEQUENCE}_${experiment_name}.log"

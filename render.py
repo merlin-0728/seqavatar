@@ -28,7 +28,7 @@ from utils.loss_utils import ssim
 import lpips
 loss_fn_vgg = lpips.LPIPS(net='vgg').to(torch.device('cuda', torch.cuda.current_device()))
 
-def render_set(model_path, name, iteration, views, gaussians, pipeline, background):
+def render_set(model_path, name, iteration, views, gaussians, pipeline, background, use_cached_smpl_rot=True):
     render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
     gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
 
@@ -37,7 +37,9 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
 
     smpl_rot = {}
     smpl_rot_path = model_path + '/smpl_rot/' + f'iteration_{iteration}/' + 'smpl_rot.pickle'
-    if os.path.exists(smpl_rot_path):
+    if not use_cached_smpl_rot:
+        print("[Render] Disabled cached SMPL rotations for view-dependent deformation. Recomputing per view.")
+    elif os.path.exists(smpl_rot_path):
         with open(smpl_rot_path, 'rb') as handle:
             smpl_rot = pickle.load(handle)
     else:
@@ -131,11 +133,11 @@ def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParam
         background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
         if not skip_train:
-            render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, background)
+            render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, background, use_cached_smpl_rot=not getattr(dataset, "flow_view_token", False))
 
         if not skip_test:
             for key in scene.getTestCameras().keys():
-                render_set(dataset.model_path, key, scene.loaded_iter, scene.getTestCameras()[key], gaussians, pipeline, background)
+                render_set(dataset.model_path, key, scene.loaded_iter, scene.getTestCameras()[key], gaussians, pipeline, background, use_cached_smpl_rot=not getattr(dataset, "flow_view_token", False))
 
 if __name__ == "__main__":
     # Set up command line argument parser

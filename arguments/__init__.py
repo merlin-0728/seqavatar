@@ -106,6 +106,19 @@ class ModelParams(ParamGroup):
         self.fix_stms = False
         self.use_acc_cond = False
         self.seq_acc_cond_dim = 64
+        self.use_flow_cond = False
+        self.flow_cond_mode = "flow"
+        self.flow_cond_dim = 32
+        self.flow_feature_dim = 3
+        self.flow_image_scale = 0.25
+        self.flow_mag_scale = 1.0
+        self.flow_feature_mode = "mean_max_conf"
+        self.flow_knn_agg = "mean"
+        self.flow_adapter_mode = "concat"
+        self.flow_gate_alpha = 0.0
+        self.flow_gate_temp = 0.5
+        self.flow_view_token = False
+        self.flow_view_attn_dim = 32
         self.use_motion_token = False
         self.motion_token_mode = "none"
         self.motion_token_num = 32
@@ -189,6 +202,53 @@ def resolve_motion_condition_args(args):
     if tdp_debug_interval <= 0:
         raise ValueError(f"tdp_debug_interval must be positive, got {tdp_debug_interval}")
 
+    use_flow_cond = bool(getattr(args, "use_flow_cond", False))
+    flow_cond_mode = getattr(args, "flow_cond_mode", "flow") or "flow"
+    flow_cond_mode = str(flow_cond_mode).lower()
+    valid_flow_modes = {"flow", "zero"}
+    if use_flow_cond and flow_cond_mode not in valid_flow_modes:
+        raise ValueError(f"flow_cond_mode must be one of {sorted(valid_flow_modes)}, got {flow_cond_mode}")
+    flow_cond_dim = int(getattr(args, "flow_cond_dim", 32) or 32)
+    flow_feature_dim = int(getattr(args, "flow_feature_dim", 3) or 3)
+    flow_image_scale = float(getattr(args, "flow_image_scale", 0.25) or 0.25)
+    flow_mag_scale = float(getattr(args, "flow_mag_scale", 1.0) or 1.0)
+    flow_feature_mode = getattr(args, "flow_feature_mode", "mean_max_conf") or "mean_max_conf"
+    flow_feature_mode = str(flow_feature_mode).lower()
+    flow_knn_agg = getattr(args, "flow_knn_agg", "mean") or "mean"
+    flow_knn_agg = str(flow_knn_agg).lower()
+    flow_adapter_mode = getattr(args, "flow_adapter_mode", "concat") or "concat"
+    flow_adapter_mode = str(flow_adapter_mode).lower()
+    flow_gate_alpha = float(getattr(args, "flow_gate_alpha", 0.0) or 0.0)
+    flow_gate_temp = float(getattr(args, "flow_gate_temp", 0.5) or 0.5)
+    flow_view_token = bool(getattr(args, "flow_view_token", False))
+    flow_view_attn_dim = int(getattr(args, "flow_view_attn_dim", 32) or 32)
+    valid_flow_feature_modes = {"mean_max_conf", "mean_max_std", "uv_mag_std", "reproj_residual"}
+    valid_flow_knn_aggs = {"mean", "mean_max"}
+    valid_flow_adapter_modes = {"concat", "gated_residual"}
+    if use_flow_cond and flow_feature_mode not in valid_flow_feature_modes:
+        raise ValueError(f"flow_feature_mode must be one of {sorted(valid_flow_feature_modes)}, got {flow_feature_mode}")
+    if use_flow_cond and flow_knn_agg not in valid_flow_knn_aggs:
+        raise ValueError(f"flow_knn_agg must be one of {sorted(valid_flow_knn_aggs)}, got {flow_knn_agg}")
+    if use_flow_cond and flow_adapter_mode not in valid_flow_adapter_modes:
+        raise ValueError(f"flow_adapter_mode must be one of {sorted(valid_flow_adapter_modes)}, got {flow_adapter_mode}")
+    if flow_cond_dim <= 0:
+        raise ValueError(f"flow_cond_dim must be positive, got {flow_cond_dim}")
+    if flow_feature_dim <= 0:
+        raise ValueError(f"flow_feature_dim must be positive, got {flow_feature_dim}")
+    if not (0.0 < flow_image_scale <= 1.0):
+        raise ValueError(f"flow_image_scale must be in (0, 1], got {flow_image_scale}")
+    if flow_mag_scale <= 0:
+        raise ValueError(f"flow_mag_scale must be positive, got {flow_mag_scale}")
+    if flow_gate_temp <= 0:
+        raise ValueError(f"flow_gate_temp must be positive, got {flow_gate_temp}")
+    if flow_view_attn_dim <= 0:
+        raise ValueError(f"flow_view_attn_dim must be positive, got {flow_view_attn_dim}")
+    if flow_view_token:
+        if flow_feature_dim != 4:
+            raise ValueError(f"flow_view_token expects flow_feature_dim=4 ([u,v,mag,conf]), got {flow_feature_dim}")
+        if flow_knn_agg != "mean":
+            raise ValueError("flow_view_token currently supports flow_knn_agg=mean only.")
+
     use_dif = bool(getattr(args, "use_dif", False))
     dif_mode = getattr(args, "dif_mode", "peak") or "peak"
     dif_mode = str(dif_mode).lower()
@@ -263,6 +323,8 @@ def resolve_motion_condition_args(args):
         raise ValueError("use_motion_token is mutually exclusive with MSTI, AMC, and TDP ablations.")
     if use_acc_cond and any([use_msti, use_amc_pair, use_amc_causal, use_tdp, use_dif, use_motion_token]):
         raise ValueError("use_acc_cond is a standalone ablation and is mutually exclusive with MSTI, AMC, TDP, DIF, and token ablations.")
+    if use_flow_cond and any([use_msti, use_amc_pair, use_amc_causal, use_tdp, use_dif, use_motion_token, use_acc_cond]):
+        raise ValueError("use_flow_cond is a standalone ablation and is mutually exclusive with MSTI, AMC, TDP, DIF, token, and acc ablations.")
 
     motion_token_num = int(getattr(args, "motion_token_num", 32) or 32)
     motion_token_dim = int(getattr(args, "motion_token_dim", 64) or 64)
@@ -341,6 +403,19 @@ def resolve_motion_condition_args(args):
     args.tdp_gate_init_bias = tdp_gate_init_bias
     args.tdp_debug_stats = tdp_debug_stats
     args.tdp_debug_interval = tdp_debug_interval
+    args.use_flow_cond = use_flow_cond
+    args.flow_cond_mode = flow_cond_mode
+    args.flow_cond_dim = flow_cond_dim
+    args.flow_feature_dim = flow_feature_dim
+    args.flow_image_scale = flow_image_scale
+    args.flow_mag_scale = flow_mag_scale
+    args.flow_feature_mode = flow_feature_mode
+    args.flow_knn_agg = flow_knn_agg
+    args.flow_adapter_mode = flow_adapter_mode
+    args.flow_gate_alpha = flow_gate_alpha
+    args.flow_gate_temp = flow_gate_temp
+    args.flow_view_token = flow_view_token
+    args.flow_view_attn_dim = flow_view_attn_dim
     args.use_dif = use_dif
     args.dif_mode = dif_mode
     args.dif_sigma_init = dif_sigma_init
