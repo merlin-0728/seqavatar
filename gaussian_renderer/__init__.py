@@ -15,8 +15,7 @@ from utils.sh_utils import eval_sh
 
 def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor,
            scaling_modifier = 1.0, override_color = None, return_smpl_rot=False,
-           transforms=None, translation=None, d_nonrigid=None,
-           detach_geometry=False):
+           transforms=None, translation=None, d_nonrigid=None, iteration=None):
     """
     Render the scene with depth map output.
     """
@@ -69,75 +68,26 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor,
                 pose_conds = pc.cond_dict[pose_id]['pose_conds']
                 seq_pose_conds = pc.cond_dict[pose_id]['seq_pose_conds']
                 seq_xyz_conds = pc.cond_dict[pose_id]['seq_xyz_conds']
+                state_conds = None
+                if getattr(pc, "use_state", False) or getattr(pc, "use_state_warm", False):
+                    state_conds = pc.cond_dict[pose_id].get('state_conds', seq_pose_conds)
 
                 _, vert_ids = pc.custom_knn_near(pc.canon_vertices, means3D)
                 query_pts_delta_conds = seq_xyz_conds[vert_ids, :,:,:].permute(0,1,3,2,4,5).contiguous()
-                query_pts_acc_conds = None
-                if getattr(pc, "use_acc_cond", False) or getattr(pc, "motion_token_use_acc", False):
-                    seq_acc_conds = pc.cond_dict[pose_id].get('seq_acc_conds', None)
-                    if seq_acc_conds is None:
-                        raise RuntimeError("acc condition is enabled but seq_acc_conds is missing from cond_dict.")
-                    query_pts_acc_conds = seq_acc_conds[vert_ids, :,:,:].permute(0,1,3,2,4,5).contiguous()
-                query_pts_flow_conds = None
-                if getattr(pc, "use_flow_cond", False):
-                    seq_flow_conds = pc.cond_dict[pose_id].get('seq_flow_conds', None)
-                    if seq_flow_conds is None:
-                        raise RuntimeError("flow condition is enabled but seq_flow_conds is missing from cond_dict.")
-                    knn_flow = seq_flow_conds[vert_ids, :]
-                    if getattr(pc, "flow_view_token", False):
-                        query_pts_flow_conds = knn_flow.mean(dim=2).contiguous()
-                        train_centers = pc.cond_dict[pose_id].get('flow_train_camera_centers', None)
-                        if train_centers is None:
-                            raise RuntimeError("flow_view_token is enabled but flow_train_camera_centers is missing.")
-                        point_xyz = means3D.detach()
-                        query_pts_flow_current_dirs = torch.nn.functional.normalize(
-                            viewpoint_camera.camera_center.view(1, 1, 3) - point_xyz,
-                            dim=-1,
-                            eps=1e-6,
-                        )
-                        query_pts_flow_train_dirs = torch.nn.functional.normalize(
-                            train_centers.view(1, 1, train_centers.shape[0], 3) - point_xyz.unsqueeze(2),
-                            dim=-1,
-                            eps=1e-6,
-                        )
-                    else:
-                        query_pts_flow_current_dirs = None
-                        query_pts_flow_train_dirs = None
-                        flow_knn_agg = str(getattr(pc, "flow_knn_agg", "mean")).lower()
-                        if flow_knn_agg == "mean":
-                            query_pts_flow_conds = knn_flow.mean(dim=2).contiguous()
-                        elif flow_knn_agg == "mean_max":
-                            query_pts_flow_conds = torch.cat(
-                                [knn_flow.mean(dim=2), knn_flow.max(dim=2).values],
-                                dim=-1,
-                            ).contiguous()
-                        else:
-                            raise RuntimeError(f"Unsupported flow_knn_agg: {flow_knn_agg}")
-                else:
-                    query_pts_flow_current_dirs = None
-                    query_pts_flow_train_dirs = None
 
                 part_label = None
                 part_enabled = False
                 if getattr(pc, "use_part_moe", False):
                     part_enabled = pc.part_label_enabled
                     part_label = pc.get_part_label if part_enabled else None
-                elif getattr(pc, "motion_token_use_part", False):
-                    flat_vert_ids = vert_ids.long().reshape(-1)
-                    part_probs = pc.SMPL_NEUTRAL['weights'].index_select(0, flat_vert_ids)
-                    part_probs = part_probs.reshape(*vert_ids.shape, -1).mean(dim=2)
-                    part_label = part_probs.argmax(dim=-1)
-                    part_enabled = True
 
                 d_xyz, d_rotation, d_scaling = pc.non_rigid_deformer(
                     pos_embd,
                     pose_conds,
                     seq_pose_conds,
                     query_pts_delta_conds,
-                    seq_acc_conds=query_pts_acc_conds,
-                    seq_flow_conds=query_pts_flow_conds,
-                    seq_flow_current_dirs=query_pts_flow_current_dirs,
-                    seq_flow_train_dirs=query_pts_flow_train_dirs,
+                    state_conds=state_conds,
+                    iteration=iteration,
                     part_label=part_label,
                     part_enabled=part_enabled,
                     part_moe_alpha=getattr(pc, "part_moe_alpha", 0.0),
@@ -190,17 +140,6 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor,
             shs = pc.get_features
     else:
         colors_precomp = override_color
-
-    if detach_geometry:
-        means3D = means3D.detach()
-        means2D = means2D.detach()
-        opacity = opacity.detach()
-        if scales is not None:
-            scales = scales.detach()
-        if rotations is not None:
-            rotations = rotations.detach()
-        if cov3D_precomp is not None:
-            cov3D_precomp = cov3D_precomp.detach()
 
     # ------------------ rasterize RGB + depth ------------------
     rendered_image, radii, depth, alpha = rasterizer(

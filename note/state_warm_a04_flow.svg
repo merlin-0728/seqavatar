@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="640" viewBox="0 0 1180 640">
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#263238"/>
+    </marker>
+    <style>
+      text { font-family: Arial, Helvetica, sans-serif; fill: #172026; }
+      .title { font-size: 28px; font-weight: 700; }
+      .label { font-size: 18px; font-weight: 700; }
+      .small { font-size: 15px; }
+      .box { fill: #ffffff; stroke: #263238; stroke-width: 2; rx: 8; }
+      .base { fill: #e8f4ff; stroke: #1565c0; }
+      .state { fill: #fff4df; stroke: #bf6f00; }
+      .blend { fill: #eaf7ef; stroke: #2e7d32; }
+      .head { fill: #f3eefc; stroke: #6a45a3; }
+      .line { stroke: #263238; stroke-width: 2.3; fill: none; marker-end: url(#arrow); }
+      .dash { stroke: #546e7a; stroke-width: 2; stroke-dasharray: 8 6; fill: none; marker-end: url(#arrow); }
+      .note { fill: #f8fafc; stroke: #90a4ae; stroke-width: 1.5; rx: 8; }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1180" height="640" fill="#fbfcfe"/>
+  <text x="40" y="52" class="title">state_warm_a04 flow</text>
+  <text x="40" y="82" class="small">Weak motion-state modulation for the non-rigid MLP path</text>
+
+  <rect x="55" y="155" width="185" height="76" class="box"/>
+  <text x="92" y="188" class="label">Features</text>
+  <text x="82" y="214" class="small">Gaussian / pose / time</text>
+
+  <rect x="320" y="120" width="220" height="92" class="box base"/>
+  <text x="355" y="156" class="label">Baseline path</text>
+  <text x="350" y="183" class="small">original non-rigid MLP</text>
+  <text x="392" y="202" class="small">produces h_base</text>
+
+  <rect x="320" y="288" width="220" height="112" class="box state"/>
+  <text x="374" y="325" class="label">State MLP</text>
+  <text x="350" y="352" class="small">same feature input</text>
+  <text x="345" y="374" class="small">FiLM-modulated by</text>
+  <text x="363" y="396" class="small">gamma / beta</text>
+
+  <rect x="54" y="435" width="190" height="76" class="box"/>
+  <text x="78" y="468" class="label">seq_pose_conds</text>
+  <text x="80" y="494" class="small">motion condition window</text>
+
+  <rect x="320" y="458" width="220" height="92" class="box state"/>
+  <text x="342" y="494" class="label">Motion state branch</text>
+  <text x="350" y="521" class="small">TemporalMotionStateEncoder</text>
+  <text x="378" y="540" class="small">state embedding</text>
+
+  <rect x="615" y="458" width="175" height="92" class="box state"/>
+  <text x="658" y="493" class="label">FiLM params</text>
+  <text x="664" y="522" class="small">gamma / beta</text>
+  <text x="642" y="542" class="small">frame-level context</text>
+
+  <rect x="640" y="128" width="210" height="96" class="box blend"/>
+  <text x="686" y="162" class="label">Warm blend</text>
+  <text x="669" y="190" class="small">0-1500 iter: h_base</text>
+  <text x="666" y="212" class="small">ramp 3000 iter to alpha=0.4</text>
+
+  <rect x="915" y="130" width="210" height="94" class="box head"/>
+  <text x="957" y="164" class="label">Output heads</text>
+  <text x="958" y="192" class="small">d_xyz</text>
+  <text x="958" y="213" class="small">d_rotation / d_scaling</text>
+
+  <rect x="640" y="292" width="210" height="88" class="box blend"/>
+  <text x="696" y="326" class="label">h_state</text>
+  <text x="664" y="354" class="small">state feature branch</text>
+  <text x="668" y="375" class="small">auxiliary, not replacement</text>
+
+  <rect x="612" y="50" width="315" height="50" class="note"/>
+  <text x="636" y="81" class="small">final: h = 0.6 * h_base + 0.4 * h_state</text>
+
+  <path d="M240 193 L320 166" class="line"/>
+  <path d="M240 193 L320 344" class="line"/>
+  <path d="M540 166 L640 176" class="line"/>
+  <path d="M540 344 L640 336" class="line"/>
+  <path d="M850 176 L915 176" class="line"/>
+
+  <path d="M244 473 L320 504" class="line"/>
+  <path d="M540 504 L615 504" class="line"/>
+  <path d="M702 458 C700 430 650 408 545 371" class="dash"/>
+
+  <path d="M745 128 L745 100" class="dash"/>
+  <path d="M745 100 L745 100" class="dash"/>
+
+  <text x="272" y="145" class="small">baseline features</text>
+  <text x="271" y="282" class="small">state features</text>
+  <text x="560" y="486" class="small">encode</text>
+  <text x="715" y="429" class="small">modulate State MLP</text>
+  <text x="858" y="157" class="small">shared heads unchanged</text>
+</svg>

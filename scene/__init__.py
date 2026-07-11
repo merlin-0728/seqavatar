@@ -46,45 +46,16 @@ class Scene:
 
         # generate multiple time steps
         time_steps = generate_time_steps(args.minimal_time_step, args.max_time_step, 1, args.time_step_num, args.seq_len)
-        motion_cond_options = {
-            "use_msti": getattr(args, "use_msti", False),
-            "msti_mode": getattr(args, "msti_mode", "none"),
-            "msti_mid_type": getattr(args, "msti_mid_type", "real"),
-            "use_amc_pair": getattr(args, "use_amc_pair", False),
-            "amc_pair_mode": getattr(args, "amc_pair_mode", "baseline_full"),
-            "use_amc_causal": getattr(args, "use_amc_causal", False),
-            "amc_causal_mode": getattr(args, "amc_causal_mode", "gated_residual"),
-            "use_tdp": getattr(args, "use_tdp", False),
-            "tdp_mode": getattr(args, "tdp_mode", "keep_base"),
-            "fix_stms": getattr(args, "fix_stms", False),
-            "use_acc_cond": getattr(args, "use_acc_cond", False),
-            "use_flow_cond": getattr(args, "use_flow_cond", False),
-            "flow_cond_mode": getattr(args, "flow_cond_mode", "flow"),
-            "flow_feature_dim": getattr(args, "flow_feature_dim", 3),
-            "flow_image_scale": getattr(args, "flow_image_scale", 0.25),
-            "flow_mag_scale": getattr(args, "flow_mag_scale", 1.0),
-            "flow_feature_mode": getattr(args, "flow_feature_mode", "mean_max_conf"),
-            "flow_knn_agg": getattr(args, "flow_knn_agg", "mean"),
-            "flow_adapter_mode": getattr(args, "flow_adapter_mode", "concat"),
-            "flow_gate_alpha": getattr(args, "flow_gate_alpha", 0.0),
-            "flow_gate_temp": getattr(args, "flow_gate_temp", 0.5),
-            "flow_view_token": getattr(args, "flow_view_token", False),
-            "flow_view_attn_dim": getattr(args, "flow_view_attn_dim", 32),
-            "use_motion_token": getattr(args, "use_motion_token", False),
-            "motion_token_fix_stms": getattr(args, "motion_token_fix_stms", False),
-            "motion_token_use_acc": getattr(args, "motion_token_use_acc", False),
-            "motion_cond_time_step_num": int(getattr(args, "motion_cond_time_step_num", args.time_step_num)),
-        }
 
         if 'ZJU-MoCap' in args.source_path: 
             print("Assuming ZJU-MoCap dataset!")
-            scene_info = sceneLoadTypeCallbacks["ZJU_MoCap"](args.source_path, args.white_background, args.eval, time_steps, motion_cond_options=motion_cond_options)
+            scene_info = sceneLoadTypeCallbacks["ZJU_MoCap"](args.source_path, args.white_background, args.eval, time_steps)
         elif 'I3D-Human' in args.source_path: 
             print("Assuming I3D-Human dataset!")
-            scene_info = sceneLoadTypeCallbacks["I3DHuman"](args.source_path, args.white_background, args.eval, time_steps, motion_cond_options=motion_cond_options)
+            scene_info = sceneLoadTypeCallbacks["I3DHuman"](args.source_path, args.white_background, args.eval, time_steps)
         elif 'DNA-Rendering' in args.source_path:
             print("Assuming DNA-Rendering dataset!")
-            scene_info = sceneLoadTypeCallbacks["DNARendering"](args.source_path, args.white_background, args.eval, time_steps, motion_cond_options=motion_cond_options)
+            scene_info = sceneLoadTypeCallbacks["DNARendering"](args.source_path, args.white_background, args.eval, time_steps)
         else:
             assert False, "Could not recognize scene type!"
         
@@ -152,7 +123,13 @@ class Scene:
                     has_part_moe = any(key.startswith("part_experts.") for key in non_rigid_state.keys())
                     if getattr(self.gaussians, "use_part_moe", False) and has_part_moe:
                         self.gaussians.prepare_part_moe_for_loading()
-                    self.gaussians.non_rigid_deformer.load_state_dict(ckpt['non_rigid_deformer'])
+                    self.gaussians.non_rigid_deformer.load_state_dict(
+                        ckpt['non_rigid_deformer'],
+                        strict=not (
+                            getattr(self.gaussians, "use_state", False)
+                            or getattr(self.gaussians, "use_state_warm", False)
+                        ),
+                    )
 
     def save(self, iteration):
         point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))

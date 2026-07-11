@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="640" viewBox="0 0 1180 640">
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#263238"/>
+    </marker>
+    <style>
+      text { font-family: "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", Arial, sans-serif; fill: #172026; }
+      .title { font-size: 28px; font-weight: 700; }
+      .label { font-size: 18px; font-weight: 700; }
+      .small { font-size: 15px; }
+      .box { fill: #ffffff; stroke: #263238; stroke-width: 2; rx: 8; }
+      .base { fill: #e8f4ff; stroke: #1565c0; }
+      .state { fill: #fff4df; stroke: #bf6f00; }
+      .blend { fill: #eaf7ef; stroke: #2e7d32; }
+      .head { fill: #f3eefc; stroke: #6a45a3; }
+      .line { stroke: #263238; stroke-width: 2.3; fill: none; marker-end: url(#arrow); }
+      .dash { stroke: #546e7a; stroke-width: 2; stroke-dasharray: 8 6; fill: none; marker-end: url(#arrow); }
+      .note { fill: #f8fafc; stroke: #90a4ae; stroke-width: 1.5; rx: 8; }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1180" height="640" fill="#fbfcfe"/>
+  <text x="40" y="52" class="title">state_warm_a04 中文流程图</text>
+  <text x="40" y="82" class="small">在非刚性 MLP 主路径上加入弱运动状态调制</text>
+
+  <rect x="55" y="155" width="185" height="76" class="box"/>
+  <text x="104" y="188" class="label">输入特征</text>
+  <text x="78" y="214" class="small">Gaussian / 姿态 / 时间</text>
+
+  <rect x="320" y="120" width="220" height="92" class="box base"/>
+  <text x="365" y="156" class="label">Baseline 主路径</text>
+  <text x="348" y="183" class="small">原始 non-rigid MLP</text>
+  <text x="376" y="202" class="small">输出 h_base</text>
+
+  <rect x="320" y="288" width="220" height="112" class="box state"/>
+  <text x="376" y="325" class="label">State MLP 分支</text>
+  <text x="356" y="352" class="small">使用同一组输入特征</text>
+  <text x="350" y="374" class="small">被 FiLM 参数调制</text>
+  <text x="382" y="396" class="small">gamma / beta</text>
+
+  <rect x="54" y="435" width="190" height="76" class="box"/>
+  <text x="82" y="468" class="label">seq_pose_conds</text>
+  <text x="78" y="494" class="small">一段姿态 / 运动条件</text>
+
+  <rect x="320" y="458" width="220" height="92" class="box state"/>
+  <text x="350" y="494" class="label">Motion state 分支</text>
+  <text x="344" y="521" class="small">TemporalMotionStateEncoder</text>
+  <text x="374" y="540" class="small">帧级运动状态表示</text>
+
+  <rect x="615" y="458" width="175" height="92" class="box state"/>
+  <text x="655" y="493" class="label">FiLM 参数</text>
+  <text x="664" y="522" class="small">gamma / beta</text>
+  <text x="642" y="542" class="small">帧级运动上下文</text>
+
+  <rect x="640" y="128" width="210" height="96" class="box blend"/>
+  <text x="690" y="162" class="label">Warm 融合</text>
+  <text x="668" y="190" class="small">0-1500 iter: 只用 h_base</text>
+  <text x="668" y="212" class="small">3000 iter 渐增到 alpha=0.4</text>
+
+  <rect x="915" y="130" width="210" height="94" class="box head"/>
+  <text x="960" y="164" class="label">输出头不变</text>
+  <text x="958" y="192" class="small">d_xyz</text>
+  <text x="958" y="213" class="small">d_rotation / d_scaling</text>
+
+  <rect x="640" y="292" width="210" height="88" class="box blend"/>
+  <text x="696" y="326" class="label">h_state</text>
+  <text x="666" y="354" class="small">被状态调制的辅助特征</text>
+  <text x="668" y="375" class="small">辅助主路径，不替代主路径</text>
+
+  <rect x="612" y="50" width="315" height="50" class="note"/>
+  <text x="632" y="81" class="small">最终: h = 0.6 * h_base + 0.4 * h_state</text>
+
+  <path d="M240 193 L320 166" class="line"/>
+  <path d="M240 193 L320 344" class="line"/>
+  <path d="M540 166 L640 176" class="line"/>
+  <path d="M540 344 L640 336" class="line"/>
+  <path d="M850 176 L915 176" class="line"/>
+
+  <path d="M244 473 L320 504" class="line"/>
+  <path d="M540 504 L615 504" class="line"/>
+  <path d="M702 458 C700 430 650 408 545 371" class="dash"/>
+
+  <text x="270" y="145" class="small">baseline 特征路径</text>
+  <text x="278" y="282" class="small">state 辅助路径</text>
+  <text x="560" y="486" class="small">编码运动状态</text>
+  <text x="710" y="429" class="small">调制 State MLP</text>
+  <text x="858" y="157" class="small">共享输出头</text>
+</svg>
