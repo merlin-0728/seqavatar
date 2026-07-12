@@ -8,6 +8,7 @@ set -euo pipefail
 #   bash scripts/exps_zjumocap.sh part_moe_leg
 #   bash scripts/exps_zjumocap.sh part_moe_foot
 #   bash scripts/exps_zjumocap.sh part_moe_arm
+#   bash scripts/exps_zjumocap.sh part0
 #
 # 常用覆盖方式：
 #   GPU_id=3 bash scripts/exps_zjumocap.sh use_part_moe
@@ -17,6 +18,9 @@ set -euo pipefail
 MODE=${1:-orginal}
 part_label_schema=anatomy5
 num_parts=5
+part0_enabled=0
+train_entrypoint=train.py
+render_entrypoint=render.py
 case "$MODE" in
     orginal|original)
         experiment_name=orginal
@@ -44,9 +48,18 @@ case "$MODE" in
         part_label_schema=part_moe_arm
         num_parts=7
         ;;
+    part0)
+        experiment_name=part0
+        part_moe_enabled=1
+        part0_enabled=1
+        part_label_schema=part_moe_leg
+        num_parts=7
+        train_entrypoint=train_part0.py
+        render_entrypoint=render_part0.py
+        ;;
     *)
         echo "[ERROR] Unknown mode: $MODE"
-        echo "        Supported modes: orginal, use_part_moe, part_moe_leg, part_moe_foot, part_moe_arm"
+        echo "        Supported modes: orginal, use_part_moe, part_moe_leg, part_moe_foot, part_moe_arm, part0"
         exit 1
         ;;
 esac
@@ -92,17 +105,28 @@ lpips_loss_w=${LPIPS_LOSS_W:-0.1}
 part_moe_start_iter=${PART_MOE_START_ITER:-1000}
 part_moe_warmup=${PART_MOE_WARMUP:-500}
 part_moe_global_keep=${PART_MOE_GLOBAL_KEEP:-0.1}
+if [ "$part0_enabled" = "1" ]; then
+    part_moe_start_iter=0
+    part_moe_warmup=0
+fi
 
-if [ "$part_moe_enabled" = "1" ]; then
+if [ "$part_moe_enabled" = "1" ] && [ "$part0_enabled" != "1" ]; then
     densify_until_iter=${PART_MOE_DENSIFY_UNTIL_ITER:-$part_moe_start_iter}
 else
     densify_until_iter=$base_densify_until_iter
 fi
 
-if [ "$part_moe_enabled" = "1" ] && [ "$densify_until_iter" -gt "$part_moe_start_iter" ]; then
+if [ "$part_moe_enabled" = "1" ] && [ "$part0_enabled" != "1" ] && [ "$densify_until_iter" -gt "$part_moe_start_iter" ]; then
     echo "[ERROR] Part-MoE requires densify_until_iter <= part_moe_start_iter."
     echo "        densify_until_iter=$densify_until_iter part_moe_start_iter=$part_moe_start_iter"
     exit 1
+fi
+
+test_iterations=("$part_moe_start_iter" "$iter")
+save_iterations=("$part_moe_start_iter" "$iter")
+if [ "$part0_enabled" = "1" ]; then
+    test_iterations=("$iter")
+    save_iterations=("$iter")
 fi
 
 # ================= 总日志设置 =================
@@ -135,6 +159,8 @@ echo "[INFO] GPU_id: $GPU_id"
 echo "[INFO] PYTHON_BIN: $PYTHON_BIN"
 echo "[INFO] DATA_PATH: $DATA_PATH"
 echo "[INFO] SMPL_VERTEX_SEG_PATH: $SMPL_VERTEX_SEG_PATH"
+echo "[INFO] TRAIN_ENTRYPOINT: $train_entrypoint"
+echo "[INFO] RENDER_ENTRYPOINT: $render_entrypoint"
 echo "[INFO] Iterations: $iter"
 echo "[INFO] Densify until iter: $densify_until_iter"
 echo "[INFO] PART_MOE_START_ITER: $part_moe_start_iter"
@@ -144,6 +170,8 @@ echo "[INFO] PART_LABEL_SCHEMA: $part_label_schema"
 echo "[INFO] NUM_PARTS: $num_parts"
 echo "[INFO] NON_RIGID_MLP_DEPTH: $non_rigid_mlp_depth"
 echo "[INFO] NON_RIGID_MLP_WIDTH: $non_rigid_mlp_width"
+echo "[INFO] TEST_ITERATIONS: ${test_iterations[*]}"
+echo "[INFO] SAVE_ITERATIONS: ${save_iterations[*]}"
 echo "[INFO] Sequences: ${SEQUENCES[*]}"
 echo "[INFO] SKIP_COMPLETED: $SKIP_COMPLETED"
 echo "[INFO] Global log file: $GLOBAL_LOG_FILE"
@@ -166,8 +194,8 @@ COMMON_TRAIN_ARGS=(
     --l1_loss_w "$l1_loss_w"
     --ssim_loss_w "$ssim_loss_w"
     --lpips_loss_w "$lpips_loss_w"
-    --test_iterations "$part_moe_start_iter" "$iter"
-    --save_iterations "$part_moe_start_iter" "$iter"
+    --test_iterations "${test_iterations[@]}"
+    --save_iterations "${save_iterations[@]}"
 )
 
 COMMON_RENDER_ARGS=(
@@ -237,13 +265,13 @@ for SEQUENCE in "${SEQUENCES[@]}"; do
     echo "================================================="
 
     echo "[INFO] Training on GPU $GPU_id for sequence $SEQUENCE"
-    CUDA_VISIBLE_DEVICES=$GPU_id "$PYTHON_BIN" train.py \
+    CUDA_VISIBLE_DEVICES=$GPU_id "$PYTHON_BIN" "$train_entrypoint" \
         -s "$dataset_path" --eval --exp_name "$exp_name" \
         "${COMMON_TRAIN_ARGS[@]}" \
         "${PART_MOE_ARGS[@]}"
 
     echo "[INFO] Evaluating on GPU $GPU_id for sequence $SEQUENCE"
-    CUDA_VISIBLE_DEVICES=$GPU_id "$PYTHON_BIN" render.py \
+    CUDA_VISIBLE_DEVICES=$GPU_id "$PYTHON_BIN" "$render_entrypoint" \
         -s "$dataset_path" -m "$model_path" \
         "${COMMON_RENDER_ARGS[@]}" \
         "${PART_MOE_ARGS[@]}"

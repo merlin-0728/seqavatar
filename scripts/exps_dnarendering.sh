@@ -8,6 +8,7 @@ set -euo pipefail
 #   bash scripts/exps_dnarendering.sh part_moe_leg
 #   bash scripts/exps_dnarendering.sh part_moe_foot
 #   bash scripts/exps_dnarendering.sh part_moe_arm
+#   bash scripts/exps_dnarendering.sh part0
 #
 # 常用覆盖方式：
 #   GPU_id=3 bash scripts/exps_dnarendering.sh use_part_moe
@@ -18,6 +19,9 @@ MODE=${1:-orginal}
 part_label_schema=anatomy5
 num_parts=5
 final_eval_only=0
+part0_enabled=0
+train_entrypoint=train.py
+render_entrypoint=render.py
 case "$MODE" in
     orginal|original)
         experiment_name=orginal
@@ -48,9 +52,19 @@ case "$MODE" in
         num_parts=7
         final_eval_only=1
         ;;
+    part0)
+        experiment_name=part0
+        part_moe_enabled=1
+        part0_enabled=1
+        part_label_schema=part_moe_leg
+        num_parts=7
+        final_eval_only=1
+        train_entrypoint=train_part0.py
+        render_entrypoint=render_part0.py
+        ;;
     *)
         echo "[ERROR] Unknown mode: $MODE"
-        echo "        Supported modes: orginal, use_part_moe, part_moe_leg, part_moe_foot, part_moe_arm"
+        echo "        Supported modes: orginal, use_part_moe, part_moe_leg, part_moe_foot, part_moe_arm, part0"
         exit 1
         ;;
 esac
@@ -97,6 +111,10 @@ lpips_loss_w=0.01
 part_moe_start_iter=10000
 part_moe_warmup=1000
 part_moe_global_keep=0.1
+if [ "$part0_enabled" = "1" ]; then
+    part_moe_start_iter=0
+    part_moe_warmup=0
+fi
 
 test_iterations=(3000 "$part_moe_start_iter" "$iter")
 save_iterations=(3000 "$part_moe_start_iter" "$iter")
@@ -108,18 +126,22 @@ if [ "$final_eval_only" = "1" ]; then
 fi
 
 # ================= 总日志设置 =================
+log_experiment_name="$experiment_name"
+if [ "$part0_enabled" = "1" ]; then
+    log_experiment_name="${experiment_name}_gpu${GPU_id}"
+fi
 if [ "$part_moe_enabled" = "1" ]; then
     GLOBAL_LOG_DIR="$PART_LOG_DIR"
-    GLOBAL_LOG_FILE="$GLOBAL_LOG_DIR/${RUN_TIME}_DNA-Rendering_${experiment_name}.log"
+    GLOBAL_LOG_FILE="$GLOBAL_LOG_DIR/${RUN_TIME}_DNA-Rendering_${log_experiment_name}.log"
 else
     GLOBAL_LOG_DIR="$REPO_ROOT/logs"
-    GLOBAL_LOG_FILE="$GLOBAL_LOG_DIR/${RUN_TIME}_DNA-Rendering_${experiment_name}.log"
+    GLOBAL_LOG_FILE="$GLOBAL_LOG_DIR/${RUN_TIME}_DNA-Rendering_${log_experiment_name}.log"
 fi
 mkdir -p "$GLOBAL_LOG_DIR"
 
 # train.py/render.py 在 --use_part_moe 时会自动建立自己的 part 日志。
 # 这里把那些拆分日志放到临时目录，最终只保留上面的训练+测试总日志。
-AUTO_PART_LOG_DIR="$PART_LOG_DIR/.auto_${RUN_TIME}_${experiment_name}"
+AUTO_PART_LOG_DIR="$PART_LOG_DIR/.auto_${RUN_TIME}_${log_experiment_name}"
 cleanup_auto_part_logs() {
     if [ "${KEEP_SPLIT_PART_LOGS:-0}" != "1" ]; then
         rm -rf "$AUTO_PART_LOG_DIR"
@@ -137,6 +159,12 @@ echo "[INFO] Run time: $RUN_TIME"
 echo "[INFO] GPU_id: $GPU_id"
 echo "[INFO] PYTHON_BIN: $PYTHON_BIN"
 echo "[INFO] DATA_PATH: $DATA_PATH"
+echo "[INFO] TRAIN_ENTRYPOINT: $train_entrypoint"
+echo "[INFO] RENDER_ENTRYPOINT: $render_entrypoint"
+echo "[INFO] DENSIFY_UNTIL_ITER: $densify_until_iter"
+echo "[INFO] PART_MOE_START_ITER: $part_moe_start_iter"
+echo "[INFO] PART_MOE_WARMUP: $part_moe_warmup"
+echo "[INFO] PART_MOE_GLOBAL_KEEP: $part_moe_global_keep"
 echo "[INFO] PART_LABEL_SCHEMA: $part_label_schema"
 echo "[INFO] NUM_PARTS: $num_parts"
 echo "[INFO] NON_RIGID_MLP_DEPTH: $non_rigid_mlp_depth"
@@ -206,11 +234,20 @@ for SEQUENCE in "${SEQUENCES[@]}"; do
     model_path=output/${exp_name}
 
     if [ "$SKIP_COMPLETED" = "1" ]; then
-        completed_dir=$(find "output/DNA-Rendering/${SEQUENCE}/${experiment_name}" -mindepth 1 -maxdepth 1 -type d \
-            -path "*/${RUN_TIME}" -prune -o \
-            -exec test -f "{}/point_cloud/iteration_${iter}/point_cloud.ply" \; \
-            -exec test -f "{}/metrics/results_novelview_${iter}.json" \; \
-            -print 2>/dev/null | sort | tail -1 || true)
+        if [ "$part0_enabled" = "1" ]; then
+            completed_dir=$(find "output/DNA-Rendering/${SEQUENCE}/${experiment_name}" -mindepth 1 -maxdepth 1 -type d \
+                -path "*/${RUN_TIME}" -prune -o \
+                -exec test -f "{}/point_cloud/iteration_${iter}/point_cloud.ply" \; \
+                -exec test -f "{}/part_labels/iteration_${iter}/gaussian_part_label.npy" \; \
+                -exec test -f "{}/metrics/results_novelview_${iter}.json" \; \
+                -print 2>/dev/null | sort | tail -1 || true)
+        else
+            completed_dir=$(find "output/DNA-Rendering/${SEQUENCE}/${experiment_name}" -mindepth 1 -maxdepth 1 -type d \
+                -path "*/${RUN_TIME}" -prune -o \
+                -exec test -f "{}/point_cloud/iteration_${iter}/point_cloud.ply" \; \
+                -exec test -f "{}/metrics/results_novelview_${iter}.json" \; \
+                -print 2>/dev/null | sort | tail -1 || true)
+        fi
         if [ -n "$completed_dir" ]; then
             echo "[INFO] Skip completed sequence: $SEQUENCE"
             echo "[INFO] Completed output: $completed_dir"
@@ -243,14 +280,14 @@ for SEQUENCE in "${SEQUENCES[@]}"; do
     echo "================================================="
 
     echo "[INFO] Training on GPU $GPU_id for sequence $SEQUENCE"
-    env "${TRAIN_ENV[@]}" "$PYTHON_BIN" train.py \
+    env "${TRAIN_ENV[@]}" "$PYTHON_BIN" "$train_entrypoint" \
         -s "$dataset_path" --eval --exp_name "$exp_name" \
         "${COMMON_TRAIN_ARGS[@]}" \
         "${PART_MOE_ARGS[@]}" \
         2>&1 | tee "$model_path/logs/train_${SEQUENCE}_${experiment_name}.log"
 
     echo "[INFO] Evaluating on GPU $GPU_id for sequence $SEQUENCE"
-    CUDA_VISIBLE_DEVICES=$GPU_id "$PYTHON_BIN" render.py \
+    CUDA_VISIBLE_DEVICES=$GPU_id "$PYTHON_BIN" "$render_entrypoint" \
         -s "$dataset_path" -m "$model_path" \
         "${COMMON_RENDER_ARGS[@]}" \
         "${PART_MOE_ARGS[@]}" \
