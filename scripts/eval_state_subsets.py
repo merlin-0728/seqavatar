@@ -352,7 +352,7 @@ def main():
     parser.add_argument("--baseline-experiment", default="orginal")
     parser.add_argument("--baseline-run-default", default=None)
     parser.add_argument("--baseline-runs-json", default=None)
-    parser.add_argument("--state-experiment", default="state_warm_a04")
+    parser.add_argument("--state-experiment", default="state")
     parser.add_argument("--state-run", default="20260710_220456")
     parser.add_argument("--method-name", default=None)
     parser.add_argument("--out-dir", type=Path, default=Path("note/state_subset_eval_20260711"))

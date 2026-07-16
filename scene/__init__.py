@@ -47,15 +47,17 @@ class Scene:
         # generate multiple time steps
         time_steps = generate_time_steps(args.minimal_time_step, args.max_time_step, 1, args.time_step_num, args.seq_len)
 
+        state_cond_mode = getattr(args, "state_cond_mode", "pose")
+
         if 'ZJU-MoCap' in args.source_path: 
             print("Assuming ZJU-MoCap dataset!")
-            scene_info = sceneLoadTypeCallbacks["ZJU_MoCap"](args.source_path, args.white_background, args.eval, time_steps)
+            scene_info = sceneLoadTypeCallbacks["ZJU_MoCap"](args.source_path, args.white_background, args.eval, time_steps, state_cond_mode=state_cond_mode)
         elif 'I3D-Human' in args.source_path: 
             print("Assuming I3D-Human dataset!")
-            scene_info = sceneLoadTypeCallbacks["I3DHuman"](args.source_path, args.white_background, args.eval, time_steps)
+            scene_info = sceneLoadTypeCallbacks["I3DHuman"](args.source_path, args.white_background, args.eval, time_steps, state_cond_mode=state_cond_mode)
         elif 'DNA-Rendering' in args.source_path:
             print("Assuming DNA-Rendering dataset!")
-            scene_info = sceneLoadTypeCallbacks["DNARendering"](args.source_path, args.white_background, args.eval, time_steps)
+            scene_info = sceneLoadTypeCallbacks["DNARendering"](args.source_path, args.white_background, args.eval, time_steps, state_cond_mode=state_cond_mode)
         else:
             assert False, "Could not recognize scene type!"
         
@@ -125,10 +127,7 @@ class Scene:
                         self.gaussians.prepare_part_moe_for_loading()
                     self.gaussians.non_rigid_deformer.load_state_dict(
                         ckpt['non_rigid_deformer'],
-                        strict=not (
-                            getattr(self.gaussians, "use_state", False)
-                            or getattr(self.gaussians, "use_state_warm", False)
-                        ),
+                        strict=not getattr(self.gaussians, "use_state", False),
                     )
 
     def save(self, iteration):

@@ -69,7 +69,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor,
                 seq_pose_conds = pc.cond_dict[pose_id]['seq_pose_conds']
                 seq_xyz_conds = pc.cond_dict[pose_id]['seq_xyz_conds']
                 state_conds = None
-                if getattr(pc, "use_state", False) or getattr(pc, "use_state_warm", False):
+                if getattr(pc, "use_state", False):
                     state_conds = pc.cond_dict[pose_id].get('state_conds', seq_pose_conds)
 
                 _, vert_ids = pc.custom_knn_near(pc.canon_vertices, means3D)

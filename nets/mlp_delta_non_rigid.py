@@ -26,27 +26,21 @@ class NonrigidDeformer(nn.Module):
                  use_part_moe=False, num_parts=5, part_moe_global_keep=0.1,
                  use_state=False, state_dim=64,
                  state_hidden_dim=128, state_layers=3,
-                 state_film=True, use_state_warm=False,
                  state_start_iter=1500, state_ramp_iter=3000,
                  state_max_alpha=1.0,
                  state_identity_init=True,
-                 use_state_gate=False, state_gate_hidden_dim=128,
-                 state_gate_bias=-1.0):
+                 state_cond_mode="pose"):
         super(NonrigidDeformer, self).__init__()
 
         self.use_pose_cond = use_pose_cond
         self.use_seq_pose_cond = use_seq_pose_cond
         self.use_seq_xyz_cond = use_seq_xyz_cond
         self.use_state = bool(use_state)
-        self.use_state_warm = bool(use_state_warm)
-        self.state_film = bool(state_film)
         self.state_start_iter = int(state_start_iter)
         self.state_ramp_iter = int(state_ramp_iter)
         self.state_max_alpha = float(state_max_alpha)
         self.state_identity_init = bool(state_identity_init)
-        self.use_state_gate = bool(use_state_gate)
-        self.state_gate_hidden_dim = int(state_gate_hidden_dim)
-        self.state_gate_bias = float(state_gate_bias)
+        self.state_cond_mode = state_cond_mode
         self.use_part_moe = use_part_moe
         self.num_parts = num_parts
         self.part_moe_global_keep = part_moe_global_keep
@@ -82,50 +76,30 @@ class NonrigidDeformer(nn.Module):
         self.gaussian_scaling = nn.Linear(W, 3)
 
         if self.use_state:
-            state_input_dim = 3 * (N_JOINT[smpl_type] + 1) * time_step_num
+            state_cond_dim = 3 * (N_JOINT[smpl_type] + 1)
+            if self.state_cond_mode == "global_surface":
+                state_cond_dim += 6
+            elif self.state_cond_mode != "pose":
+                raise ValueError(f"Unknown state_cond_mode: {self.state_cond_mode}")
+            state_input_dim = state_cond_dim * time_step_num
             self.StateEncoder = TemporalStateEncoder(
                 input_dim=state_input_dim,
                 hidden_dim=state_hidden_dim,
                 output_dim=state_dim,
                 num_layers=state_layers,
             )
-            self.state_film_layer = nn.Linear(state_dim, D * W * 2)
-            self.state_layers = nn.ModuleList()
-            in_dim = self.input_ch
-            for _ in range(D):
-                self.state_layers.append(nn.Linear(in_dim, W))
-                in_dim = W
-
-        if self.use_state_warm:
-            state_input_dim = 3 * (N_JOINT[smpl_type] + 1) * time_step_num
-            self.StateWarmEncoder = TemporalStateEncoder(
-                input_dim=state_input_dim,
-                hidden_dim=state_hidden_dim,
-                output_dim=state_dim,
-                num_layers=state_layers,
-            )
-
             baseline_linear_layers = [m for m in self.mlp if isinstance(m, nn.Linear)]
-            self.state_warm_layers = nn.ModuleList()
+            self.state_layers = nn.ModuleList()
             for layer in baseline_linear_layers:
                 new_layer = nn.Linear(layer.in_features, layer.out_features)
                 if self.state_identity_init:
                     new_layer.weight.data.copy_(layer.weight.data)
                     new_layer.bias.data.copy_(layer.bias.data)
-                self.state_warm_layers.append(new_layer)
+                self.state_layers.append(new_layer)
 
-            self.state_warm_film = nn.Linear(state_dim, len(self.state_warm_layers) * W * 2)
-            nn.init.zeros_(self.state_warm_film.weight)
-            nn.init.zeros_(self.state_warm_film.bias)
-
-            if self.use_state_gate:
-                self.state_gate = nn.Sequential(
-                    nn.Linear(self.input_ch + state_dim, self.state_gate_hidden_dim),
-                    nn.ReLU(),
-                    nn.Linear(self.state_gate_hidden_dim, 1),
-                )
-                nn.init.zeros_(self.state_gate[-1].weight)
-                nn.init.constant_(self.state_gate[-1].bias, self.state_gate_bias)
+            self.state_film_layer = nn.Linear(state_dim, len(self.state_layers) * W * 2)
+            nn.init.zeros_(self.state_film_layer.weight)
+            nn.init.zeros_(self.state_film_layer.bias)
 
     def init_part_moe_from_shared(self, num_parts=None):
         if self.part_moe_active:
@@ -253,43 +227,8 @@ class NonrigidDeformer(nn.Module):
                 part_moe_global_keep=part_moe_global_keep,
             )
 
-        if (
-            self.use_state_warm
-            and iteration is not None
-            and int(iteration) >= self.state_start_iter
-        ):
+        if self.use_state and iteration is not None and int(iteration) >= self.state_start_iter:
             h_base = self.mlp(features)
-            if state_conds is None:
-                state_conds = seq_pose_conds
-            if state_conds is None:
-                raise RuntimeError("state_conds or seq_pose_conds is required when use_state_warm=True.")
-            B = state_conds.shape[0]
-            L = state_conds.shape[1]
-            state_seq = state_conds.reshape(B, L, -1)
-            state = self.StateWarmEncoder(state_seq)
-            film = self.state_warm_film(state)
-            film = film.view(B, len(self.state_warm_layers), 2, -1)
-
-            h_state = features
-            for i, layer in enumerate(self.state_warm_layers):
-                h_state = layer(h_state)
-                gamma = 1.0 + film[:, i, 0].unsqueeze(1)
-                beta = film[:, i, 1].unsqueeze(1)
-                h_state = gamma * h_state + beta
-                h_state = torch.relu(h_state)
-
-            if self.state_ramp_iter > 0:
-                alpha = float(int(iteration) - self.state_start_iter) / float(self.state_ramp_iter)
-                alpha = max(0.0, min(self.state_max_alpha, alpha))
-            else:
-                alpha = self.state_max_alpha
-            if self.use_state_gate:
-                state_per_point = state.unsqueeze(1).expand(-1, features.shape[1], -1)
-                gate = torch.sigmoid(self.state_gate(torch.cat([features, state_per_point], dim=-1)))
-                h = h_base + alpha * gate * (h_state - h_base)
-            else:
-                h = (1.0 - alpha) * h_base + alpha * h_state
-        elif self.use_state:
             if state_conds is None:
                 state_conds = seq_pose_conds
             if state_conds is None:
@@ -301,16 +240,20 @@ class NonrigidDeformer(nn.Module):
             film = self.state_film_layer(state)
             film = film.view(B, len(self.state_layers), 2, -1)
 
-            h = features
+            h_state = features
             for i, layer in enumerate(self.state_layers):
-                h = layer(h)
-                gamma = film[:, i, 0].unsqueeze(1)
+                h_state = layer(h_state)
+                gamma = 1.0 + film[:, i, 0].unsqueeze(1)
                 beta = film[:, i, 1].unsqueeze(1)
-                if self.state_film:
-                    h = gamma * h + beta
-                else:
-                    h = h + beta
-                h = torch.relu(h)
+                h_state = gamma * h_state + beta
+                h_state = torch.relu(h_state)
+
+            if self.state_ramp_iter > 0:
+                alpha = float(int(iteration) - self.state_start_iter) / float(self.state_ramp_iter)
+                alpha = max(0.0, min(self.state_max_alpha, alpha))
+            else:
+                alpha = self.state_max_alpha
+            h = (1.0 - alpha) * h_base + alpha * h_state
         else:
             h = self.mlp(features)
         d_xyz, d_scaling, d_rotation = self.gaussian_warp(h), self.gaussian_scaling(h), self.gaussian_rotation(h)

@@ -101,7 +101,7 @@ class GaussianModel:
         self._part_conf = None
         self.part_label_enabled = False
         self.use_state = getattr(args, "use_state", False)
-        self.use_state_warm = getattr(args, "use_state_warm", False)
+        self.state_cond_mode = getattr(args, "state_cond_mode", "pose")
 
         if self.motion_offset_flag:
             # load pose correction module
@@ -123,18 +123,14 @@ class GaussianModel:
                         use_part_moe=self.use_part_moe, num_parts=self.num_parts,
                         part_moe_global_keep=self.part_moe_global_keep,
                         use_state=self.use_state,
-                        use_state_warm=self.use_state_warm,
                         state_start_iter=getattr(args, "state_start_iter", 1500),
                         state_ramp_iter=getattr(args, "state_ramp_iter", 3000),
                         state_max_alpha=getattr(args, "state_max_alpha", 1.0),
                         state_dim=getattr(args, "state_dim", 64),
                         state_hidden_dim=getattr(args, "state_hidden_dim", 128),
                         state_layers=getattr(args, "state_layers", 3),
-                        state_film=getattr(args, "state_film", True),
                         state_identity_init=getattr(args, "state_identity_init", True),
-                        use_state_gate=getattr(args, "use_state_gate", False),
-                        state_gate_hidden_dim=getattr(args, "state_gate_hidden_dim", 128),
-                        state_gate_bias=getattr(args, "state_gate_bias", -1.0)).to(self.device)
+                        state_cond_mode=self.state_cond_mode).to(self.device)
                             
     def capture(self):
         return (

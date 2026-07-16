@@ -83,18 +83,14 @@ class ModelParams(ParamGroup):
         self.smpl_vertex_seg_path = ""
         self.part_log_dir = ""
         self.use_state = False
-        self.use_state_warm = False
         self.state_start_iter = 1500
         self.state_ramp_iter = 3000
         self.state_max_alpha = 1.0
         self.state_dim = 64
         self.state_hidden_dim = 128
         self.state_layers = 3
-        self.state_film = True
         self.state_identity_init = True
-        self.use_state_gate = False
-        self.state_gate_hidden_dim = 128
-        self.state_gate_bias = -1.0
+        self.state_cond_mode = "pose"
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):

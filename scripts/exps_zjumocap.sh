@@ -8,15 +8,26 @@ set -euo pipefail
 #   bash scripts/exps_zjumocap.sh part_moe_leg
 #   bash scripts/exps_zjumocap.sh part_moe_foot
 #   bash scripts/exps_zjumocap.sh part_moe_arm
+#   bash scripts/exps_zjumocap.sh state
+#   bash scripts/exps_zjumocap.sh part_state
 #
 # 常用覆盖方式：
 #   GPU_id=3 bash scripts/exps_zjumocap.sh use_part_moe
+#   GPU_id=3 bash scripts/exps_zjumocap.sh state
+#   GPU_id=3 bash scripts/exps_zjumocap.sh part_state
 #   SEQUENCES_OVERRIDE="CoreView_377" GPU_id=3 bash scripts/exps_zjumocap.sh use_part_moe
+#   SEQUENCES_OVERRIDE="CoreView_377 CoreView_386" GPU_id=3 bash scripts/exps_zjumocap.sh state
+#   SEQUENCES_OVERRIDE="CoreView_377 CoreView_386" GPU_id=3 bash scripts/exps_zjumocap.sh part_state
 
 # ================= 消融模式 =================
 MODE=${1:-orginal}
 part_label_schema=anatomy5
 num_parts=5
+final_eval_only=0
+state_enabled=0
+state_start_iter_default=1500
+state_ramp_iter_default=3000
+state_max_alpha_default=0.4
 case "$MODE" in
     orginal|original)
         experiment_name=orginal
@@ -44,9 +55,23 @@ case "$MODE" in
         part_label_schema=part_moe_arm
         num_parts=7
         ;;
+    state)
+        experiment_name=state
+        part_moe_enabled=0
+        state_enabled=1
+        final_eval_only=1
+        ;;
+    part_state)
+        experiment_name=part_state
+        part_moe_enabled=1
+        part_label_schema=part_moe_leg
+        num_parts=7
+        state_enabled=1
+        final_eval_only=1
+        ;;
     *)
         echo "[ERROR] Unknown mode: $MODE"
-        echo "        Supported modes: orginal, use_part_moe, part_moe_leg, part_moe_foot, part_moe_arm"
+        echo "        Supported modes: orginal, use_part_moe, part_moe_leg, part_moe_foot, part_moe_arm, state, part_state"
         exit 1
         ;;
 esac
@@ -54,7 +79,7 @@ esac
 # ================= 路径和基础设置 =================
 REPO_ROOT=${REPO_ROOT:-/media/image/mxz/human/SeqAvatar}
 RUN_TIME=${RUN_TIME:-$(date +%Y%m%d_%H%M%S)}
-GPU_id=${GPU_id:-3}
+GPU_id=${GPU_id:-2}
 PYTHON_BIN=${PYTHON_BIN:-/media/image/mxz/.conda/envs/seqavatar/bin/python}
 DATA_PATH=${DATA_PATH:-/media/image/mxz/human/SeqAvatar/ZJU-MoCap}
 PART_LOG_DIR=${PART_LOG_DIR:-/media/image/mxz/human/SeqAvatar/logs/part}
@@ -93,6 +118,11 @@ part_moe_start_iter=${PART_MOE_START_ITER:-1000}
 part_moe_warmup=${PART_MOE_WARMUP:-500}
 part_moe_global_keep=${PART_MOE_GLOBAL_KEEP:-0.1}
 
+# ================= State 参数 =================
+state_start_iter=${STATE_START_ITER:-$state_start_iter_default}
+state_ramp_iter=${STATE_RAMP_ITER:-$state_ramp_iter_default}
+state_max_alpha=${STATE_MAX_ALPHA:-$state_max_alpha_default}
+
 if [ "$part_moe_enabled" = "1" ]; then
     densify_until_iter=${PART_MOE_DENSIFY_UNTIL_ITER:-$part_moe_start_iter}
 else
@@ -105,13 +135,24 @@ if [ "$part_moe_enabled" = "1" ] && [ "$densify_until_iter" -gt "$part_moe_start
     exit 1
 fi
 
+test_iterations=("$part_moe_start_iter" "$iter")
+save_iterations=("$part_moe_start_iter" "$iter")
+if [ "$final_eval_only" = "1" ]; then
+    test_iterations=("$iter")
+    save_iterations=("$iter")
+fi
+
 # ================= 总日志设置 =================
-if [ "$part_moe_enabled" = "1" ]; then
+if [ "$state_enabled" = "1" ]; then
+    GLOBAL_LOG_DIR="$REPO_ROOT/logs/state"
+    GLOBAL_LOG_FILE="$GLOBAL_LOG_DIR/${RUN_TIME}_ZJU-MoCap_${experiment_name}_gpu${GPU_id}.log"
+elif [ "$part_moe_enabled" = "1" ]; then
     GLOBAL_LOG_DIR="$PART_LOG_DIR"
+    GLOBAL_LOG_FILE="$GLOBAL_LOG_DIR/${RUN_TIME}_ZJU-MoCap_${experiment_name}.log"
 else
     GLOBAL_LOG_DIR="$REPO_ROOT/logs"
+    GLOBAL_LOG_FILE="$GLOBAL_LOG_DIR/${RUN_TIME}_ZJU-MoCap_${experiment_name}.log"
 fi
-GLOBAL_LOG_FILE="$GLOBAL_LOG_DIR/${RUN_TIME}_ZJU-MoCap_${experiment_name}.log"
 mkdir -p "$GLOBAL_LOG_DIR"
 
 # train.py/render.py 在 --use_part_moe 时会自动建立自己的 part 日志。
@@ -144,6 +185,13 @@ echo "[INFO] PART_LABEL_SCHEMA: $part_label_schema"
 echo "[INFO] NUM_PARTS: $num_parts"
 echo "[INFO] NON_RIGID_MLP_DEPTH: $non_rigid_mlp_depth"
 echo "[INFO] NON_RIGID_MLP_WIDTH: $non_rigid_mlp_width"
+echo "[INFO] FINAL_EVAL_ONLY: $final_eval_only"
+echo "[INFO] STATE_ENABLED: $state_enabled"
+echo "[INFO] STATE_START_ITER: $state_start_iter"
+echo "[INFO] STATE_RAMP_ITER: $state_ramp_iter"
+echo "[INFO] STATE_MAX_ALPHA: $state_max_alpha"
+echo "[INFO] TEST_ITERATIONS: ${test_iterations[*]}"
+echo "[INFO] SAVE_ITERATIONS: ${save_iterations[*]}"
 echo "[INFO] Sequences: ${SEQUENCES[*]}"
 echo "[INFO] SKIP_COMPLETED: $SKIP_COMPLETED"
 echo "[INFO] Global log file: $GLOBAL_LOG_FILE"
@@ -166,8 +214,8 @@ COMMON_TRAIN_ARGS=(
     --l1_loss_w "$l1_loss_w"
     --ssim_loss_w "$ssim_loss_w"
     --lpips_loss_w "$lpips_loss_w"
-    --test_iterations "$part_moe_start_iter" "$iter"
-    --save_iterations "$part_moe_start_iter" "$iter"
+    --test_iterations "${test_iterations[@]}"
+    --save_iterations "${save_iterations[@]}"
 )
 
 COMMON_RENDER_ARGS=(
@@ -201,6 +249,16 @@ if [ "$part_moe_enabled" = "1" ]; then
         --num_parts "$num_parts"
         --part_label_schema "$part_label_schema"
         --part_log_dir "$AUTO_PART_LOG_DIR"
+    )
+fi
+
+STATE_ARGS=()
+if [ "$state_enabled" = "1" ]; then
+    STATE_ARGS=(
+        --use_state
+        --state_start_iter "$state_start_iter"
+        --state_ramp_iter "$state_ramp_iter"
+        --state_max_alpha "$state_max_alpha"
     )
 fi
 
@@ -240,13 +298,15 @@ for SEQUENCE in "${SEQUENCES[@]}"; do
     CUDA_VISIBLE_DEVICES=$GPU_id "$PYTHON_BIN" train.py \
         -s "$dataset_path" --eval --exp_name "$exp_name" \
         "${COMMON_TRAIN_ARGS[@]}" \
-        "${PART_MOE_ARGS[@]}"
+        "${PART_MOE_ARGS[@]}" \
+        "${STATE_ARGS[@]}"
 
     echo "[INFO] Evaluating on GPU $GPU_id for sequence $SEQUENCE"
     CUDA_VISIBLE_DEVICES=$GPU_id "$PYTHON_BIN" render.py \
         -s "$dataset_path" -m "$model_path" \
         "${COMMON_RENDER_ARGS[@]}" \
-        "${PART_MOE_ARGS[@]}"
+        "${PART_MOE_ARGS[@]}" \
+        "${STATE_ARGS[@]}"
 
     echo "[INFO] Finished sequence: $SEQUENCE"
 done

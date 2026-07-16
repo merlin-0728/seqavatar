@@ -9,17 +9,18 @@ set -euo pipefail
 #   bash scripts/exps_dnarendering.sh part_moe_foot
 #   bash scripts/exps_dnarendering.sh part_moe_arm
 #   bash scripts/exps_dnarendering.sh state
-#   bash scripts/exps_dnarendering.sh state_warm
-#   bash scripts/exps_dnarendering.sh state_warm_late
-#   bash scripts/exps_dnarendering.sh state_warm_half
-#   bash scripts/exps_dnarendering.sh state_warm_a03
-#   bash scripts/exps_dnarendering.sh state_warm_a02
-#   bash scripts/exps_dnarendering.sh state_warm_a04
-#   bash scripts/exps_dnarendering.sh state_gate
+#   bash scripts/exps_dnarendering.sh state_conds
+#   bash scripts/exps_dnarendering.sh part_state
 #
 # 常用覆盖方式：
 #   GPU_id=3 bash scripts/exps_dnarendering.sh use_part_moe
+#   GPU_id=2 bash scripts/exps_dnarendering.sh state
+#   GPU_id=3 bash scripts/exps_dnarendering.sh state_conds
+#   GPU_id=2 bash scripts/exps_dnarendering.sh part_state
 #   SEQUENCES_OVERRIDE="0007_04 0019_10" GPU_id=3 bash scripts/exps_dnarendering.sh use_part_moe
+#   SEQUENCES_OVERRIDE="0007_04 0019_10" GPU_id=2 bash scripts/exps_dnarendering.sh state
+#   SEQUENCES_OVERRIDE="0007_04 0019_10" GPU_id=3 bash scripts/exps_dnarendering.sh state_conds
+#   SEQUENCES_OVERRIDE="0007_04 0019_10" GPU_id=2 bash scripts/exps_dnarendering.sh part_state
 
 # ================= 消融模式 =================
 MODE=${1:-orginal}
@@ -27,13 +28,10 @@ part_label_schema=anatomy5
 num_parts=5
 final_eval_only=0
 state_enabled=0
-state_warm_enabled=0
-state_gate_enabled=0
 state_start_iter_default=1500
 state_ramp_iter_default=3000
-state_max_alpha_default=1.0
-state_gate_hidden_dim_default=128
-state_gate_bias_default=-1.0
+state_max_alpha_default=0.4
+state_cond_mode=pose
 case "$MODE" in
     orginal|original)
         experiment_name=orginal
@@ -70,59 +68,24 @@ case "$MODE" in
         state_enabled=1
         final_eval_only=1
         ;;
-    state_warm)
-        experiment_name=state_warm
+    state_conds)
+        experiment_name=state_conds
         part_moe_enabled=0
-        state_warm_enabled=1
+        state_enabled=1
+        state_cond_mode=global_surface
         final_eval_only=1
         ;;
-    state_warm_late)
-        experiment_name=state_warm_late
-        part_moe_enabled=0
-        state_warm_enabled=1
+    part_state)
+        experiment_name=part_state
+        part_moe_enabled=1
+        part_label_schema=part_moe_leg
+        num_parts=7
+        state_enabled=1
         final_eval_only=1
-        state_start_iter_default=3000
-        state_ramp_iter_default=5000
-        ;;
-    state_warm_half)
-        experiment_name=state_warm_half
-        part_moe_enabled=0
-        state_warm_enabled=1
-        final_eval_only=1
-        state_max_alpha_default=0.5
-        ;;
-    state_warm_a02)
-        experiment_name=state_warm_a02
-        part_moe_enabled=0
-        state_warm_enabled=1
-        final_eval_only=1
-        state_max_alpha_default=0.2
-        ;;
-    state_warm_a03)
-        experiment_name=state_warm_a03
-        part_moe_enabled=0
-        state_warm_enabled=1
-        final_eval_only=1
-        state_max_alpha_default=0.3
-        ;;
-    state_warm_a04)
-        experiment_name=state_warm_a04
-        part_moe_enabled=0
-        state_warm_enabled=1
-        final_eval_only=1
-        state_max_alpha_default=0.4
-        ;;
-    state_gate)
-        experiment_name=state_gate
-        part_moe_enabled=0
-        state_warm_enabled=1
-        state_gate_enabled=1
-        final_eval_only=1
-        state_max_alpha_default=0.6
         ;;
     *)
         echo "[ERROR] Unknown mode: $MODE"
-        echo "        Supported modes: orginal, use_part_moe, part_moe_leg, part_moe_foot, part_moe_arm, state, state_warm, state_warm_late, state_warm_half, state_warm_a02, state_warm_a03, state_warm_a04, state_gate"
+        echo "        Supported modes: orginal, use_part_moe, part_moe_leg, part_moe_foot, part_moe_arm, state, state_conds, part_state"
         exit 1
         ;;
 esac
@@ -170,12 +133,10 @@ part_moe_start_iter=10000
 part_moe_warmup=1000
 part_moe_global_keep=0.1
 
-# ================= State warm 参数 =================
+# ================= State 参数 =================
 state_start_iter=${STATE_START_ITER:-$state_start_iter_default}
 state_ramp_iter=${STATE_RAMP_ITER:-$state_ramp_iter_default}
 state_max_alpha=${STATE_MAX_ALPHA:-$state_max_alpha_default}
-state_gate_hidden_dim=${STATE_GATE_HIDDEN_DIM:-$state_gate_hidden_dim_default}
-state_gate_bias=${STATE_GATE_BIAS:-$state_gate_bias_default}
 
 test_iterations=(3000 "$part_moe_start_iter" "$iter")
 save_iterations=(3000 "$part_moe_start_iter" "$iter")
@@ -187,7 +148,7 @@ if [ "$final_eval_only" = "1" ]; then
 fi
 
 # ================= 总日志设置 =================
-if [ "$state_enabled" = "1" ] || [ "$state_warm_enabled" = "1" ]; then
+if [ "$state_enabled" = "1" ]; then
     GLOBAL_LOG_DIR="$REPO_ROOT/logs/state"
     GLOBAL_LOG_FILE="$GLOBAL_LOG_DIR/${RUN_TIME}_DNA-Rendering_${experiment_name}_gpu${GPU_id}.log"
 elif [ "$part_moe_enabled" = "1" ]; then
@@ -225,13 +186,10 @@ echo "[INFO] NON_RIGID_MLP_DEPTH: $non_rigid_mlp_depth"
 echo "[INFO] NON_RIGID_MLP_WIDTH: $non_rigid_mlp_width"
 echo "[INFO] FINAL_EVAL_ONLY: $final_eval_only"
 echo "[INFO] STATE_ENABLED: $state_enabled"
-echo "[INFO] STATE_WARM_ENABLED: $state_warm_enabled"
-echo "[INFO] STATE_GATE_ENABLED: $state_gate_enabled"
 echo "[INFO] STATE_START_ITER: $state_start_iter"
 echo "[INFO] STATE_RAMP_ITER: $state_ramp_iter"
 echo "[INFO] STATE_MAX_ALPHA: $state_max_alpha"
-echo "[INFO] STATE_GATE_HIDDEN_DIM: $state_gate_hidden_dim"
-echo "[INFO] STATE_GATE_BIAS: $state_gate_bias"
+echo "[INFO] STATE_COND_MODE: $state_cond_mode"
 echo "[INFO] SKIP_LOAD_TEST_CAMERAS: $skip_load_test_cameras"
 echo "[INFO] IMAGE_DATA_DEVICE: $image_data_device"
 echo "[INFO] TEST_ITERATIONS: ${test_iterations[*]}"
@@ -294,22 +252,11 @@ STATE_ARGS=()
 if [ "$state_enabled" = "1" ]; then
     STATE_ARGS=(
         --use_state
-    )
-fi
-if [ "$state_warm_enabled" = "1" ]; then
-    STATE_ARGS=(
-        --use_state_warm
         --state_start_iter "$state_start_iter"
         --state_ramp_iter "$state_ramp_iter"
         --state_max_alpha "$state_max_alpha"
+        --state_cond_mode "$state_cond_mode"
     )
-    if [ "$state_gate_enabled" = "1" ]; then
-        STATE_ARGS+=(
-            --use_state_gate
-            --state_gate_hidden_dim "$state_gate_hidden_dim"
-            --state_gate_bias "$state_gate_bias"
-        )
-    fi
 fi
 
 for SEQUENCE in "${SEQUENCES[@]}"; do

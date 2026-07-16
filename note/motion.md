@@ -1499,3 +1499,2022 @@ state_gate 当前不能作为正结果：
 同时需要记录 gate mean / min / max，
 否则无法判断 gate 是否在训练中异常放大。
 ```
+
+## 2026-07-12 DNA / I3D state_warm_a04 脚本入口
+
+本次只改启动脚本，不改训练代码和 state 分支实现。
+
+DNA-Rendering 已有 state_warm_a04 消融入口，本次补充常用启动注释：
+
+```bash
+GPU_id=2 bash scripts/exps_dnarendering.sh state_warm_a04
+SEQUENCES_OVERRIDE="0007_04 0019_10" GPU_id=2 bash scripts/exps_dnarendering.sh state_warm_a04
+```
+
+I3D-Human 新增同配置 state_warm_a04 消融入口：
+
+```bash
+GPU_id=3 bash scripts/exps_i3dhuman.sh state_warm_a04
+SEQUENCES_OVERRIDE="ID1_1 ID1_2" GPU_id=3 bash scripts/exps_i3dhuman.sh state_warm_a04
+```
+
+I3D state_warm_a04 参数与 DNA 当前主实验保持一致：
+
+```text
+state_start_iter = 1500
+state_ramp_iter  = 3000
+state_max_alpha  = 0.4
+final_eval_only  = 1
+```
+
+I3D 脚本行为：
+
+```text
+mode:
+    state_warm_a04
+
+训练参数:
+    --use_state_warm
+    --state_start_iter 1500
+    --state_ramp_iter 3000
+    --state_max_alpha 0.4
+
+eval/save:
+    只在最终 iter=15000 做 test/save，
+    避免新增中间评估影响 I3D 现有实验成本。
+
+日志:
+    logs/state/<RUN_TIME>_I3D-Human_state_warm_a04_gpu<GPU_id>.log
+```
+
+对已有实验的影响：
+
+```text
+orginal / use_part_moe / part_moe_leg / part_moe_foot / part_moe_arm:
+    保持原有启动方式和默认参数。
+
+COMMON_TRAIN_ARGS:
+    原本硬编码 test/save iterations，
+    现在改成数组变量；
+    非 state_warm_a04 模式下内容仍是 3000, part_moe_start_iter, iter。
+```
+
+补充：
+
+```text
+IDE 中显示的以下脚本当前不在仓库 scripts/ 目录：
+    scripts/exps_dnarendering_part0.sh
+    scripts/launch_dnarendering_part0_4gpu.sh
+
+为了不影响其他实验代码，本次没有凭空新建这两个缺失脚本。
+实际可用入口是：
+    scripts/exps_dnarendering.sh
+    scripts/exps_i3dhuman.sh
+```
+
+## 2026-07-12 消融实验入口约定
+
+后续新增消融实验时，不使用下面这类 part0 / launch 临时脚本作为入口：
+
+```text
+scripts/exps_dnarendering_part0.sh
+scripts/launch_dnarendering_part0_4gpu.sh
+```
+
+统一约定：
+
+```text
+1. 消融模式写进对应数据集主脚本的 MODE case：
+       scripts/exps_dnarendering.sh
+       scripts/exps_i3dhuman.sh
+       scripts/exps_zjumocap.sh
+
+2. 启动命令写在脚本顶部 Usage / 常用覆盖方式里。
+
+3. 默认参数、日志路径、test/save iterations 都在同一个脚本内显式记录。
+
+4. 不新增额外 launch 脚本，除非明确要求做批量调度封装。
+```
+
+## 2026-07-12 I3D / ZJU state_warm_a04 启动
+
+本次目标：
+
+```text
+用 GPU 0, 1, 3 跑完 I3D-Human 和 ZJU-MoCap 上的 state_warm_a04，
+完成后汇总评价指标。
+```
+
+入口约定：
+
+```text
+只使用数据集主脚本：
+    scripts/exps_i3dhuman.sh
+    scripts/exps_zjumocap.sh
+
+不使用：
+    scripts/exps_dnarendering_part0.sh
+    scripts/launch_dnarendering_part0_4gpu.sh
+```
+
+本次统一运行时间戳：
+
+```text
+RUN_TIME = 20260712_222210
+```
+
+GPU 状态：
+
+```text
+GPU 0 / 1 / 3 空闲可用。
+GPU 2 nvidia-smi 报 device handle error，本次不使用。
+```
+
+队列分配：
+
+```text
+GPU 0:
+    I3D-Human: ID1_1 ID3_1
+    ZJU-MoCap: CoreView_377 CoreView_392
+
+GPU 1:
+    I3D-Human: ID1_2
+    ZJU-MoCap: CoreView_386 CoreView_393
+
+GPU 3:
+    I3D-Human: ID2_1
+    ZJU-MoCap: CoreView_387 CoreView_394
+```
+
+ZJU state_warm_a04 已补到主脚本：
+
+```text
+state_start_iter = 1500
+state_ramp_iter  = 3000
+state_max_alpha  = 0.4
+final_eval_only  = 1
+```
+
+注意：
+
+```text
+ZJU 默认总步数 iter=3000。
+更正:
+    代码里的 alpha 公式是:
+        alpha = min(state_max_alpha, (iter - state_start_iter) / state_ramp_iter)
+
+    所以沿用 1500 / 3000 / 0.4 时:
+        iter 1500: alpha = 0
+        iter 2100: alpha = 0.2
+        iter 2700: alpha = 0.4
+        iter 3000: alpha = 0.4
+
+    之前“ZJU 终点 alpha 约 0.2”的判断不正确。
+    ZJU 终点实际已经达到 max alpha 0.4。
+```
+
+启动结果：
+
+```text
+首次后台队列 PIDs:
+    GPU0 queue: 469406
+    GPU1 queue: 469512
+    GPU3 queue: 469603
+
+这些队列没有进入训练，未生成输出目录。
+随后用前台短超时启动 I3D ID1_1 诊断，脚本能进入 train.py，
+但 CUDA 初始化失败。
+```
+
+CUDA 诊断：
+
+```text
+nvidia-smi:
+    GPU 0 / 1 / 3 可见且空闲。
+    GPU 2 报错:
+        Unable to determine the device handle for GPU2: 0000:B1:00.0: Unknown Error
+
+PyTorch 自检:
+    CUDA_VISIBLE_DEVICES=0 -> torch.cuda.is_available() = False, device_count = 0
+    CUDA_VISIBLE_DEVICES=1 -> torch.cuda.is_available() = False, device_count = 0
+    CUDA_VISIBLE_DEVICES=3 -> torch.cuda.is_available() = False, device_count = 0
+    CUDA_VISIBLE_DEVICES=<GPU UUID> 也失败。
+
+错误核心:
+    CUDA initialization: CUDA unknown error
+    Can't initialize NVML
+    knn_cuda assert torch.cuda.is_available() is False
+```
+
+当前状态：
+
+```text
+I3D / ZJU state_warm_a04 脚本入口已准备好。
+训练没有成功启动，因此还没有评价指标可以汇总。
+需要先恢复系统 CUDA/NVML 状态，或者重置/隔离异常的 GPU2。
+恢复后可以继续用 RUN_TIME=20260712_222210 或换新 RUN_TIME 复跑。
+```
+
+## 2026-07-12 GPU 0/1/3 状态复查
+
+用户问题：
+
+```text
+除了卡2掉了，卡0，1，3也坏了吗
+```
+
+复查结果：
+
+```text
+nvidia-smi:
+    GPU 0 / 1 / 3 仍能显示，温度/显存/进程信息正常。
+    GPU 2 仍然报:
+        Unable to determine the device handle for GPU2: 0000:B1:00.0: Unknown Error
+
+PyTorch:
+    CUDA_VISIBLE_DEVICES=0 -> available False, count 0
+    CUDA_VISIBLE_DEVICES=1 -> available False, count 0
+    CUDA_VISIBLE_DEVICES=3 -> available False, count 0
+```
+
+判断：
+
+```text
+不能直接说 GPU 0 / 1 / 3 硬件也坏了。
+更准确说法是：
+    GPU 0 / 1 / 3 在 nvidia-smi 层面可见；
+    但当前 CUDA/NVML runtime 初始化失败，
+    导致 PyTorch 无法使用任何单独指定的可用卡。
+
+最可能是 GPU2 的底层异常污染了驱动/NVML 全局状态，
+使 CUDA runtime 枚举设备失败。
+```
+
+## 2026-07-13 I3D / ZJU state_warm_a04 完成结果
+
+完成情况：
+
+```text
+I3D-Human:
+    run: 20260713_174844
+    log: logs/state/20260713_174844_I3D-Human_state_warm_a04_gpu3.log
+    GPU_id: 3
+    sequences: ID1_1 ID1_2 ID2_1 ID3_1
+    status: All sequences finished
+
+ZJU-MoCap:
+    run: 20260713_175243
+    log: logs/state/20260713_175243_ZJU-MoCap_state_warm_a04_gpu2.log
+    GPU_id: 2
+    sequences: CoreView_377 CoreView_386 CoreView_387 CoreView_392 CoreView_393 CoreView_394
+    status: All sequences finished
+```
+
+对比基线：
+
+```text
+I3D baseline:
+    orginal / 20260616_212011
+
+ZJU baseline:
+    orginal / 20260618_233204_all
+
+delta = state_warm_a04 - baseline
+PSNR / SSIM 越高越好。
+LPIPS 越低越好，所以 delta LPIPS x1000 为负数表示 state_warm_a04 更好。
+```
+
+I3D-Human novelview：
+
+| Sequence | PSNR | SSIM | LPIPS | dPSNR | dSSIM | dLPIPS x1000 |
+|---|---:|---:|---:|---:|---:|---:|
+| ID1_1 | 32.044126 | 0.966966 | 0.025584 | +0.100544 | +0.000382 | -0.312622 |
+| ID1_2 | 32.148249 | 0.966950 | 0.027135 | -0.096871 | -0.000185 | +0.094727 |
+| ID2_1 | 31.607723 | 0.969412 | 0.028685 | +0.041105 | +0.000033 | -0.367033 |
+| ID3_1 | 33.757207 | 0.966006 | 0.032919 | -0.017175 | -0.000021 | +0.081881 |
+| Avg | 32.389326 | 0.967333 | 0.028581 | +0.006901 | +0.000053 | -0.125762 |
+
+I3D-Human novelpose：
+
+| Sequence | PSNR | SSIM | LPIPS | dPSNR | dSSIM | dLPIPS x1000 |
+|---|---:|---:|---:|---:|---:|---:|
+| ID1_1 | 30.072430 | 0.959931 | 0.031467 | +0.095783 | +0.000126 | -0.287849 |
+| ID1_2 | 30.539378 | 0.959974 | 0.031341 | -0.043607 | +0.000031 | +0.483742 |
+| ID2_1 | 28.375255 | 0.955890 | 0.039422 | +0.104563 | +0.000489 | -0.622556 |
+| ID3_1 | 32.654811 | 0.959766 | 0.037225 | -0.058370 | -0.000475 | +0.483133 |
+| Avg | 30.410469 | 0.958890 | 0.034864 | +0.024592 | +0.000042 | +0.014118 |
+
+ZJU-MoCap test：
+
+| Sequence | PSNR | SSIM | LPIPS | dPSNR | dSSIM | dLPIPS x1000 |
+|---|---:|---:|---:|---:|---:|---:|
+| CoreView_377 | 31.435721 | 0.973212 | 0.017981 | +0.010127 | +0.000098 | -0.288000 |
+| CoreView_386 | 34.020936 | 0.969739 | 0.024785 | +0.000626 | +0.000129 | -0.258803 |
+| CoreView_387 | 28.743490 | 0.955477 | 0.032468 | +0.040678 | +0.000101 | -0.192541 |
+| CoreView_392 | 31.977012 | 0.964203 | 0.028458 | -0.005589 | -0.000230 | +0.001546 |
+| CoreView_393 | 29.407416 | 0.954279 | 0.033703 | -0.018267 | -0.000175 | -0.013499 |
+| CoreView_394 | 31.129175 | 0.957123 | 0.029885 | +0.030746 | +0.000205 | -0.405871 |
+| Avg | 31.118959 | 0.962339 | 0.027880 | +0.009720 | +0.000021 | -0.192861 |
+
+结论：
+
+```text
+I3D:
+    novelview 平均小幅正向：
+        PSNR +0.0069
+        SSIM +0.000053
+        LPIPS -0.126 x1000
+
+    novelpose 平均 PSNR / SSIM 小幅正向：
+        PSNR +0.0246
+        SSIM +0.000042
+        LPIPS +0.014 x1000
+
+    逐序列不完全一致：
+        ID1_1 / ID2_1 改善更明显；
+        ID1_2 / ID3_1 有部分指标回退。
+
+ZJU:
+    六序列平均更稳定正向：
+        PSNR +0.0097
+        SSIM +0.000021
+        LPIPS -0.193 x1000
+
+    6 个序列里 4 个 PSNR 提升；
+    6 个序列里 5 个 LPIPS 改善。
+
+整体:
+    state_warm_a04 在 I3D / ZJU 上没有带来显著大幅提升，
+    但平均指标基本不掉，并有轻微正向趋势。
+    这和 DNA 上的结论一致：
+        weak state fusion 更像稳定的小幅调制，
+        全图指标收益有限，
+需要继续看 high-motion / boundary / high-error subset 才更可能体现价值。
+```
+
+## 2026-07-13 state_warm_a04 后续调参建议
+
+问题：
+
+```text
+能不能通过调参再提高点
+```
+
+判断：
+
+```text
+可以尝试，但预期提升不会很大。
+当前 I3D / ZJU 的全图平均已经基本贴近 baseline，
+state_warm_a04 的收益量级是:
+    PSNR: 约 +0.007 到 +0.025
+    SSIM: 约 +0.00002 到 +0.00005
+    LPIPS: 约 -0.13 到 -0.19 x1000，I3D novelpose 基本持平
+
+这说明 state 分支不是明显欠调，而是全图指标里可提升空间很小。
+调参目标应该是:
+    1. 保持全图不掉；
+    2. 减少 I3D 个别序列回退；
+    3. 尽量扩大 LPIPS / 局部 subset 收益。
+```
+
+优先级 1：降低 I3D alpha，做更保守版本
+
+```text
+现象:
+    I3D ID1_2 / ID3_1 有部分指标回退。
+
+建议:
+    state_warm_a03:
+        state_start_iter = 1500
+        state_ramp_iter  = 3000
+        state_max_alpha  = 0.3
+
+理由:
+    对 I3D，a04 平均小幅正向但序列间不稳定。
+    降到 0.3 可能牺牲一点正向序列收益，
+    但更可能减少回退序列的负影响。
+
+优先跑:
+    I3D-Human 全 4 序列
+```
+
+优先级 2：ZJU 试更早 warm，但不提高 max alpha
+
+```text
+现象:
+    ZJU 已经比较稳定正向。
+    当前 alpha 在 2700 步达到 0.4，满 alpha 只覆盖最后约 300 步。
+
+建议:
+    state_warm_early_a04:
+        state_start_iter = 1000
+        state_ramp_iter  = 3000
+        state_max_alpha  = 0.4
+
+效果:
+    iter 1000: alpha = 0
+    iter 1600: alpha = 0.2
+    iter 2200: alpha = 0.4
+    iter 3000: alpha = 0.4
+
+理由:
+    ZJU 只有 3000 步，state 介入稍早一些，
+    可能让后半段优化更充分利用 motion state。
+    但 max alpha 不提高，避免破坏 baseline 主路径。
+```
+
+优先级 3：谨慎试 a05，不作为首选
+
+```text
+配置:
+    state_warm_a05:
+        state_start_iter = 1500
+        state_ramp_iter  = 3000
+        state_max_alpha  = 0.5
+
+风险:
+    DNA 早期实验显示强 state 容易破坏 baseline 路径。
+    I3D 已有序列回退，a05 可能放大这种不稳定。
+
+适合:
+    只在 ZJU 或 high-motion subset 上验证，
+    不建议直接作为全数据主实验。
+```
+
+不建议优先做：
+
+```text
+1. 继续加大到 alpha 0.6 / 0.8:
+       风险大于收益。
+
+2. 继续跑当前 state_gate:
+       DNA 上已出现训练稳定性问题和平均指标下降。
+
+3. 只看全图指标反复细调:
+       当前收益太小，容易被随机性吞掉。
+       应同步看 high-motion / boundary / high-error subset。
+```
+
+推荐下一组消融：
+
+```text
+I3D:
+    state_warm_a03
+
+ZJU:
+    state_warm_early_a04
+
+评价:
+    1. 全图平均不能低于 baseline / state_warm_a04
+    2. 单序列回退数量是否减少
+    3. LPIPS 是否继续改善
+    4. high-motion / boundary / high-error subset 是否扩大收益
+```
+
+## 2026-07-13 state 代码清理
+
+用户要求：
+
+```text
+删除之前失败的 state 相关实验和代码，
+只保留 state_warm_a04 的消融实验及其代码，
+并把 state_warm_a04 相关实验名字改成 state。
+```
+
+执行范围：
+
+```text
+只清理代码入口和实验脚本。
+没有删除历史 output / logs / metrics 结果目录。
+历史 state_warm_a04 指标仍可用于对比和记录。
+```
+
+保留的 state 语义：
+
+```text
+新 state = 原 state_warm_a04
+
+参数:
+    state_start_iter = 1500
+    state_ramp_iter  = 3000
+    state_max_alpha  = 0.4
+
+融合:
+    h_base = baseline MLP(features)
+    h_state = state-conditioned MLP(features, motion_state)
+    h = (1 - alpha) * h_base + alpha * h_state
+
+alpha:
+    alpha = min(state_max_alpha, (iteration - state_start_iter) / state_ramp_iter)
+```
+
+删除/停用的旧 state 入口：
+
+```text
+旧 full-state:
+    --use_state 的旧语义，即完全替换 baseline 主路径的 state MLP，已删除。
+
+旧 warm 入口:
+    --use_state_warm 已删除。
+
+旧 gate 入口:
+    --use_state_gate
+    state_gate_hidden_dim
+    state_gate_bias
+    state_gate 分支已删除。
+
+DNA 旧消融模式:
+    state_warm
+    state_warm_late
+    state_warm_half
+    state_warm_a02
+    state_warm_a03
+    state_warm_a04
+    state_gate
+```
+
+当前脚本入口：
+
+```bash
+bash scripts/exps_dnarendering.sh state
+bash scripts/exps_i3dhuman.sh state
+bash scripts/exps_zjumocap.sh state
+```
+
+输出目录命名：
+
+```text
+之后新实验都写到:
+    output/<Dataset>/<Sequence>/state/<RUN_TIME>/
+
+日志写到:
+    logs/state/<RUN_TIME>_<Dataset>_state_gpu<GPU_id>.log
+```
+
+代码清理点：
+
+```text
+arguments:
+    保留 use_state / state_start_iter / state_ramp_iter / state_max_alpha。
+    删除 use_state_warm / state_film / use_state_gate 等旧参数。
+
+NonrigidDeformer:
+    use_state=True 时直接走原 state_warm_a04 的弱融合路径。
+    删除旧 full-state 替换路径和 gate 路径。
+
+renderer / scene:
+    只检查 use_state。
+```
+
+验证：
+
+```text
+bash -n:
+    scripts/exps_dnarendering.sh
+    scripts/exps_i3dhuman.sh
+    scripts/exps_zjumocap.sh
+
+py_compile:
+    arguments/__init__.py
+    scene/gaussian_model.py
+    scene/__init__.py
+    gaussian_renderer/__init__.py
+    nets/mlp_delta_non_rigid.py
+    scripts/eval_state_subsets.py
+
+最小 forward:
+    NonrigidDeformer(use_state=True) 输出 d_xyz / d_rotation / d_scaling shape 正常。
+```
+
+## 2026-07-13 part_state 消融启动
+
+目标：
+
+```text
+新增同时使用 part_moe_leg 和 state 的消融实验:
+    part_state
+
+用 GPU 2 / 3 依次跑完三个数据集:
+    DNA-Rendering
+    I3D-Human
+    ZJU-MoCap
+
+完成后汇总评价指标。
+```
+
+part_state 定义：
+
+```text
+part_moe:
+    enabled = 1
+    part_label_schema = part_moe_leg
+    num_parts = 7
+
+state:
+    enabled = 1
+    state_start_iter = 1500
+    state_ramp_iter  = 3000
+    state_max_alpha  = 0.4
+
+eval/save:
+    final_eval_only = 1
+```
+
+脚本入口：
+
+```bash
+bash scripts/exps_dnarendering.sh part_state
+bash scripts/exps_i3dhuman.sh part_state
+bash scripts/exps_zjumocap.sh part_state
+```
+
+本次 RUN_TIME：
+
+```text
+20260713_220713
+```
+
+队列分配：
+
+```text
+GPU 2:
+    DNA-Rendering: 0044_11 0051_09 0206_04
+    I3D-Human: ID1_1 ID1_2
+    ZJU-MoCap: CoreView_377 CoreView_386 CoreView_387
+
+GPU 3:
+    DNA-Rendering: 0813_05 0007_04 0019_10
+    I3D-Human: ID2_1 ID3_1
+    ZJU-MoCap: CoreView_392 CoreView_393 CoreView_394
+```
+
+验证：
+
+```text
+bash -n:
+    scripts/exps_dnarendering.sh
+    scripts/exps_i3dhuman.sh
+    scripts/exps_zjumocap.sh
+```
+
+运行中状态：
+
+```text
+已完成:
+    DNA-Rendering: 0044_11 0051_09 0813_05 0007_04 0019_10
+
+GPU 2:
+    0206_04 训练过程中报 CUDA error: unspecified launch failure。
+    随后 nvidia-smi 报:
+        Unable to determine the device handle for GPU2: Unknown Error
+    判断为 GPU2 驱动侧掉卡/不可用，不再继续把剩余任务排到 GPU2。
+
+恢复策略:
+    先让 GPU3 完成原本队列:
+        I3D-Human: ID2_1 ID3_1
+        ZJU-MoCap: CoreView_392 CoreView_393 CoreView_394
+
+    再用 GPU3 补跑 GPU2 未完成队列:
+        DNA-Rendering: 0206_04
+        I3D-Human: ID1_1 ID1_2
+        ZJU-MoCap: CoreView_377 CoreView_386 CoreView_387
+
+    继续沿用 RUN_TIME=20260713_220713，最终 metrics 仍汇总到同一组 part_state 目录。
+```
+
+当前阻塞：
+
+```text
+GPU3 原队列完成 I3D-Human/ID2_1 后，后续启动报:
+    AssertionError: torch.cuda.is_available() is False
+
+单独测试:
+    CUDA_VISIBLE_DEVICES=3 torch.cuda.is_available() -> False
+    CUDA_VISIBLE_DEVICES=1 torch.cuda.is_available() -> False
+    torch.cuda.device_count() -> 0
+
+nvidia-smi 仍能看到 GPU0/1/3，但 GPU2 报 Unknown Error；PyTorch/NVML 当前无法初始化 CUDA。
+因此剩余 part_state 实验暂时无法在当前节点继续启动，需要恢复驱动/重启节点/换节点后补跑。
+```
+
+已完成指标：
+
+| Dataset | Seq | Split | PSNR | SSIM | LPIPS |
+|---|---:|---|---:|---:|---:|
+| DNA-Rendering | 0007_04 | novelview | 29.5799 | 0.9588 | 0.0437 |
+| DNA-Rendering | 0019_10 | novelview | 35.3723 | 0.9814 | 0.0207 |
+| DNA-Rendering | 0044_11 | novelview | 33.0134 | 0.9782 | 0.0212 |
+| DNA-Rendering | 0051_09 | novelview | 28.6450 | 0.9713 | 0.0309 |
+| DNA-Rendering | 0813_05 | novelview | 36.1498 | 0.9872 | 0.0183 |
+| I3D-Human | ID2_1 | novelview | 31.5835 | 0.9698 | 0.0284 |
+| I3D-Human | ID2_1 | novelpose | 28.2920 | 0.9557 | 0.0397 |
+
+已完成均值：
+
+| Dataset | Split | N | PSNR | SSIM | LPIPS |
+|---|---|---:|---:|---:|---:|
+| DNA-Rendering | novelview | 5 | 32.5521 | 0.9754 | 0.0269 |
+| I3D-Human | novelview | 1 | 31.5835 | 0.9698 | 0.0284 |
+| I3D-Human | novelpose | 1 | 28.2920 | 0.9557 | 0.0397 |
+
+待补跑：
+
+```text
+DNA-Rendering:
+    0206_04
+
+I3D-Human:
+    ID1_1 ID1_2 ID3_1
+
+ZJU-MoCap:
+    CoreView_377 CoreView_386 CoreView_387 CoreView_392 CoreView_393 CoreView_394
+```
+
+已完成序列提升判断：
+
+```text
+参照选择:
+    orginal:
+        DNA 使用 20260701_130518；0044_11 使用 20260701_162750。
+        I3D 使用 20260616_212011。
+
+    state:
+        DNA 使用 state_warm_a04/20260710_220456。
+        I3D 使用 state_warm_a04/20260713_174844。
+
+    part_moe_leg:
+        DNA 使用最新可比 25000-step part_moe_leg 结果。
+        I3D 使用 part_moe_leg/20260622_145118。
+```
+
+总体结论：
+
+```text
+相对 orginal:
+    已完成 7 个评测项全部提升。
+    平均变化:
+        PSNR  +0.0586
+        SSIM  +0.000432
+        LPIPS -0.000630
+
+相对 state:
+    5/7 个评测项三项指标同时更好。
+    平均变化:
+        PSNR  +0.0308
+        SSIM  +0.000312
+        LPIPS -0.000411
+
+相对 part_moe_leg:
+    不稳定，不算明确提升。
+    平均变化:
+        PSNR  -0.0053
+        SSIM  -0.000001
+        LPIPS -0.000060
+    只有 1/7 个评测项三项指标同时更好。
+```
+
+关键观察：
+
+```text
+DNA-Rendering:
+    对 orginal / state 基本都有小幅收益。
+    对 part_moe_leg:
+        0007_04 / 0019_10 / 0044_11 / 0051_09 多数指标接近或略好，
+        0813_05 明显不如 part_moe_leg。
+
+I3D-Human ID2_1:
+    对 orginal novelview/novelpose 都小幅提升。
+    对 state 和 part_moe_leg:
+        novelview LPIPS/SSIM 略好但 PSNR 略低；
+        novelpose 三项都更差。
+
+判断:
+    part_state 已经说明“part_moe_leg + state”不会明显破坏 orginal，
+    且比单独 state 通常更好。
+    但目前还不能说它超过单独 part_moe_leg；
+    下一步需要补齐剩余序列，并重点看 boundary/high-motion subset 是否有更稳定收益。
+```
+
+## 2026-07-15 part_state 补跑
+
+用户要求：
+
+```text
+在卡3运行没运行完的序列。
+```
+
+恢复检查：
+
+```text
+nvidia-smi:
+    GPU3 空闲，显存约 18 MiB。
+    GPU2 已不再报 Unknown Error。
+
+CUDA 自检:
+    CUDA_VISIBLE_DEVICES=3 torch.cuda.is_available() -> True
+    device_count -> 1
+    CUDA tensor 分配正常。
+```
+
+补跑策略：
+
+```text
+沿用 RUN_TIME=20260713_220713。
+只跑未完成序列，不重跑已完成指标。
+
+GPU3 队列:
+    DNA-Rendering: 0206_04
+    I3D-Human: ID1_1 ID1_2 ID3_1
+    ZJU-MoCap: CoreView_377 CoreView_386 CoreView_387 CoreView_392 CoreView_393 CoreView_394
+```
+
+补跑完成：
+
+```text
+完成时间:
+    2026-07-15 20:04 CST
+
+最终 metrics 文件数:
+    20 / 20
+
+补跑完成序列:
+    DNA-Rendering: 0206_04
+    I3D-Human: ID1_1 ID1_2 ID3_1
+    ZJU-MoCap: CoreView_377 CoreView_386 CoreView_387 CoreView_392 CoreView_393 CoreView_394
+
+日志:
+    logs/state/20260713_220713_DNA-Rendering_part_state_gpu3.log
+    logs/state/20260713_220713_I3D-Human_part_state_gpu3.log
+    logs/state/20260713_220713_ZJU-MoCap_part_state_gpu3.log
+```
+
+完整 part_state 均值：
+
+| Dataset | Split | N | PSNR | SSIM | LPIPS |
+|---|---|---:|---:|---:|---:|
+| DNA-Rendering | novelview | 6 | 32.3903 | 0.9746 | 0.0280 |
+| I3D-Human | novelview | 4 | 32.4071 | 0.9676 | 0.0284 |
+| I3D-Human | novelpose | 4 | 30.4084 | 0.9589 | 0.0348 |
+| ZJU-MoCap | test | 6 | 31.1636 | 0.9624 | 0.0281 |
+
+## 2026-07-15 part_state vs 单独消融
+
+参照：
+
+```text
+state:
+    DNA-Rendering: state_warm_a04/20260710_220456
+    I3D-Human: state_warm_a04/20260713_174844
+    ZJU-MoCap: state_warm_a04/20260713_175243
+
+part_moe_leg:
+    DNA-Rendering: 最新可比 25000-step part_moe_leg
+    I3D-Human: part_moe_leg/20260622_145118
+    ZJU-MoCap: part_moe_leg/20260626_164558
+```
+
+相对单独 state：
+
+| Dataset | Split | N | dPSNR | dSSIM | dLPIPS | 三指标全优 |
+|---|---|---:|---:|---:|---:|---:|
+| DNA-Rendering | novelview | 6 | +0.0847 | +0.000472 | -0.000673 | 6/6 |
+| I3D-Human | novelview | 4 | +0.0178 | +0.000228 | -0.000171 | 2/4 |
+| I3D-Human | novelpose | 4 | -0.0020 | +0.000010 | -0.000040 | 1/4 |
+| ZJU-MoCap | test | 6 | +0.0446 | +0.000035 | +0.000181 | 2/6 |
+| Overall | all | 20 | +0.0419 | +0.000200 | -0.000190 | 11/20 |
+
+相对单独 part_moe_leg：
+
+| Dataset | Split | N | dPSNR | dSSIM | dLPIPS | 三指标全优 |
+|---|---|---:|---:|---:|---:|---:|
+| DNA-Rendering | novelview | 6 | +0.0127 | +0.000069 | -0.000056 | 2/6 |
+| I3D-Human | novelview | 4 | +0.0130 | +0.000117 | -0.000082 | 1/4 |
+| I3D-Human | novelpose | 4 | -0.0460 | -0.000096 | +0.000192 | 0/4 |
+| ZJU-MoCap | test | 6 | +0.0025 | -0.000045 | +0.000028 | 2/6 |
+| Overall | all | 20 | -0.0020 | +0.000011 | +0.000014 | 5/20 |
+
+判断：
+
+```text
+part_state 相比单独 state:
+    整体有小幅提高，尤其 DNA 六条全优。
+    I3D/ZJU 收益不稳定，但总体均值仍略好。
+
+part_state 相比单独 part_moe_leg:
+    不能认为有稳定提高。
+    DNA / I3D novelview 接近持平略好；
+    I3D novelpose 明显更差；
+    ZJU 基本持平，PSNR 略好但 SSIM/LPIPS 略差。
+
+结论:
+    part_state 当前更像是“part_moe_leg 基础上加入 state 后，仍保持总体接近 part_moe_leg，并明显强于单独 state”。
+    但它还没有证明组合优于单独 part_moe_leg。
+```
+
+## 2026-07-15 state 分支结构说明
+
+state 实验新增的分支：
+
+```text
+不是新增一个直接预测 Gaussian 输出的完整 head。
+新增的是 NonrigidDeformer 内部的一条 state-conditioned hidden feature branch:
+
+    baseline branch:
+        features -> baseline MLP -> h_base
+
+    state branch:
+        features -> copied MLP linear layers + FiLM(motion_state) -> h_state
+
+    warm fusion:
+        h = (1 - alpha) * h_base + alpha * h_state
+
+    shared output heads:
+        h -> gaussian_warp     -> d_xyz
+        h -> gaussian_rotation -> d_rotation
+        h -> gaussian_scaling  -> d_scaling
+```
+
+输入：
+
+```text
+1. 每个 Gaussian 的常规非刚性输入 features:
+       x_emb
+       pose feature
+       sequence pose feature
+       sequence xyz/KNN feature
+
+   拼接后得到:
+       features: [B, N, input_ch]
+
+2. motion state 条件:
+       state_conds
+
+   当前代码里 renderer 传入:
+       state_conds = cond_dict[pose_id].get("state_conds", seq_pose_conds)
+
+   如果没有单独 state_conds，就回退使用 seq_pose_conds。
+   在 NonrigidDeformer 中 reshape 为:
+       state_seq: [B, L, C]
+
+   C = 3 * (N_JOINT + 1) * time_step_num
+       smpl:  N_JOINT=23
+       smplx: N_JOINT=54
+```
+
+motion state 编码：
+
+```text
+TemporalStateEncoder:
+    state_seq [B, L, C]
+        -> 1D temporal conv / TCN
+        -> 取最后一个时间步特征
+        -> Linear MLP
+        -> state embedding [B, state_dim]
+
+默认:
+    state_dim = 64
+    state_hidden_dim = 128
+    state_layers = 3
+```
+
+FiLM 调制：
+
+```text
+state_film_layer(state):
+    [B, state_dim] -> [B, num_state_layers, 2, W]
+
+每一层得到:
+    gamma, beta
+
+对 state branch 每层隐藏特征做:
+    h_state = gamma * h_state + beta
+    h_state = ReLU(h_state)
+
+初始化:
+    state branch 的 linear layer 从 baseline MLP 拷贝。
+    state_film_layer weight/bias 初始化为 0。
+
+所以训练初期:
+    gamma = 1
+    beta = 0
+    h_state 接近 h_base
+```
+
+输出：
+
+```text
+state 分支本身的直接输出:
+    h_state: [B, N, W]
+
+融合后的输出:
+    h: [B, N, W]
+
+最终由共享 head 输出:
+    d_xyz:      [B, N, 3]
+    d_rotation: [B, N, 4]
+    d_scaling:  [B, N, 3]
+```
+
+warm 融合：
+
+```text
+只有 iteration >= state_start_iter 才启用。
+
+alpha = clamp((iteration - state_start_iter) / state_ramp_iter, 0, state_max_alpha)
+
+当前 state / part_state 使用:
+    state_start_iter = 1500
+    state_ramp_iter  = 3000
+    state_max_alpha  = 0.4
+
+所以:
+    1500 step 前: 不用 state branch
+    1500 step 后: alpha 逐步增大
+    达到上限后: h = 0.6 * h_base + 0.4 * h_state
+```
+
+直观理解：
+
+```text
+baseline MLP 负责稳定的空间/姿态非刚性表示。
+state branch 用一段时间窗口里的 motion pose/state 编码，生成 FiLM 参数，
+让隐藏特征根据当前运动状态轻微偏移。
+
+它不是替换 baseline，而是最多以 0.4 权重混入 state-conditioned hidden feature。
+```
+
+state_warm_a04_flow_zh.svg 中两个“state”相关框的关系：
+
+```text
+图里的 “Motion state 分支” 和 “State MLP 分支” 不是同一个 MLP。
+它们是两个模块，前者给后者提供调制条件。
+
+1. Motion state 分支:
+       对应代码里的 TemporalStateEncoder + state_film_layer。
+
+       输入:
+           state_conds / seq_pose_conds
+
+       输出:
+           state embedding
+           FiLM 参数 gamma / beta
+
+       作用:
+           编码这一帧/这一段时间的运动状态。
+           它不直接预测 d_xyz / d_rotation / d_scaling。
+
+2. State MLP 分支:
+       对应代码里的 self.state_layers。
+
+       输入:
+           和 baseline MLP 相同的 Gaussian features
+
+       中间调制:
+           每一层用 Motion state 分支给出的 gamma / beta 做 FiLM:
+               h_state = gamma * h_state + beta
+
+       输出:
+           h_state hidden feature
+
+3. 二者关系:
+       Motion state 分支是条件生成器。
+       State MLP 分支是被条件调制的特征分支。
+
+       motion state -> gamma/beta -> 调制 State MLP -> h_state
+
+4. 最终输出:
+       h_state 不直接作为最终 Gaussian 变形。
+       它先和 baseline 的 h_base 融合:
+           h = (1 - alpha) * h_base + alpha * h_state
+
+      再经过共享输出头得到:
+          d_xyz / d_rotation / d_scaling
+```
+
+motion state 编码的具体实现：
+
+```text
+1. state_conds 当前通常就是 seq_pose_conds
+
+renderer 里:
+    state_conds = cond_dict[pose_id].get("state_conds", seq_pose_conds)
+
+因为数据读取阶段没有额外写入 state_conds，
+所以当前实验实际使用 seq_pose_conds 作为 motion state 输入。
+```
+
+seq_pose_conds 的来源：
+
+```text
+get_seq_pose_xyz_cond 会对当前帧和历史帧做差:
+
+    cur_id    = pose_index - i * time_step
+    former_id = pose_index - (i + 1) * time_step
+
+    delta_pose_mat = cur_pose_mat @ inv(former_pose_mat)
+    posedelta = matrix_to_axis_angle(delta_pose_mat)
+
+也就是说，seq_pose_conds 不是单帧绝对 pose，
+而是不同时间间隔上的关节旋转变化量。
+
+它描述的是:
+    这一帧相对过去几帧，身体各关节怎么动了。
+
+这比单帧 pose 更接近“运动状态”，包含速度/方向/近期动态。
+```
+
+张量形状：
+
+```text
+seq_pose_conds 原始形状大致是:
+    [B, time_step_num, seq_len, J+1, 3]
+
+其中:
+    time_step_num: 多种时间间隔
+    seq_len: 每种时间间隔回看多少步
+    J+1: SMPL/SMPL-X 关节数加 root
+    3: axis-angle 旋转差
+
+进入 state branch 前:
+    B = state_conds.shape[0]
+    L = state_conds.shape[1]
+    state_seq = state_conds.reshape(B, L, -1)
+
+所以变成:
+    state_seq: [B, L, C]
+
+C = 3 * (J + 1) * time_step_num
+
+注意:
+    这里 L 通常对应 seq_len / 时间序列长度。
+    C 里包含所有关节、所有时间间隔的旋转差特征。
+```
+
+TemporalStateEncoder 怎么编码运动状态：
+
+```text
+输入:
+    state_seq [B, L, C]
+
+代码:
+    x = state_seq.permute(0, 2, 1)
+
+变成 Conv1d 需要的格式:
+    x [B, C, L]
+
+然后经过 3 层 temporal conv:
+    kernel_size = 3
+    dilation = 1, 2, 4
+
+这些卷积沿 L 这个时间维滑动，
+所以能看见相邻时间步以及更长间隔的运动变化模式。
+
+直观上它学习:
+    哪些关节最近变化大
+    哪些方向在持续运动
+    快动作/慢动作/停顿
+    多时间尺度下的 pose delta pattern
+
+最后:
+    feat_t = feat[:, :, -1]
+
+取最后一个时间位置的特征，
+表示“到当前帧为止”的运动状态摘要。
+
+再过 MLP:
+    Linear -> ReLU -> Linear
+
+得到:
+    state embedding [B, state_dim]
+```
+
+从 state embedding 到 FiLM 参数：
+
+```text
+state_film_layer:
+    [B, state_dim] -> [B, num_state_layers * 2 * W]
+
+reshape:
+    film = film.view(B, num_state_layers, 2, W)
+
+对每个 state MLP layer 都得到:
+    gamma: [B, W]
+    beta:  [B, W]
+
+应用到每个 Gaussian 的隐藏特征:
+    gamma = 1 + gamma
+    beta  = beta
+    h_state = gamma * h_state + beta
+
+因为 gamma/beta 是从帧级 motion state 来的，
+同一帧内所有 Gaussian 共享这一组运动上下文；
+但它们各自的 h_state 不同，所以调制后的结果仍然是点相关的。
+```
+
+为什么这叫“编码运动状态”：
+
+```text
+输入不是图像，也不是高误差区域标签，
+而是一段时间窗口里的关节旋转差序列。
+
+TemporalStateEncoder 用时间卷积把这些 pose delta 压缩成一个 state embedding。
+这个 embedding 表示当前帧的整体运动状态：
+    快/慢
+    动作方向
+    哪些关节变化明显
+    多时间尺度的近期运动趋势
+
+随后 FiLM 参数把这个状态注入到非刚性 MLP 的隐藏层，
+让同样的 Gaussian features 在不同运动状态下产生不同的非刚性变形特征。
+```
+
+关于 state_conds 回退到 seq_pose_conds 是否有问题：
+
+```text
+结论:
+    不是实现 bug，shape 和语义都能成立；
+    但它不是一个额外独立的新 motion signal，而是对已有 seq_pose_conds 的另一种编码。
+
+shape 上:
+    get_seq_pose_xyz_cond 生成的 seq_pose_conds 形状约为:
+        [B, seq_len, time_step_num, J+1, 3]
+
+    state branch 中:
+        B = state_conds.shape[0]
+        L = state_conds.shape[1]
+        state_seq = state_conds.reshape(B, L, -1)
+
+    得到:
+        [B, seq_len, 3 * (J+1) * time_step_num]
+
+    这正好匹配:
+        state_input_dim = 3 * (N_JOINT + 1) * time_step_num
+
+所以回退到 seq_pose_conds 不会造成维度错误。
+
+语义上:
+    seq_pose_conds 是多时间间隔下的 pose delta，
+    本身就是运动状态信息。
+    用它作为 state_conds 是合理的。
+
+局限:
+    1. 它和原 SeqPoseEncoder 使用的是同一份输入，
+       因此 state 分支的信息增量主要来自不同编码方式和 FiLM 调制，
+       不是来自额外传感器/额外 motion label。
+
+    2. 它是帧级/序列级 motion context，
+       同一帧所有 Gaussian 共享同一个 state embedding。
+       它不知道哪个 Gaussian 位于衣服边界或高误差区域。
+
+    3. 当前 state 只包含 pose delta，
+       没有显式使用局部 xyz velocity、part label、mask boundary 或 per-point error。
+
+判断:
+    作为 state_warm_a04 的保守实现，这一步可以接受；
+    如果下一版想让 state 更强，应该考虑构造显式 state_conds，
+    例如拼接 seq_pose_conds + 全局运动幅度 + per-part motion summary，
+    或者进一步做 point-wise state/gate。
+```
+
+## 2026-07-15 GaussianAvatar 对显式 state_conds 的参考价值
+
+问题：
+
+```text
+/media/image/mxz/human/GaussianAvatar 的论文和代码能不能用来显式构造 state_conds，
+替换之前被迫使用的 seq_pose_conds？
+```
+
+结论：
+
+```text
+可以参考，而且方向是对的；
+但不建议直接把 GaussianAvatar 的整套 pose encoder / UV decoder 搬进 SeqAvatar。
+
+更合适的做法是借它的“显式 SMPL posed surface / position map”思想，
+用 SMPL/SMPL-X 的逐帧显式几何运动来构造 state_conds。
+这样 state_conds 不再只是 seq_pose_conds 的别名，而是有额外 motion signal。
+```
+
+GaussianAvatar 可借鉴的点：
+
+```text
+1. 它为每一帧生成 posed SMPL position map:
+       scripts/gen_pose_map_our_smpl.py
+       inp_posemap_<res>_<frame>.npz
+
+2. 训练时读取 inp_pos_map:
+       scene/dataset_mono.py
+
+3. 用 pose_encoder 把 posed position map 编成 pose_featmap:
+       model/avatar_model.py
+       pose_featmap = self.pose_encoder(inp_posmap)
+
+4. pose_featmap 和可学习 geom_featmap 一起进入 Gaussian decoder:
+       model/network.py
+       pix_feature = pose_featmap + geom_featmap
+
+本质上，GaussianAvatar 不是只用关节 pose 向量，
+而是把当前帧 SMPL 表面的显式空间状态作为 pose-dependent 条件。
+```
+
+SeqAvatar 当前接口是否支持替换：
+
+```text
+支持。
+
+gaussian_renderer/__init__.py 里已经有：
+    state_conds = pc.cond_dict[pose_id].get('state_conds', seq_pose_conds)
+
+nets/mlp_delta_non_rigid.py 里也有：
+    if state_conds is None:
+        state_conds = seq_pose_conds
+
+所以只要 dataset_readers.py 在 cond_dict 里写入 state_conds，
+state 分支就会优先使用显式 state_conds。
+```
+
+需要注意的维度问题：
+
+```text
+当前 StateEncoder 默认输入维度是：
+    3 * (N_JOINT + 1) * time_step_num
+
+这正好对应 seq_pose_conds reshape 后的维度。
+
+如果新的 state_conds 拼接了 xyz velocity、part summary、normal delta 等额外特征，
+就必须同步修改 state_input_dim：
+    1. 增加命令行参数，例如 --state_input_dim；
+    2. 或根据 state_cond_mode 计算输入维度；
+    3. 或保留同维度，把显式运动先投影回原维度。
+```
+
+推荐实现顺序：
+
+```text
+第一步，低风险显式 state_conds：
+    state_conds = seq_pose_conds + 从 seq_xyz_conds 汇总出的显式运动统计
+
+可加入：
+    global xyz velocity mean / max
+    per-part xyz velocity mean / max
+    joint pose delta norm
+    root / limb motion magnitude
+
+这一步不需要生成 UV pose map，也不改变渲染主干。
+
+第二步，GaussianAvatar-style surface state：
+    用每帧 SMPL posed vertices 或 position map 计算：
+        当前帧 posed surface
+        前一帧 posed surface
+        surface velocity
+        normal / tangent change
+        per-part motion summary
+
+然后聚合成当前 StateEncoder 可吃的 frame-level state_conds。
+
+第三步，更强但改动更大：
+    把 surface motion 通过 nearest SMPL vertex / LBS weights 分配到每个 Gaussian，
+    做 point-wise state_conds 或 point-wise gate。
+    这比 frame-level state 更符合边界、袖口、裤腿、裙摆等局部收益目标。
+```
+
+判断：
+
+```text
+替换 seq_pose_conds 是可行的。
+
+最稳的下一版不是直接接 GaussianAvatar 的 UNet，
+而是在 SeqAvatar 的 dataset_readers.py 中显式写 state_conds：
+    seq_pose_conds
+    + seq_xyz_conds 的运动幅度统计
+    + per-part motion summary
+
+这样能验证“显式 motion state 是否比复用 seq_pose_conds 更有效”，
+同时不影响 baseline、part_moe_leg 和现有 state 主干。
+```
+
+## 2026-07-15 显式 state_conds 计算方案
+
+当前已有运动量：
+
+```text
+get_seq_pose_xyz_cond(pose_index, time_steps, interval, get_pose_xyz_func, ...)
+
+对每个 time_step 和历史窗口 i：
+    cur_id    = pose_index - i * time_step
+    former_id = pose_index - (i + 1) * time_step
+
+读取：
+    cur_pose_mat, cur_obs_xyz
+    former_pose_mat, former_obs_xyz
+
+计算：
+    delta_pose_mat = cur_pose_mat @ inverse(former_pose_mat)
+    posedelta      = matrix_to_axis_angle(delta_pose_mat)
+    xyz_delta      = cur_obs_xyz - former_obs_xyz
+```
+
+当前张量含义：
+
+```text
+seq_pose_conds:
+    形状约为 [1, seq_len, time_step_num, J+1, 3]
+    含义是多时间尺度的关节相对旋转。
+
+seq_xyz_conds:
+    形状约为 [V, seq_len, time_step_num, 3]
+    含义是多时间尺度的 SMPL 顶点显式空间位移/速度。
+```
+
+推荐第一版显式 state_conds：
+
+```text
+目标：
+    让 state_conds 不再等于 seq_pose_conds，
+    而是包含 pose delta + 显式 surface motion summary。
+
+对每个历史时间 l、每个 time_step s：
+    pose_delta[l, s] = seq_pose_conds[0, l, s]          # [J+1, 3]
+    xyz_delta[l, s]  = seq_xyz_conds[:, l, s]           # [V, 3]
+
+计算 surface motion 统计：
+    speed_v = ||xyz_delta||_2                           # [V]
+    global_mean_speed = mean(speed_v)
+    global_max_speed  = max(speed_v)
+    global_p90_speed  = percentile(speed_v, 90)
+    global_xyz_mean   = mean(xyz_delta, dim=V)          # [3]
+
+如果有 part labels / vertex groups，再计算：
+    part_mean_speed[p] = mean(speed_v[part == p])
+    part_max_speed[p]  = max(speed_v[part == p])
+    part_xyz_mean[p]   = mean(xyz_delta[part == p])     # [3]
+```
+
+拼接方式：
+
+```text
+state_feat[l, s] =
+    flatten(pose_delta[l, s])
+    + global_mean_speed
+    + global_max_speed
+    + global_p90_speed
+    + global_xyz_mean
+    + part motion summary
+
+最后：
+    state_conds = stack(state_feat over l and s)
+
+建议保持接口形状：
+    state_conds: [1, seq_len, time_step_num, C]
+
+进入 NonrigidDeformer 后仍然：
+    B = state_conds.shape[0]
+    L = state_conds.shape[1]
+    state_seq = state_conds.reshape(B, L, -1)
+```
+
+维度处理：
+
+```text
+如果 C 仍然等于 (J+1)*3，可以不改 StateEncoder 输入维度，
+但这样显式 motion 必须先投影/压缩回原维度，不够直观。
+
+更推荐：
+    增加 state_cond_dim / state_input_dim 配置，
+    或根据 state_cond_mode 自动计算：
+
+    state_input_dim =
+        time_step_num * C
+
+其中：
+    C = pose_dim + global_motion_dim + part_motion_dim
+
+这样 state_conds 的新增信息是明确可控的。
+```
+
+为什么这样比直接回退 seq_pose_conds 更好：
+
+```text
+seq_pose_conds 只看关节相对旋转；
+显式 state_conds 额外看 SMPL surface 真实空间位移。
+
+这能表达：
+    当前帧整体运动强不强
+    哪些 part 动得更明显
+    是否存在局部大幅运动
+    衣服边界、袖口、裤腿、裙摆附近更可能需要 state 调制
+
+这和 GaussianAvatar 的核心启发一致：
+    不只使用抽象 pose 向量，
+    还使用 posed surface / position map 代表当前帧几何状态。
+```
+
+## 2026-07-15 是否必须计算 part-level surface motion
+
+问题：
+
+```text
+计算 state_conds 的时候，有没有必要按照 part 算 part-level surface motion？
+```
+
+判断：
+
+```text
+有价值，但不建议作为第一版显式 state_conds 的硬依赖。
+
+第一版优先做：
+    seq_pose_conds
+    + global surface motion summary
+
+然后再做 ablation：
+    state_global
+    state_global_part
+
+用实验判断 part-level motion 是否真的带来增益。
+```
+
+理由：
+
+```text
+part-level surface motion 的优点：
+    1. 比 global motion 更细。
+       同一帧可能只是腿、袖口、裙摆在动，全局 mean 会把局部运动稀释掉。
+
+    2. 和已有 part_moe_leg / part_state 方向一致。
+       state 分支可以知道“哪个身体区域当前运动强”，
+       不只是知道“这一帧整体运动强”。
+
+    3. 对 boundary / high-motion subset 更可能有效。
+       衣服边界、袖口、裤腿、裙摆通常和局部 part motion 更相关。
+
+part-level surface motion 的风险：
+    1. 需要可靠的 SMPL vertex segmentation。
+       当前 part_moe 使用的是 Gaussian part label，
+       state_conds 计算阶段需要的是 SMPL 顶点 part label，两者不是同一个对象。
+
+    2. 会增加 state_conds 维度。
+       维度变大后必须同步修改 state_input_dim，
+       而且在小数据集上可能更容易过拟合。
+
+    3. part 划分如果太粗或不稳定，可能引入噪声。
+       例如衣服/裙摆并不严格等于 SMPL leg/body part。
+```
+
+推荐顺序：
+
+```text
+第一步 state_global：
+    pose_delta
+    + global_mean_speed
+    + global_max_speed
+    + global_p90_speed
+    + global_xyz_mean
+
+第二步 state_global_part：
+    在 state_global 基础上加入 per-part:
+        part_mean_speed
+        part_max_speed
+        part_xyz_mean
+
+第三步 point-wise state/gate：
+    如果 part-level 有收益，再考虑把 per-part 或 per-vertex motion
+    通过 nearest SMPL vertex / LBS weights 分配到每个 Gaussian。
+```
+
+结论：
+
+```text
+不必一开始就按 part 算。
+
+先用 global surface motion 证明“显式 state_conds 比复用 seq_pose_conds 有效”。
+如果 global 只在少数序列有收益，或者 high-motion/boundary subset 仍不明显，
+再加入 part-level surface motion。
+```
+
+## 2026-07-15 state_conds 消融实验
+
+用户要求：
+
+```text
+新增消融实验 state_conds。
+只在 DNA-Rendering 上跑。
+用 GPU3。
+最后汇总 novelview 全图评价指标，
+并汇总 high-motion / boundary / high-error subset 结果。
+```
+
+实验目标：
+
+```text
+验证显式计算出来的 state_conds 是否比 state 实验中回退使用 seq_pose_conds 更有效。
+```
+
+本次 state_conds 计算方式：
+
+```text
+state_cond_mode = global_surface
+
+对每个历史帧 l、每个 time_step s：
+    pose_feats = flatten(seq_pose_conds[0, l, s])       # [3 * (J+1)]
+    xyz_delta  = seq_xyz_conds[:, l, s]                 # [V, 3]
+    speed      = ||xyz_delta||_2                        # [V]
+
+额外拼接：
+    global_mean_speed = mean(speed)
+    global_max_speed  = max(speed)
+    global_p90_speed  = quantile(speed, 0.9)
+    global_xyz_mean   = mean(xyz_delta, dim=V)          # [3]
+
+所以：
+    state_conds = concat(
+        pose_feats,
+        global_mean_speed,
+        global_max_speed,
+        global_p90_speed,
+        global_xyz_mean
+    )
+```
+
+维度：
+
+```text
+SMPL-X:
+    J+1 = 55
+    pose_dim = 55 * 3 = 165
+    global_surface_dim = 6
+    per-time-step C = 171
+    time_step_num = 3
+    StateEncoder input_dim = 171 * 3 = 513
+
+原 state:
+    StateEncoder input_dim = 165 * 3 = 495
+```
+
+代码入口：
+
+```text
+scripts/exps_dnarendering.sh state_conds
+
+该模式：
+    experiment_name = state_conds
+    --use_state
+    --state_cond_mode global_surface
+    --state_start_iter 1500
+    --state_ramp_iter 3000
+    --state_max_alpha 0.4
+    final_eval_only = 1
+```
+
+实现约束：
+
+```text
+默认 state_cond_mode=pose。
+因此 orginal / part_moe / part_moe_leg / state / part_state 不会生成新的 state_conds，
+也不会改变旧 StateEncoder 输入维度。
+
+只有 state_conds 模式才会在 dataset_readers.py 的 cond_dict 里写入显式 state_conds。
+```
+
+验证：
+
+```text
+py_compile 通过：
+    arguments/__init__.py
+    scene/__init__.py
+    scene/dataset_readers.py
+    scene/gaussian_model.py
+    nets/mlp_delta_non_rigid.py
+
+shape 自检：
+    state_conds: [1, 8, 3, 171]
+    state_seq reshape 后输入维度: 513
+
+knn_cuda 导入检查：
+    PATH=/media/image/mxz/.conda/envs/seqavatar/bin:$PATH
+    import knn_cuda OK
+```
+
+运行结果：
+
+```text
+RUN_TIME = 20260715_231745
+GPU = 3
+入口 = GPU_id=3 bash scripts/exps_dnarendering.sh state_conds
+日志 = logs/state/20260715_231745_DNA-Rendering_state_conds_gpu3.log
+输出 = output/DNA-Rendering/<seq>/state_conds/20260715_231745/
+
+六个序列均已完成训练和 render.py novelview 评价。
+```
+
+state_conds 全图 novelview 指标：
+
+| Sequence | PSNR | SSIM | LPIPS x1000 |
+|---|---:|---:|---:|
+| 0007_04 | 29.558240 | 0.958422 | 45.119477 |
+| 0019_10 | 35.258634 | 0.980866 | 21.278971 |
+| 0044_11 | 32.931219 | 0.977931 | 21.489767 |
+| 0051_09 | 28.631773 | 0.971384 | 31.043444 |
+| 0206_04 | 31.429339 | 0.969940 | 33.865396 |
+| 0813_05 | 36.095236 | 0.986987 | 18.354361 |
+| Average | 32.317407 | 0.974255 | 28.525236 |
+
+全图对比结论：
+
+```text
+对比 baseline 平均:
+    baseline:    PSNR 32.311109, SSIM 0.974181, LPIPS x1000 28.605086
+    state_conds: PSNR 32.317407, SSIM 0.974255, LPIPS x1000 28.525236
+
+变化:
+    ΔPSNR  +0.006298
+    ΔSSIM  +0.000074
+    ΔLPIPS -0.079850
+
+全图平均基本持平，略好。
+```
+
+对比旧 state 平均：
+
+```text
+旧 state:
+    PSNR 31.639918, SSIM 0.971508, LPIPS x1000 31.221671
+
+state_conds:
+    PSNR 32.317407, SSIM 0.974255, LPIPS x1000 28.525236
+
+变化:
+    ΔPSNR  +0.677489
+    ΔSSIM  +0.002747
+    ΔLPIPS -2.696435
+
+显式 state_conds 明显修复了旧 state 全图指标下降的问题。
+```
+
+subset 评价输出：
+
+```text
+note/state_conds_subset_20260715_231745/subset_metrics.json
+note/state_conds_subset_20260715_231745/subset_metrics.md
+```
+
+state_conds 相对 baseline 的 subset 结果：
+
+| Subset | ΔL1 | ΔPSNR | ΔSSIM | ΔLPIPS x1000 |
+|---|---:|---:|---:|---:|
+| high_motion | -0.000014 | +0.047058 | +0.000195 | -0.090207 |
+| boundary | -0.000011 | -0.000471 | NA | NA |
+| high_error_crop | -0.000192 | +0.027593 | +0.001680 | -2.156282 |
+
+对比旧 state_warm_a04 的 subset：
+
+```text
+high_motion:
+    旧 state_warm_a04: ΔL1 +0.000012, ΔPSNR +0.019877, ΔSSIM +0.000063, ΔLPIPS -0.037734
+    state_conds:       ΔL1 -0.000014, ΔPSNR +0.047058, ΔSSIM +0.000195, ΔLPIPS -0.090207
+    结论: state_conds 更好。
+
+boundary:
+    旧 state_warm_a04: ΔL1 -0.000166, ΔPSNR +0.029871
+    state_conds:       ΔL1 -0.000011, ΔPSNR -0.000471
+    结论: state_conds 更弱，几乎没有 boundary 收益。
+
+high_error_crop:
+    旧 state_warm_a04: ΔL1 -0.000023, ΔPSNR +0.023158, ΔSSIM +0.001195, ΔLPIPS -1.267135
+    state_conds:       ΔL1 -0.000192, ΔPSNR +0.027593, ΔSSIM +0.001680, ΔLPIPS -2.156282
+    结论: state_conds 更好。
+```
+
+最终判断：
+
+```text
+显式计算 state_conds 是有效方向。
+
+它让全图指标不再像旧 state 那样明显下降，
+并且 high_motion / high_error_crop subset 比旧 state_warm_a04 更好。
+
+但当前 global_surface 只用全局 surface motion summary，
+boundary 区域收益反而弱于旧 state_warm_a04。
+这说明只做全局 motion summary 还不够定位衣服边界/袖口/裤腿/裙摆。
+
+下一步如果继续改 state_conds，优先加：
+    1. part-level surface motion；
+    2. 或 point-wise gate / per-Gaussian local motion。
+```
+
+## 2026-07-16 state_conds 正确比较口径修正
+
+用户指出：
+
+```text
+state_conds 应该和 state_warm_a04 比较实验结果。
+state_warm_a04 现在已经改名为 state。
+```
+
+修正：
+
+```text
+主要比较口径应为：
+    state_conds / 20260715_231745
+    vs
+    state_warm_a04 / 20260710_220456
+
+baseline 只作为参考，不作为判断 state_conds 是否有效的主要对象。
+旧 full-state / 20260708_001225 也不是当前 state 主线。
+```
+
+全图平均对比，delta = state_conds - state_warm_a04：
+
+| Method | PSNR | SSIM | LPIPS x1000 |
+|---|---:|---:|---:|
+| state_warm_a04 / current state | 32.322408 | 0.974247 | 28.503387 |
+| state_conds | 32.317407 | 0.974255 | 28.525236 |
+| delta | -0.005001 | +0.000008 | +0.021849 |
+
+逐序列全图 delta，delta = state_conds - state_warm_a04：
+
+| Sequence | ΔPSNR | ΔSSIM | ΔLPIPS x1000 |
+|---|---:|---:|---:|
+| 0007_04 | +0.053756 | +0.000173 | -0.043092 |
+| 0019_10 | -0.027501 | -0.000113 | +0.346109 |
+| 0044_11 | -0.048977 | -0.000005 | +0.037288 |
+| 0051_09 | -0.057911 | -0.000156 | -0.048816 |
+| 0206_04 | +0.031166 | +0.000081 | -0.119052 |
+| 0813_05 | +0.019462 | +0.000068 | -0.041345 |
+
+subset 直接对比，delta = state_conds - state_warm_a04：
+
+| Subset | ΔL1 | ΔPSNR | ΔSSIM | ΔLPIPS x1000 |
+|---|---:|---:|---:|---:|
+| high_motion | -0.000026 | +0.027181 | +0.000132 | -0.052473 |
+| boundary | +0.000154 | -0.030342 | NA | NA |
+| high_error_crop | -0.000169 | +0.004435 | +0.000486 | -0.889147 |
+
+修正结论：
+
+```text
+按当前主线 state_warm_a04/current state 对比：
+
+1. 全图平均:
+   state_conds 和 current state 基本打平；
+   PSNR 略低，SSIM 几乎一样，LPIPS 略差。
+   因此不能说 state_conds 全图优于 current state。
+
+2. high_motion subset:
+   state_conds 更好。
+
+3. high_error_crop subset:
+   state_conds 更好，尤其 LPIPS 改善更明显。
+
+4. boundary subset:
+   state_conds 更差。
+
+所以 state_conds 的价值不是全图平均提升，
+而是显式 surface motion 对 high-motion / high-error crop 更有帮助。
+但它削弱了 current state 在 boundary 上的收益。
+
+下一步若继续该方向，不应只加 global surface motion；
+更应该加入 part-level surface motion 或 point-wise/local gate，
+目标是保住 high-motion/high-error 收益，同时恢复 boundary 收益。
+```
+
+## 2026-07-16 h_state 含义解释
+
+问题：
+
+```text
+h_state 是运动状态特征吗？
+它是怎么一步步获得的？
+```
+
+结论：
+
+```text
+h_state 不是纯粹的“运动状态特征”。
+
+更准确地说：
+    state 是帧级运动状态 embedding。
+    h_state 是每个 Gaussian 的隐藏变形特征，
+    只不过这个隐藏特征被 state 产生的 FiLM 参数调制过。
+
+所以 h_state 可以理解为：
+    “带有当前运动状态影响的 Gaussian 非刚性变形隐藏特征”。
+```
+
+生成流程：
+
+```text
+1. 每个 Gaussian 先有自己的点特征:
+       x_emb
+
+2. 再拼上当前帧和历史运动相关条件:
+       pose_feats      = PoseEncoder(pose_conds)
+       seq_pose_feats  = SeqPoseEncoder(seq_pose_conds)
+       seq_xyz_feats   = SeqXYZEncoder(seq_xyz_conds, x_emb)
+
+3. 拼成每个 Gaussian 的输入特征:
+       features = concat(x_emb, pose_feats, seq_pose_feats, seq_xyz_feats)
+
+   features 是点级特征:
+       每个 Gaussian 都不一样。
+
+4. baseline 分支:
+       h_base = self.mlp(features)
+
+   h_base 是不额外使用 state FiLM 的隐藏特征。
+
+5. state 条件:
+       state_conds = cond_dict[pose_id].get("state_conds", seq_pose_conds)
+
+   普通 state:
+       state_conds 通常就是 seq_pose_conds
+
+   state_conds 实验:
+       state_conds = seq_pose_conds + global surface motion summary
+
+6. reshape 成时间序列:
+       state_seq = state_conds.reshape(B, L, -1)
+
+   例如 DNA / SMPL-X:
+       普通 state:      [1, 8, 495]
+       state_conds:     [1, 8, 513]
+
+7. TemporalStateEncoder 编码帧级运动状态:
+       state = self.StateEncoder(state_seq)
+
+   state 是帧级 embedding:
+       shape [B, state_dim]
+
+   它表达的是当前帧近期运动模式:
+       关节怎么变
+       动作快慢
+       多时间尺度 motion pattern
+       如果是 state_conds，还包含全局 surface motion 强度
+
+8. state 生成 FiLM 参数:
+       film = self.state_film_layer(state)
+       film -> gamma / beta
+
+   gamma / beta 是帧级参数:
+       同一帧内所有 Gaussian 共享同一套 gamma / beta。
+
+9. h_state 从 features 开始走 state_layers:
+       h_state = features
+       for layer:
+           h_state = layer(h_state)
+           h_state = gamma * h_state + beta
+           h_state = ReLU(h_state)
+
+   注意:
+       h_state 的主体仍然来自每个 Gaussian 自己的 features。
+       state 只是通过 gamma / beta 去调制这些点级隐藏特征。
+
+10. 最后弱融合:
+       h = (1 - alpha) * h_base + alpha * h_state
+
+   当前 state_warm_a04/current state:
+       alpha_max = 0.4
+
+11. 输出非刚性变形:
+       d_xyz      = gaussian_warp(h)
+       d_rotation = gaussian_rotation(h)
+       d_scaling  = gaussian_scaling(h)
+```
+
+直观理解：
+
+```text
+state:
+    “这一帧整体处在什么运动状态？”
+
+h_base:
+    “不额外看 state 时，每个 Gaussian 应该怎么变形？”
+
+h_state:
+    “在当前运动状态影响下，每个 Gaussian 应该怎么变形？”
+
+h:
+    “保守融合 baseline 和 state 后的最终隐藏变形特征。”
+```
+
+重要限制：
+
+```text
+当前 state / state_conds 的 gamma 和 beta 是帧级共享的。
+因此它知道“这一帧整体运动状态”，
+但还不知道“哪个 Gaussian 是袖口/裤腿/边界/高误差区域”。
+
+这也是为什么后续如果要增强 boundary 收益，
+需要 part-level state 或 point-wise gate。
+```
+
+本次问答确认：
+
+```text
+用户问 h_state 是否就是运动状态特征。
+回答口径：
+    h_state 不是纯 motion state。
+    motion state 先由 state_conds / seq_pose_conds 编码成帧级 state embedding，
+    再生成 FiLM gamma / beta，
+    最后调制每个 Gaussian 的隐藏变形特征，得到 h_state。
+```
