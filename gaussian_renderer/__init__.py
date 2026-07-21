@@ -68,9 +68,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor,
                 pose_conds = pc.cond_dict[pose_id]['pose_conds']
                 seq_pose_conds = pc.cond_dict[pose_id]['seq_pose_conds']
                 seq_xyz_conds = pc.cond_dict[pose_id]['seq_xyz_conds']
-                state_conds = None
-                if getattr(pc, "use_state", False):
-                    state_conds = pc.cond_dict[pose_id].get('state_conds', seq_pose_conds)
+                part_motion_conds = pc.cond_dict[pose_id].get('part_motion_conds', None)
 
                 _, vert_ids = pc.custom_knn_near(pc.canon_vertices, means3D)
                 query_pts_delta_conds = seq_xyz_conds[vert_ids, :,:,:].permute(0,1,3,2,4,5).contiguous()
@@ -86,10 +84,10 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor,
                     pose_conds,
                     seq_pose_conds,
                     query_pts_delta_conds,
-                    state_conds=state_conds,
-                    iteration=iteration,
                     part_label=part_label,
                     part_enabled=part_enabled,
+                    part_motion_conds=part_motion_conds,
+                    query_xyz=means3D,
                     part_moe_alpha=getattr(pc, "part_moe_alpha", 0.0),
                     part_moe_global_keep=getattr(pc, "part_moe_global_keep", 0.1),
                 )

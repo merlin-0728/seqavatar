@@ -62,7 +62,9 @@ ID3HUMAN_CFG = {
     'ID3_2': {'train_view': [1, 3, 5, 7, 9], 'test_view': [2, 4, 6, 8, 10], 'interval': 3},
 }
 
-def readID3HumanInfo(path, white_background, eval, time_steps, state_cond_mode="pose"):
+def readID3HumanInfo(path, white_background, eval, time_steps,
+                     use_part_pamo=False, part_label_schema="anatomy5", num_parts=5,
+                     part_pamo_motion_feat_mode="mean"):
     scene_name = os.path.basename(path).split('-')[0]
     if scene_name not in ID3HUMAN_CFG.keys():
         raise ValueError('Unknown dataset')
@@ -80,24 +82,34 @@ def readID3HumanInfo(path, white_background, eval, time_steps, state_cond_mode="
     test_cam_infos = {}
     smpl_params_dict, cond_dict = {}, {} # observation space smpl params, conditions for non-rigid deformation
     delta_pose_xyz_cache = {} # cache for sequential condition calculation
+    part_motion_cache = {}
     
     print("Reading Training Transforms")
     train_cam_infos = readCamerasI3DHuman(path, smpl_model, train_view, white_background, split='train', 
                         interval=interval, time_steps=time_steps, 
                         smpl_params_dict=smpl_params_dict, cond_dict=cond_dict,
-                        delta_pose_xyz_cache=delta_pose_xyz_cache, state_cond_mode=state_cond_mode)
+                        delta_pose_xyz_cache=delta_pose_xyz_cache,
+                        use_part_pamo=use_part_pamo, part_label_schema=part_label_schema,
+                        num_parts=num_parts, part_motion_cache=part_motion_cache,
+                        part_pamo_motion_feat_mode=part_pamo_motion_feat_mode)
 
     print("Reading Test Novelview Transforms")
     test_cam_infos['novelview'] = readCamerasI3DHuman(path, smpl_model, test_view, white_background, split='novelview', 
                                     interval=interval, time_steps=time_steps, 
                                     smpl_params_dict=smpl_params_dict, cond_dict=cond_dict,
-                                    delta_pose_xyz_cache=delta_pose_xyz_cache, state_cond_mode=state_cond_mode)
+                                    delta_pose_xyz_cache=delta_pose_xyz_cache,
+                                    use_part_pamo=use_part_pamo, part_label_schema=part_label_schema,
+                                    num_parts=num_parts, part_motion_cache=part_motion_cache,
+                                    part_pamo_motion_feat_mode=part_pamo_motion_feat_mode)
     
     print("Reading Test Novelpose Transforms")
     test_cam_infos['novelpose'] = readCamerasI3DHuman(path, smpl_model, test_view, white_background, split='novelpose', 
                                     interval=interval, time_steps=time_steps, 
                                     smpl_params_dict=smpl_params_dict, cond_dict=cond_dict,
-                                    delta_pose_xyz_cache=delta_pose_xyz_cache, state_cond_mode=state_cond_mode)
+                                    delta_pose_xyz_cache=delta_pose_xyz_cache,
+                                    use_part_pamo=use_part_pamo, part_label_schema=part_label_schema,
+                                    num_parts=num_parts, part_motion_cache=part_motion_cache,
+                                    part_pamo_motion_feat_mode=part_pamo_motion_feat_mode)
 
     if not eval:
         for key in test_cam_infos.keys():
@@ -128,7 +140,9 @@ def readID3HumanInfo(path, white_background, eval, time_steps, state_cond_mode="
                            smpl_params_dict=smpl_params_dict, cond_dict=cond_dict)
     return scene_info
 
-def readCamerasI3DHuman(path, smpl_model, output_view, white_background, image_scaling=1.0, split='train', interval=1, time_steps=None, smpl_params_dict=None, cond_dict=None, delta_pose_xyz_cache=None, multi=300.0, state_cond_mode="pose"):
+def readCamerasI3DHuman(path, smpl_model, output_view, white_background, image_scaling=1.0, split='train', interval=1, time_steps=None, smpl_params_dict=None, cond_dict=None, delta_pose_xyz_cache=None, multi=300.0,
+                        use_part_pamo=False, part_label_schema="anatomy5", num_parts=5, part_motion_cache=None,
+                        part_pamo_motion_feat_mode="mean"):
     cam_infos = []
     scene_name = os.path.basename(path).split('-')[0]
     scene_dir = os.path.join(os.path.dirname(path), scene_name + '-' + split)
@@ -181,7 +195,13 @@ def readCamerasI3DHuman(path, smpl_model, output_view, white_background, image_s
         if smpl_id not in cond_dict.keys():
             pose_conds = torch.from_numpy(frameid_pose[smpl_id]['poses']).unsqueeze(0)
             seq_pose_conds, seq_xyz_conds = get_seq_pose_xyz_cond(pose_index, time_steps, interval, get_pose_xyz_func, delta_pose_xyz_cache, multi=multi)
-            cond_dict[smpl_id] = build_cond_entry(pose_conds, seq_pose_conds, seq_xyz_conds, state_cond_mode)
+            part_motion_conds = None
+            if use_part_pamo:
+                part_motion_conds = get_part_motion_cond(
+                    pose_index, interval, get_pose_xyz_func, part_motion_cache,
+                    part_label_schema, num_parts, part_pamo_motion_feat_mode,
+                )
+            cond_dict[smpl_id] = build_cond_entry(pose_conds, seq_pose_conds, seq_xyz_conds, part_motion_conds)
 
         conds = cond_dict[smpl_id]
         pose_conds, seq_pose_conds, seq_xyz_conds = conds['pose_conds'], conds['seq_pose_conds'], conds['seq_xyz_conds']
@@ -235,7 +255,9 @@ def readCamerasI3DHuman(path, smpl_model, output_view, white_background, image_s
     return cam_infos
 
 ##################################   DNA-Rendering   ##################################
-def readDNARenderingInfo(path, white_background, eval, time_steps, state_cond_mode="pose"):
+def readDNARenderingInfo(path, white_background, eval, time_steps,
+                         use_part_pamo=False, part_label_schema="anatomy5", num_parts=5,
+                         part_pamo_motion_feat_mode="mean"):
     scene_name = os.path.basename(path)
     main_path = os.path.join(path, scene_name + '.smc')
     smc_reader = SMCReader(main_path)
@@ -256,18 +278,25 @@ def readDNARenderingInfo(path, white_background, eval, time_steps, state_cond_mo
     test_cam_infos = {}
     smpl_params_dict, cond_dict = {}, {} # observation space smpl params, conditions for non-rigid deformation
     delta_pose_xyz_cache = {} # cache for sequential condition calculation
+    part_motion_cache = {}
 
     # read cameras
     print("Reading Training Transforms")
     train_cam_infos = readCamerasDNARendering(path, train_view, white_background, split='train', time_steps=time_steps,
                         smpl_params_dict=smpl_params_dict, cond_dict=cond_dict, 
-                        delta_pose_xyz_cache=delta_pose_xyz_cache, state_cond_mode=state_cond_mode)
+                        delta_pose_xyz_cache=delta_pose_xyz_cache,
+                        use_part_pamo=use_part_pamo, part_label_schema=part_label_schema,
+                        num_parts=num_parts, part_motion_cache=part_motion_cache,
+                        part_pamo_motion_feat_mode=part_pamo_motion_feat_mode)
 
     print("Reading Novel View Transforms")
     test_cam_infos['novelview'] = readCamerasDNARendering(path, test_view, white_background, 
                                     split='novelview', time_steps=time_steps, 
                                     smpl_params_dict=smpl_params_dict, cond_dict=cond_dict,
-                                    delta_pose_xyz_cache=delta_pose_xyz_cache, state_cond_mode=state_cond_mode)
+                                    delta_pose_xyz_cache=delta_pose_xyz_cache,
+                                    use_part_pamo=use_part_pamo, part_label_schema=part_label_schema,
+                                    num_parts=num_parts, part_motion_cache=part_motion_cache,
+                                    part_pamo_motion_feat_mode=part_pamo_motion_feat_mode)
     
     if not eval:
         for key in test_cam_infos.keys():
@@ -298,7 +327,9 @@ def readDNARenderingInfo(path, white_background, eval, time_steps, state_cond_mo
                            smpl_params_dict=smpl_params_dict, cond_dict=cond_dict)
     return scene_info
 
-def readCamerasDNARendering(path, output_view, white_background, split='train', interval=1, time_steps=None, smpl_params_dict=None, cond_dict=None, delta_pose_xyz_cache=None, multi=300.0, state_cond_mode="pose"):
+def readCamerasDNARendering(path, output_view, white_background, split='train', interval=1, time_steps=None, smpl_params_dict=None, cond_dict=None, delta_pose_xyz_cache=None, multi=300.0,
+                            use_part_pamo=False, part_label_schema="anatomy5", num_parts=5, part_motion_cache=None,
+                            part_pamo_motion_feat_mode="mean"):
     cam_infos = []
     if split == 'train':
         pose_start, pose_interval, pose_num = 0, 1, 100
@@ -333,7 +364,13 @@ def readCamerasDNARendering(path, output_view, white_background, split='train', 
                 pose_conds = torch.from_numpy(pose_conds).unsqueeze(0)
 
             seq_pose_conds, seq_xyz_conds = get_seq_pose_xyz_cond(pose_index, time_steps, interval, get_pose_xyz_func, delta_pose_xyz_cache, multi=multi)
-            cond_dict[pose_index] = build_cond_entry(pose_conds, seq_pose_conds, seq_xyz_conds, state_cond_mode)
+            part_motion_conds = None
+            if use_part_pamo:
+                part_motion_conds = get_part_motion_cond(
+                    pose_index, interval, get_pose_xyz_func, part_motion_cache,
+                    part_label_schema, num_parts, part_pamo_motion_feat_mode,
+                )
+            cond_dict[pose_index] = build_cond_entry(pose_conds, seq_pose_conds, seq_xyz_conds, part_motion_conds)
 
         conds = cond_dict[pose_index]
         pose_conds, seq_pose_conds, seq_xyz_conds = conds['pose_conds'], conds['seq_pose_conds'], conds['seq_xyz_conds']
@@ -385,7 +422,9 @@ ZJUMOCAP_CFG = {
     'CoreView_394': {'train': {'interval': 1, 'num': 475},
                      'test':  {'interval': 30, 'num': 16}}
     }
-def readZJUMoCapInfo(path, white_background, eval, time_steps, state_cond_mode="pose"):
+def readZJUMoCapInfo(path, white_background, eval, time_steps,
+                     use_part_pamo=False, part_label_schema="anatomy5", num_parts=5,
+                     part_pamo_motion_feat_mode="mean"):
     # camera view splitting
     train_view = [0]
     test_view = [i for i in range(1, 23)]
@@ -399,18 +438,25 @@ def readZJUMoCapInfo(path, white_background, eval, time_steps, state_cond_mode="
     test_cam_infos = {}
     smpl_params_dict, cond_dict = {}, {} # observation space smpl params, conditions for non-rigid deformation
     delta_pose_xyz_cache = {} # cache for sequential condition calculation
+    part_motion_cache = {}
     
 
     # read cameras
     print("Reading Training Transforms")
     train_cam_infos = readCamerasZJUMoCap(path, train_view, white_background, split='train', time_steps=time_steps, 
                                           smpl_params_dict=smpl_params_dict, cond_dict=cond_dict,
-                                          delta_pose_xyz_cache=delta_pose_xyz_cache, state_cond_mode=state_cond_mode)
+                                          delta_pose_xyz_cache=delta_pose_xyz_cache,
+                                          use_part_pamo=use_part_pamo, part_label_schema=part_label_schema,
+                                          num_parts=num_parts, part_motion_cache=part_motion_cache,
+                                          part_pamo_motion_feat_mode=part_pamo_motion_feat_mode)
     
     print("Reading Test Transforms")
     test_cam_infos['test'] = readCamerasZJUMoCap(path, test_view, white_background, split='test', time_steps=time_steps, 
                                             smpl_params_dict=smpl_params_dict, cond_dict=cond_dict,
-                                            delta_pose_xyz_cache=delta_pose_xyz_cache, state_cond_mode=state_cond_mode)
+                                            delta_pose_xyz_cache=delta_pose_xyz_cache,
+                                            use_part_pamo=use_part_pamo, part_label_schema=part_label_schema,
+                                            num_parts=num_parts, part_motion_cache=part_motion_cache,
+                                            part_pamo_motion_feat_mode=part_pamo_motion_feat_mode)
     
     if not eval:
         for key in test_cam_infos.keys():
@@ -441,7 +487,9 @@ def readZJUMoCapInfo(path, white_background, eval, time_steps, state_cond_mode="
                            smpl_params_dict=smpl_params_dict, cond_dict=cond_dict)
     return scene_info
 
-def readCamerasZJUMoCap(path, output_view, white_background, image_scaling=0.5, split='train', interval=1, time_steps=None, smpl_params_dict=None, cond_dict=None, delta_pose_xyz_cache=None, state_cond_mode="pose"):
+def readCamerasZJUMoCap(path, output_view, white_background, image_scaling=0.5, split='train', interval=1, time_steps=None, smpl_params_dict=None, cond_dict=None, delta_pose_xyz_cache=None,
+                        use_part_pamo=False, part_label_schema="anatomy5", num_parts=5, part_motion_cache=None,
+                        part_pamo_motion_feat_mode="mean"):
     cam_infos = []
     pose_start = 0
     scene_name = os.path.basename(path)
@@ -490,7 +538,13 @@ def readCamerasZJUMoCap(path, output_view, white_background, image_scaling=0.5, 
         if pose_index not in cond_dict.keys():
             pose_conds = torch.from_numpy(smpl_param['poses'][:, 3:].reshape(-1, 3)).unsqueeze(0)
             seq_pose_conds, seq_xyz_conds = get_seq_pose_xyz_cond(pose_index, time_steps, interval, get_pose_xyz_func, delta_pose_xyz_cache)
-            cond_dict[pose_index] = build_cond_entry(pose_conds, seq_pose_conds, seq_xyz_conds, state_cond_mode)
+            part_motion_conds = None
+            if use_part_pamo:
+                part_motion_conds = get_part_motion_cond(
+                    pose_index, interval, get_pose_xyz_func, part_motion_cache,
+                    part_label_schema, num_parts, part_pamo_motion_feat_mode,
+                )
+            cond_dict[pose_index] = build_cond_entry(pose_conds, seq_pose_conds, seq_xyz_conds, part_motion_conds)
 
         conds = cond_dict[pose_index]
         pose_conds, seq_pose_conds, seq_xyz_conds = conds['pose_conds'], conds['seq_pose_conds'], conds['seq_xyz_conds']
@@ -528,29 +582,161 @@ def readCamerasZJUMoCap(path, output_view, white_background, image_scaling=0.5, 
     
     return cam_infos
 
-def build_global_surface_state_conds(seq_pose_conds, seq_xyz_conds):
-    pose_feats = seq_pose_conds.reshape(
-        seq_pose_conds.shape[0],
-        seq_pose_conds.shape[1],
-        seq_pose_conds.shape[2],
-        -1,
+def build_cond_entry(pose_conds, seq_pose_conds, seq_xyz_conds, part_motion_conds=None):
+    entry = {'pose_conds': pose_conds, 'seq_pose_conds': seq_pose_conds, 'seq_xyz_conds': seq_xyz_conds}
+    if part_motion_conds is not None:
+        entry['part_motion_conds'] = part_motion_conds
+    return entry
+
+
+def _valid_joint_ids(joint_ids, num_joints):
+    return [idx for idx in joint_ids if 0 <= idx < num_joints]
+
+
+def _smplx_hand_ids(side):
+    if side == "left":
+        return [20, 22] + list(range(25, 40))
+    return [21, 23] + list(range(40, 55))
+
+
+def get_part_joint_groups(schema, num_parts, num_joints):
+    all_joints = list(range(num_joints))
+    body = [0, 3, 6, 9, 12, 13, 14, 16, 17, 18, 19]
+    face = [15, 22, 23, 24]
+    left_hand = _smplx_hand_ids("left")
+    right_hand = _smplx_hand_ids("right")
+    left_leg_foot = [1, 4, 7, 10]
+    right_leg_foot = [2, 5, 8, 11]
+    left_foot = [10]
+    right_foot = [11]
+    left_arm_hand = [13, 16, 18] + left_hand
+    right_arm_hand = [14, 17, 19] + right_hand
+
+    if schema == "part_moe_arm":
+        groups = {
+            0: all_joints,
+            1: body,
+            2: left_arm_hand,
+            3: right_arm_hand,
+            4: face,
+            5: left_leg_foot,
+            6: right_leg_foot,
+        }
+    elif schema == "part_moe_foot":
+        groups = {
+            0: all_joints,
+            1: body,
+            2: left_hand,
+            3: right_hand,
+            4: face,
+            5: left_foot,
+            6: right_foot,
+        }
+    elif schema == "part_moe_leg":
+        groups = {
+            0: all_joints,
+            1: body,
+            2: left_hand,
+            3: right_hand,
+            4: face,
+            5: left_leg_foot,
+            6: right_leg_foot,
+        }
+    else:
+        groups = {
+            0: all_joints,
+            1: body + left_leg_foot + right_leg_foot,
+            2: left_hand,
+            3: right_hand,
+            4: face,
+        }
+
+    return [_valid_joint_ids(groups.get(pid, all_joints), num_joints) or all_joints for pid in range(num_parts)]
+
+
+def _part_pose_mean(pose_axis_angle, joint_groups):
+    return torch.stack([pose_axis_angle[joint_ids].mean(dim=0) for joint_ids in joint_groups], dim=0)
+
+
+def _part_pose_std(pose_axis_angle, joint_groups):
+    return torch.stack([
+        pose_axis_angle[joint_ids].std(dim=0, unbiased=False)
+        if len(joint_ids) > 1 else torch.zeros(3, dtype=pose_axis_angle.dtype, device=pose_axis_angle.device)
+        for joint_ids in joint_groups
+    ], dim=0)
+
+
+def _part_norm_stats(part_axis_angle, joint_groups):
+    stats = []
+    for joint_ids in joint_groups:
+        values = part_axis_angle[joint_ids].norm(dim=-1)
+        stats.append(torch.stack([values.mean(), values.max()], dim=0))
+    return torch.stack(stats, dim=0)
+
+
+def _get_pose_axis_angle(pose_id, get_pose_xyz_func, cache):
+    if cache is not None and pose_id in cache:
+        return cache[pose_id]
+    pose_mat, _ = get_pose_xyz_func(pose_id)
+    pose_axis_angle = matrix_to_axis_angle(pose_mat).float()
+    if cache is not None:
+        cache[pose_id] = pose_axis_angle
+    return pose_axis_angle
+
+
+def _safe_get_pose_axis_angle(pose_id, get_pose_xyz_func, cache, fallback):
+    try:
+        return _get_pose_axis_angle(pose_id, get_pose_xyz_func, cache)
+    except (FileNotFoundError, KeyError, IndexError, OSError):
+        return fallback
+
+
+def get_part_motion_cond(pose_index, interval, get_pose_xyz_func, part_motion_cache,
+                         part_label_schema="anatomy5", num_parts=5,
+                         part_pamo_motion_feat_mode="mean"):
+    cur_id = max(pose_index // interval, 0)
+    prev_id = max((pose_index - interval) // interval, 0)
+    next_id = cur_id + 1
+
+    pose_t = _get_pose_axis_angle(cur_id, get_pose_xyz_func, part_motion_cache)
+    pose_prev = _safe_get_pose_axis_angle(prev_id, get_pose_xyz_func, part_motion_cache, pose_t)
+    pose_next = _safe_get_pose_axis_angle(next_id, get_pose_xyz_func, part_motion_cache, pose_t)
+
+    joint_groups = get_part_joint_groups(part_label_schema, int(num_parts), pose_t.shape[0])
+    part_pose_t = _part_pose_mean(pose_t, joint_groups)
+    part_pose_prev = _part_pose_mean(pose_prev, joint_groups)
+    part_pose_next = _part_pose_mean(pose_next, joint_groups)
+    part_velocity = part_pose_t - part_pose_prev
+    part_acc = part_pose_next - 2.0 * part_pose_t + part_pose_prev
+
+    mean_features = torch.cat(
+        [part_pose_t, part_pose_prev, part_pose_next, part_velocity, part_acc],
+        dim=-1,
     )
-    xyz_delta = seq_xyz_conds.to(dtype=pose_feats.dtype)
-    speed = torch.linalg.norm(xyz_delta, dim=-1)
-    mean_speed = speed.mean(dim=0).unsqueeze(0).unsqueeze(-1)
-    max_speed = speed.max(dim=0).values.unsqueeze(0).unsqueeze(-1)
-    p90_speed = torch.quantile(speed, 0.9, dim=0).unsqueeze(0).unsqueeze(-1)
-    xyz_mean = xyz_delta.mean(dim=0).unsqueeze(0)
-    return torch.cat([pose_feats, mean_speed, max_speed, p90_speed, xyz_mean], dim=-1)
+    if part_pamo_motion_feat_mode == "mean":
+        return mean_features.unsqueeze(0)
+    if part_pamo_motion_feat_mode != "rich":
+        raise ValueError(f"Unknown part_pamo_motion_feat_mode: {part_pamo_motion_feat_mode}")
 
+    pose_t_std = _part_pose_std(pose_t, joint_groups)
+    velocity_axis = pose_t - pose_prev
+    acc_axis = pose_next - 2.0 * pose_t + pose_prev
+    velocity_std = _part_pose_std(velocity_axis, joint_groups)
+    acc_std = _part_pose_std(acc_axis, joint_groups)
+    velocity_norm_stats = _part_norm_stats(velocity_axis, joint_groups)
+    acc_norm_stats = _part_norm_stats(acc_axis, joint_groups)
 
-def build_cond_entry(pose_conds, seq_pose_conds, seq_xyz_conds, state_cond_mode="pose"):
-    conds = {'pose_conds': pose_conds, 'seq_pose_conds': seq_pose_conds, 'seq_xyz_conds': seq_xyz_conds}
-    if state_cond_mode == "global_surface":
-        conds['state_conds'] = build_global_surface_state_conds(seq_pose_conds, seq_xyz_conds)
-    elif state_cond_mode != "pose":
-        raise ValueError(f"Unknown state_cond_mode: {state_cond_mode}")
-    return conds
+    return torch.cat(
+        [
+            mean_features,
+            pose_t_std,
+            velocity_std,
+            acc_std,
+            velocity_norm_stats,
+            acc_norm_stats,
+        ],
+        dim=-1,
+    ).unsqueeze(0)
 
 
 def get_seq_pose_xyz_cond(pose_index, time_steps, interval, get_pose_xyz_func, delta_pose_xyz_cache, multi=1.0):

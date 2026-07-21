@@ -8,30 +8,29 @@ set -euo pipefail
 #   bash scripts/exps_dnarendering.sh part_moe_leg
 #   bash scripts/exps_dnarendering.sh part_moe_foot
 #   bash scripts/exps_dnarendering.sh part_moe_arm
-#   bash scripts/exps_dnarendering.sh state
-#   bash scripts/exps_dnarendering.sh state_conds
-#   bash scripts/exps_dnarendering.sh part_state
+#   bash scripts/exps_dnarendering.sh part_pamo
+#   bash scripts/exps_dnarendering.sh part_pamo_gate_floor
+#   bash scripts/exps_dnarendering.sh part_pamo_step1_only
+#   bash scripts/exps_dnarendering.sh part_pamo_motion_film
+#   bash scripts/exps_dnarendering.sh part_pamo_motion_film_rich
+#   bash scripts/exps_dnarendering.sh part_pamo_r_fixed_0.2
 #
 # 常用覆盖方式：
 #   GPU_id=3 bash scripts/exps_dnarendering.sh use_part_moe
-#   GPU_id=2 bash scripts/exps_dnarendering.sh state
-#   GPU_id=3 bash scripts/exps_dnarendering.sh state_conds
-#   GPU_id=2 bash scripts/exps_dnarendering.sh part_state
 #   SEQUENCES_OVERRIDE="0007_04 0019_10" GPU_id=3 bash scripts/exps_dnarendering.sh use_part_moe
-#   SEQUENCES_OVERRIDE="0007_04 0019_10" GPU_id=2 bash scripts/exps_dnarendering.sh state
-#   SEQUENCES_OVERRIDE="0007_04 0019_10" GPU_id=3 bash scripts/exps_dnarendering.sh state_conds
-#   SEQUENCES_OVERRIDE="0007_04 0019_10" GPU_id=2 bash scripts/exps_dnarendering.sh part_state
 
 # ================= 消融模式 =================
 MODE=${1:-orginal}
 part_label_schema=anatomy5
 num_parts=5
 final_eval_only=0
-state_enabled=0
-state_start_iter_default=1500
-state_ramp_iter_default=3000
-state_max_alpha_default=0.4
-state_cond_mode=pose
+part_pamo_enabled=0
+part_pamo_rigidity_min=0.0
+part_pamo_step1_only=0
+part_pamo_fixed_rigidity=-1.0
+part_pamo_motion_film=0
+part_pamo_motion_feat_mode=mean
+part_pamo_motion_lr_mult=1.0
 case "$MODE" in
     orginal|original)
         experiment_name=orginal
@@ -44,6 +43,90 @@ case "$MODE" in
     use_part_moe_leg|part_moe_leg)
         experiment_name=part_moe_leg
         part_moe_enabled=1
+        part_label_schema=part_moe_leg
+        num_parts=7
+        final_eval_only=1
+        ;;
+    use_part_pamo|part_pamo)
+        experiment_name=part_pamo
+        part_moe_enabled=1
+        part_pamo_enabled=1
+        part_label_schema=part_moe_leg
+        num_parts=7
+        final_eval_only=1
+        ;;
+    use_part_pamo_gate_floor|part_pamo_gate_floor)
+        experiment_name=part_pamo_gate_floor
+        part_moe_enabled=1
+        part_pamo_enabled=1
+        part_pamo_rigidity_min=${PART_PAMO_RIGIDITY_MIN:-0.05}
+        part_label_schema=part_moe_leg
+        num_parts=7
+        final_eval_only=1
+        ;;
+    part_pamo_gate_floor_0.2)
+        experiment_name=part_pamo_gate_floor_0.2
+        part_moe_enabled=1
+        part_pamo_enabled=1
+        part_pamo_rigidity_min=${PART_PAMO_RIGIDITY_MIN:-0.2}
+        part_label_schema=part_moe_leg
+        num_parts=7
+        final_eval_only=1
+        ;;
+    part_pamo_step1_only)
+        experiment_name=part_pamo_step1_only
+        part_moe_enabled=1
+        part_pamo_enabled=1
+        part_pamo_step1_only=1
+        part_label_schema=part_moe_leg
+        num_parts=7
+        final_eval_only=1
+        ;;
+    part_pamo_motion_film)
+        experiment_name=part_pamo_motion_film
+        part_moe_enabled=1
+        part_pamo_enabled=1
+        part_pamo_step1_only=1
+        part_pamo_motion_film=1
+        part_label_schema=part_moe_leg
+        num_parts=7
+        final_eval_only=1
+        ;;
+    part_pamo_motion_film_rich)
+        experiment_name=part_pamo_motion_film_rich
+        part_moe_enabled=1
+        part_pamo_enabled=1
+        part_pamo_step1_only=1
+        part_pamo_motion_film=1
+        part_pamo_motion_feat_mode=rich
+        part_pamo_motion_lr_mult=${PART_PAMO_MOTION_LR_MULT:-2.0}
+        part_label_schema=part_moe_leg
+        num_parts=7
+        final_eval_only=1
+        ;;
+    part_pamo_r_fixed_0.2)
+        experiment_name=part_pamo_r_fixed_0.2
+        part_moe_enabled=1
+        part_pamo_enabled=1
+        part_pamo_fixed_rigidity=0.2
+        part_label_schema=part_moe_leg
+        num_parts=7
+        final_eval_only=1
+        ;;
+    part_pamo_r_fixed_0.5)
+        experiment_name=part_pamo_r_fixed_0.5
+        part_moe_enabled=1
+        part_pamo_enabled=1
+        part_pamo_fixed_rigidity=0.5
+        part_label_schema=part_moe_leg
+        num_parts=7
+        final_eval_only=1
+        ;;
+    part_pamo_r_fixed_1.0)
+        experiment_name=part_pamo_r_fixed_1.0
+        part_moe_enabled=1
+        part_pamo_enabled=1
+        part_pamo_fixed_rigidity=1.0
         part_label_schema=part_moe_leg
         num_parts=7
         final_eval_only=1
@@ -62,30 +145,9 @@ case "$MODE" in
         num_parts=7
         final_eval_only=1
         ;;
-    state)
-        experiment_name=state
-        part_moe_enabled=0
-        state_enabled=1
-        final_eval_only=1
-        ;;
-    state_conds)
-        experiment_name=state_conds
-        part_moe_enabled=0
-        state_enabled=1
-        state_cond_mode=global_surface
-        final_eval_only=1
-        ;;
-    part_state)
-        experiment_name=part_state
-        part_moe_enabled=1
-        part_label_schema=part_moe_leg
-        num_parts=7
-        state_enabled=1
-        final_eval_only=1
-        ;;
     *)
         echo "[ERROR] Unknown mode: $MODE"
-        echo "        Supported modes: orginal, use_part_moe, part_moe_leg, part_moe_foot, part_moe_arm, state, state_conds, part_state"
+        echo "        Supported modes: orginal, use_part_moe, part_moe_leg, part_moe_foot, part_moe_arm, part_pamo, part_pamo_gate_floor, part_pamo_gate_floor_0.2, part_pamo_step1_only, part_pamo_motion_film, part_pamo_motion_film_rich, part_pamo_r_fixed_0.2, part_pamo_r_fixed_0.5, part_pamo_r_fixed_1.0"
         exit 1
         ;;
 esac
@@ -93,10 +155,11 @@ esac
 # ================= 路径和基础设置 =================
 REPO_ROOT=${REPO_ROOT:-/media/image/mxz/human/SeqAvatar}
 RUN_TIME=${RUN_TIME:-$(date +%Y%m%d_%H%M%S)}
-GPU_id=${GPU_id:-2}
+GPU_id=${GPU_id:-3}
 PYTHON_BIN=${PYTHON_BIN:-/media/image/mxz/.conda/envs/seqavatar/bin/python}
 DATA_PATH=${DATA_PATH:-/media/image/mxz/human/SeqAvatar/DNA-Rendering}
 PART_LOG_DIR=${PART_LOG_DIR:-/media/image/mxz/human/SeqAvatar/logs/part}
+PAMO_LOG_DIR=${PAMO_LOG_DIR:-/media/image/mxz/human/SeqAvatar/logs/pamo}
 
 cd "$REPO_ROOT"
 export PATH="$(dirname "$PYTHON_BIN"):$PATH"
@@ -132,11 +195,8 @@ lpips_loss_w=0.01
 part_moe_start_iter=10000
 part_moe_warmup=1000
 part_moe_global_keep=0.1
-
-# ================= State 参数 =================
-state_start_iter=${STATE_START_ITER:-$state_start_iter_default}
-state_ramp_iter=${STATE_RAMP_ITER:-$state_ramp_iter_default}
-state_max_alpha=${STATE_MAX_ALPHA:-$state_max_alpha_default}
+part_pamo_dim=${PART_PAMO_DIM:-32}
+part_pamo_log_interval=${PART_PAMO_LOG_INTERVAL:-1000}
 
 test_iterations=(3000 "$part_moe_start_iter" "$iter")
 save_iterations=(3000 "$part_moe_start_iter" "$iter")
@@ -148,9 +208,9 @@ if [ "$final_eval_only" = "1" ]; then
 fi
 
 # ================= 总日志设置 =================
-if [ "$state_enabled" = "1" ]; then
-    GLOBAL_LOG_DIR="$REPO_ROOT/logs/state"
-    GLOBAL_LOG_FILE="$GLOBAL_LOG_DIR/${RUN_TIME}_DNA-Rendering_${experiment_name}_gpu${GPU_id}.log"
+if [ "$part_pamo_enabled" = "1" ]; then
+    GLOBAL_LOG_DIR="$PAMO_LOG_DIR"
+    GLOBAL_LOG_FILE="$GLOBAL_LOG_DIR/${RUN_TIME}_DNA-Rendering_${experiment_name}.log"
 elif [ "$part_moe_enabled" = "1" ]; then
     GLOBAL_LOG_DIR="$PART_LOG_DIR"
     GLOBAL_LOG_FILE="$GLOBAL_LOG_DIR/${RUN_TIME}_DNA-Rendering_${experiment_name}.log"
@@ -162,7 +222,11 @@ mkdir -p "$GLOBAL_LOG_DIR"
 
 # train.py/render.py 在 --use_part_moe 时会自动建立自己的 part 日志。
 # 这里把那些拆分日志放到临时目录，最终只保留上面的训练+测试总日志。
-AUTO_PART_LOG_DIR="$PART_LOG_DIR/.auto_${RUN_TIME}_${experiment_name}"
+if [ "$part_pamo_enabled" = "1" ]; then
+    AUTO_PART_LOG_DIR="$PAMO_LOG_DIR/.auto_${RUN_TIME}_${experiment_name}"
+else
+    AUTO_PART_LOG_DIR="$PART_LOG_DIR/.auto_${RUN_TIME}_${experiment_name}"
+fi
 cleanup_auto_part_logs() {
     if [ "${KEEP_SPLIT_PART_LOGS:-0}" != "1" ]; then
         rm -rf "$AUTO_PART_LOG_DIR"
@@ -181,15 +245,19 @@ echo "[INFO] GPU_id: $GPU_id"
 echo "[INFO] PYTHON_BIN: $PYTHON_BIN"
 echo "[INFO] DATA_PATH: $DATA_PATH"
 echo "[INFO] PART_LABEL_SCHEMA: $part_label_schema"
+echo "[INFO] PART_PAMO_ENABLED: $part_pamo_enabled"
+echo "[INFO] PART_PAMO_DIM: $part_pamo_dim"
+echo "[INFO] PART_PAMO_LOG_INTERVAL: $part_pamo_log_interval"
+echo "[INFO] PART_PAMO_RIGIDITY_MIN: $part_pamo_rigidity_min"
+echo "[INFO] PART_PAMO_STEP1_ONLY: $part_pamo_step1_only"
+echo "[INFO] PART_PAMO_FIXED_RIGIDITY: $part_pamo_fixed_rigidity"
+echo "[INFO] PART_PAMO_MOTION_FILM: $part_pamo_motion_film"
+echo "[INFO] PART_PAMO_MOTION_FEAT_MODE: $part_pamo_motion_feat_mode"
+echo "[INFO] PART_PAMO_MOTION_LR_MULT: $part_pamo_motion_lr_mult"
 echo "[INFO] NUM_PARTS: $num_parts"
 echo "[INFO] NON_RIGID_MLP_DEPTH: $non_rigid_mlp_depth"
 echo "[INFO] NON_RIGID_MLP_WIDTH: $non_rigid_mlp_width"
 echo "[INFO] FINAL_EVAL_ONLY: $final_eval_only"
-echo "[INFO] STATE_ENABLED: $state_enabled"
-echo "[INFO] STATE_START_ITER: $state_start_iter"
-echo "[INFO] STATE_RAMP_ITER: $state_ramp_iter"
-echo "[INFO] STATE_MAX_ALPHA: $state_max_alpha"
-echo "[INFO] STATE_COND_MODE: $state_cond_mode"
 echo "[INFO] SKIP_LOAD_TEST_CAMERAS: $skip_load_test_cameras"
 echo "[INFO] IMAGE_DATA_DEVICE: $image_data_device"
 echo "[INFO] TEST_ITERATIONS: ${test_iterations[*]}"
@@ -246,17 +314,27 @@ if [ "$part_moe_enabled" = "1" ]; then
         --part_label_schema "$part_label_schema"
         --part_log_dir "$AUTO_PART_LOG_DIR"
     )
-fi
-
-STATE_ARGS=()
-if [ "$state_enabled" = "1" ]; then
-    STATE_ARGS=(
-        --use_state
-        --state_start_iter "$state_start_iter"
-        --state_ramp_iter "$state_ramp_iter"
-        --state_max_alpha "$state_max_alpha"
-        --state_cond_mode "$state_cond_mode"
-    )
+    if [ "$part_pamo_enabled" = "1" ]; then
+        PART_MOE_ARGS+=(
+            --use_part_pamo
+            --part_pamo_dim "$part_pamo_dim"
+            --part_pamo_log_interval "$part_pamo_log_interval"
+            --part_pamo_rigidity_min "$part_pamo_rigidity_min"
+            --part_pamo_fixed_rigidity "$part_pamo_fixed_rigidity"
+            --part_pamo_motion_feat_mode "$part_pamo_motion_feat_mode"
+            --part_pamo_motion_lr_mult "$part_pamo_motion_lr_mult"
+        )
+        if [ "$part_pamo_motion_film" = "1" ]; then
+            PART_MOE_ARGS+=(
+                --part_pamo_motion_film
+            )
+        fi
+        if [ "$part_pamo_step1_only" = "1" ]; then
+            PART_MOE_ARGS+=(
+                --part_pamo_step1_only
+            )
+        fi
+    fi
 fi
 
 for SEQUENCE in "${SEQUENCES[@]}"; do
@@ -306,15 +384,17 @@ for SEQUENCE in "${SEQUENCES[@]}"; do
         -s "$dataset_path" --eval --exp_name "$exp_name" \
         "${COMMON_TRAIN_ARGS[@]}" \
         "${PART_MOE_ARGS[@]}" \
-        "${STATE_ARGS[@]}" \
         2>&1 | tee "$model_path/logs/train_${SEQUENCE}_${experiment_name}.log"
 
     echo "[INFO] Evaluating on GPU $GPU_id for sequence $SEQUENCE"
-    CUDA_VISIBLE_DEVICES=$GPU_id "$PYTHON_BIN" render.py \
+    RENDER_ENV=(CUDA_VISIBLE_DEVICES="$GPU_id")
+    if [ "$image_data_device" != "cuda" ]; then
+        RENDER_ENV+=(SEQAVATAR_IMAGE_DATA_DEVICE="$image_data_device")
+    fi
+    env "${RENDER_ENV[@]}" "$PYTHON_BIN" render.py \
         -s "$dataset_path" -m "$model_path" \
         "${COMMON_RENDER_ARGS[@]}" \
         "${PART_MOE_ARGS[@]}" \
-        "${STATE_ARGS[@]}" \
         2>&1 | tee "$model_path/logs/render_${SEQUENCE}_${experiment_name}.log"
 
     echo "[INFO] Finished sequence: $SEQUENCE"

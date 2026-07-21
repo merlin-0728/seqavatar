@@ -95,13 +95,19 @@ class GaussianModel:
         self.part_moe_start_iter = getattr(args, "part_moe_start_iter", 15000)
         self.part_moe_warmup = getattr(args, "part_moe_warmup", 1000)
         self.part_moe_global_keep = getattr(args, "part_moe_global_keep", 0.1)
+        self.use_part_pamo = bool(getattr(args, "use_part_pamo", False) and self.use_part_moe)
+        self.part_pamo_dim = getattr(args, "part_pamo_dim", 32)
+        self.part_pamo_rigidity_min = getattr(args, "part_pamo_rigidity_min", 0.0)
+        self.part_pamo_step1_only = getattr(args, "part_pamo_step1_only", False)
+        self.part_pamo_fixed_rigidity = getattr(args, "part_pamo_fixed_rigidity", -1.0)
+        self.part_pamo_motion_film = getattr(args, "part_pamo_motion_film", False)
+        self.part_pamo_motion_feat_mode = getattr(args, "part_pamo_motion_feat_mode", "mean")
+        self.part_pamo_motion_lr_mult = float(getattr(args, "part_pamo_motion_lr_mult", 1.0))
         self.part_moe_alpha = 0.0
         self.num_parts = getattr(args, "num_parts", 5)
         self._part_label = None
         self._part_conf = None
         self.part_label_enabled = False
-        self.use_state = getattr(args, "use_state", False)
-        self.state_cond_mode = getattr(args, "state_cond_mode", "pose")
 
         if self.motion_offset_flag:
             # load pose correction module
@@ -122,15 +128,13 @@ class GaussianModel:
                         seq_len=args.seq_len, seq_xyz_knn=self.seq_xyz_knn, time_step_num=args.time_step_num, smpl_type=smpl_type,
                         use_part_moe=self.use_part_moe, num_parts=self.num_parts,
                         part_moe_global_keep=self.part_moe_global_keep,
-                        use_state=self.use_state,
-                        state_start_iter=getattr(args, "state_start_iter", 1500),
-                        state_ramp_iter=getattr(args, "state_ramp_iter", 3000),
-                        state_max_alpha=getattr(args, "state_max_alpha", 1.0),
-                        state_dim=getattr(args, "state_dim", 64),
-                        state_hidden_dim=getattr(args, "state_hidden_dim", 128),
-                        state_layers=getattr(args, "state_layers", 3),
-                        state_identity_init=getattr(args, "state_identity_init", True),
-                        state_cond_mode=self.state_cond_mode).to(self.device)
+                        use_part_pamo=self.use_part_pamo,
+                        part_pamo_dim=self.part_pamo_dim,
+                        part_pamo_rigidity_min=self.part_pamo_rigidity_min,
+                        part_pamo_step1_only=self.part_pamo_step1_only,
+                        part_pamo_fixed_rigidity=self.part_pamo_fixed_rigidity,
+                        part_pamo_motion_film=self.part_pamo_motion_film,
+                        part_pamo_motion_feat_mode=self.part_pamo_motion_feat_mode).to(self.device)
                             
     def capture(self):
         return (
@@ -330,8 +334,44 @@ class GaussianModel:
             ]
 
         if self.non_rigid_flag:
-            mlp_l += [{'params': self.non_rigid_deformer.parameters(), 'lr': training_args.non_rigid_deformer_lr,
-                 "name": "non_rigid_deformer"},]
+            base_lr = training_args.non_rigid_deformer_lr
+            motion_lr_mult = float(getattr(self, "part_pamo_motion_lr_mult", 1.0))
+            if self.use_part_pamo and abs(motion_lr_mult - 1.0) > 1e-8:
+                motion_modules = [
+                    getattr(self.non_rigid_deformer, "PartMotionEncoder", None),
+                    getattr(self.non_rigid_deformer, "PartMotionFiLM", None),
+                ]
+                motion_params = []
+                motion_param_ids = set()
+                for module in motion_modules:
+                    if module is None:
+                        continue
+                    for param in module.parameters():
+                        motion_params.append(param)
+                        motion_param_ids.add(id(param))
+                other_params = [
+                    param for param in self.non_rigid_deformer.parameters()
+                    if id(param) not in motion_param_ids
+                ]
+                if other_params:
+                    mlp_l += [{
+                        'params': other_params,
+                        'lr': base_lr,
+                        "name": "non_rigid_deformer",
+                    }]
+                if motion_params:
+                    mlp_l += [{
+                        'params': motion_params,
+                        'lr': base_lr * motion_lr_mult,
+                        "name": "part_pamo_motion",
+                    }]
+                    print(
+                        f"[PartPAMO] motion params use lr_mult={motion_lr_mult} "
+                        f"lr={base_lr * motion_lr_mult}"
+                    )
+            else:
+                mlp_l += [{'params': self.non_rigid_deformer.parameters(), 'lr': base_lr,
+                     "name": "non_rigid_deformer"},]
 
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
         self.xyz_scheduler_args = get_expon_lr_func(lr_init=training_args.position_lr_init*self.spatial_lr_scale,

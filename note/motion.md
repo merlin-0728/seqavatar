@@ -3518,3 +3518,2761 @@ h:
     再生成 FiLM gamma / beta，
     最后调制每个 Gaussian 的隐藏变形特征，得到 h_state。
 ```
+
+## 2026-07-16 state 引入步数消融回顾
+
+用户问：
+
+```text
+前面的实验有没有试过不同步数开始引入 state mlp 分支的不同效果？
+```
+
+回顾结论：
+
+```text
+试过，但不是完整网格搜索。
+
+做过的关键对比是:
+    state_warm / state_warm_half / state_warm_a02/a03/a04:
+        state_start_iter = 1500
+        state_ramp_iter  = 3000
+
+    state_warm_late:
+        state_start_iter = 3000
+        state_ramp_iter  = 5000
+        state_max_alpha  = 1.0
+
+state_warm_late 只在 DNA 的 0007_04 和 0051_09 两个代表序列上跑过。
+结果显示“更晚开始 + 更长 ramp”没有改善原 state_warm。
+两序列平均:
+    state_warm:      PSNR 28.937584, SSIM 0.964072, LPIPSx1000 38.700132
+    state_warm_late: PSNR 28.923952, SSIM 0.964076, LPIPSx1000 38.939085
+
+所以已有证据说明:
+    单纯把 state 分支更晚接入，不是主要改进方向。
+    更关键的是限制 state 分支强度，也就是 state_max_alpha。
+
+后续真正变好的配置是 state_warm_a04/current state:
+    state_start_iter = 1500
+    state_ramp_iter  = 3000
+    state_max_alpha  = 0.4
+
+它不是靠改开始步数提升，而是靠弱融合避免 state 分支破坏 baseline 主路径。
+```
+
+## 2026-07-16 state_conds subset 判断依据
+
+用户问：
+
+```text
+如何判断 state_conds 在 high-motion / high-error 上更好？
+```
+
+判断方式：
+
+```text
+不是直接看 state_conds 相对 baseline 是否提升，
+而是先分别计算:
+    state_warm_a04/current state - baseline
+    state_conds - baseline
+
+然后比较这两个 delta。
+
+如果 state_conds 的 delta 更好，才说 state_conds 在该 subset 上优于 current state。
+指标方向:
+    L1 越低越好，所以 delta 更负更好。
+    PSNR 越高越好，所以 delta 更正更好。
+    SSIM 越高越好，所以 delta 更正更好。
+    LPIPS 越低越好，所以 delta 更负更好。
+```
+
+subset 构造方式：
+
+```text
+high_motion:
+    对每个 frame，计算它和相邻帧前景 mask 的 XOR / Union 变化量；
+    按 motion score 排序，取最高的 25% frame。
+
+high_error_crop:
+    先用 baseline render 和 GT 计算误差图；
+    在每张图里找 baseline 误差最大的 128x128 crop；
+    然后在同一个 crop 上比较 baseline / current state / state_conds。
+```
+
+直接对比结果，delta = state_conds - state_warm_a04/current state：
+
+| Subset | ΔL1 | ΔPSNR | ΔSSIM | ΔLPIPS x1000 | 判断 |
+|---|---:|---:|---:|---:|---|
+| high_motion | -0.000026 | +0.027181 | +0.000132 | -0.052473 | 四个指标方向都更好 |
+| high_error_crop | -0.000169 | +0.004435 | +0.000486 | -0.889147 | 四个指标方向都更好，LPIPS 更明显 |
+| boundary | +0.000154 | -0.030342 | NA | NA | 更差 |
+
+结论：
+
+```text
+state_conds 相比 current state，在 high_motion 和 high_error_crop 两个 subset 上更好；
+但 boundary subset 更差，全图平均也基本打平，
+所以不能说 state_conds 全面优于 current state。
+```
+
+## 2026-07-16 part_pamo Step 1：每个 part 加运动编码
+
+用户要求：
+
+```text
+从现在开始每次对话都要读写 note/motion.md。
+在 part_moe_leg 的基础上新建独立消融实验 part_pamo。
+不影响其他实验和代码路径。
+总日志保存到:
+    /media/image/mxz/human/SeqAvatar/logs/pamo
+
+第一步:
+    对每个 SMPL part 预计算 part_pose_t / part_pose_{t-1} / part_pose_{t+1}
+    part_velocity = pose_t - pose_{t-1}
+    part_acc = pose_{t+1} - 2 pose_t + pose_{t-1}
+    z_part = PartMotionEncoder(part_motion_feat)
+    在 part_moe_leg 的每个 expert 输入里 concat 对应 part 的 z_part
+```
+
+实现口径：
+
+```text
+新增独立开关:
+    --use_part_pamo
+    --part_pamo_dim，默认 32
+
+part_pamo 模式同时启用:
+    --use_part_moe
+    --part_label_schema part_moe_leg
+    --num_parts 7
+
+默认 use_part_pamo=False，所以原 baseline / part_moe / part_moe_leg /
+part_moe_foot / part_moe_arm 不走该分支。
+```
+
+网络修改：
+
+```text
+nets/mlp_delta_non_rigid.py
+    新增 PartMotionEncoder。
+    part_motion_feat 维度为 15:
+        mean(part_pose_t)
+        mean(part_pose_{t-1})
+        mean(part_pose_{t+1})
+        mean(part_velocity)
+        mean(part_acc)
+
+    对每个 part 按 SMPL/SMPL-X joint group 做均值聚合，保证 SMPL 和 SMPL-X
+    都能用固定维度输入。
+
+    part_pamo 激活时，初始化 Part-MoE experts 会加宽 expert 第一层输入:
+        old_input_dim -> old_input_dim + part_pamo_dim
+
+    加宽时复制原权重，新增 z_part 列置零，避免 expert 初始化瞬间破坏
+    part_moe_leg 的已有行为。
+
+    forward_part_moe 中:
+        global expert 对每个 Gaussian concat 它所属 label 的 z_part。
+        routed expert_i 对 label==i 的 Gaussian concat z_part_i。
+```
+
+数据与渲染链路：
+
+```text
+scene/dataset_readers.py
+    use_part_pamo=True 时，为 cond_dict[pose_id] 额外预计算:
+        part_motion_conds: [1, num_parts, 15]
+
+    pose_t / pose_{t-1} / pose_{t+1} 来自 get_pose_xyz_func 读出的 SMPL/SMPL-X
+    pose matrix，再转 axis-angle。
+    首尾帧如果 t-1 或 t+1 不存在，用当前 pose 兜底。
+
+scene/__init__.py
+    把 use_part_pamo / part_label_schema / num_parts 传给 dataset reader。
+
+gaussian_renderer/__init__.py
+    从 cond_dict 取 part_motion_conds，传入 NonrigidDeformer。
+
+scene/gaussian_model.py
+    保存 use_part_pamo / part_pamo_dim，并传给 NonrigidDeformer。
+```
+
+脚本修改：
+
+```text
+scripts/exps_zjumocap.sh part_pamo
+scripts/exps_i3dhuman.sh part_pamo
+scripts/exps_dnarendering.sh part_pamo
+
+part_pamo 总日志:
+    /media/image/mxz/human/SeqAvatar/logs/pamo
+
+DNA-Rendering 的 part_pamo 沿用 part_moe_leg 的 final_eval_only=1。
+```
+
+已验证：
+
+```text
+bash -n scripts/exps_zjumocap.sh
+bash -n scripts/exps_i3dhuman.sh
+bash -n scripts/exps_dnarendering.sh
+
+/media/image/mxz/.conda/envs/seqavatar/bin/python -m py_compile \
+    nets/mlp_delta_non_rigid.py \
+    scene/gaussian_model.py \
+    gaussian_renderer/__init__.py \
+    scene/__init__.py \
+    scene/dataset_readers.py \
+    arguments/__init__.py \
+    train.py \
+    render.py
+
+额外用 CPU 小张量测试:
+    NonrigidDeformer(use_part_moe=True, use_part_pamo=True, num_parts=7)
+    init_part_moe_from_shared()
+    forward(part_label, part_motion_conds)
+
+输出维度保持:
+    d_xyz: [1, N, 3]
+    d_rotation: [1, N, 4]
+    d_scaling: [1, N, 3]
+
+直接加载 scene/dataset_readers.py 测试:
+    get_part_motion_cond(..., part_label_schema="part_moe_leg", num_parts=7)
+    输出 shape: [1, 7, 15]
+```
+
+## 2026-07-16 part_pamo Step 1 验证
+
+本次只做验证，不保留验证脚本或生成文件。
+
+验证结果：
+
+```text
+结论：part_pamo Step 1 当前实现是正确接通的。
+
+已确认:
+    1. part_pamo 是独立模式，默认 use_part_pamo=False。
+    2. part_pamo 脚本模式基于 part_moe_leg:
+        --use_part_moe
+        --use_part_pamo
+        --part_label_schema part_moe_leg
+        --num_parts 7
+    3. 三个脚本的 part_pamo 总日志目录均为:
+        /media/image/mxz/human/SeqAvatar/logs/pamo
+    4. dataset_readers 只在 use_part_pamo=True 时生成:
+        part_motion_conds: [1, num_parts, 15]
+    5. part_motion_conds 内容符合 Step 1:
+        part_pose_t
+        part_pose_{t-1}
+        part_pose_{t+1}
+        part_velocity = pose_t - pose_{t-1}
+        part_acc = pose_{t+1} - 2 pose_t + pose_{t-1}
+    6. NonrigidDeformer 在 part_pamo=True 时会:
+        z_part = PartMotionEncoder(part_motion_conds)
+        按 Gaussian 的 part label gather 对应 z_part
+        concat 到 Part-MoE expert 输入
+    7. expert 第一层只在 part_pamo 下加宽，普通 part_moe_leg 不加宽。
+```
+
+验证命令：
+
+```text
+bash -n scripts/exps_zjumocap.sh
+bash -n scripts/exps_i3dhuman.sh
+bash -n scripts/exps_dnarendering.sh
+
+PYTHONDONTWRITEBYTECODE=1 python 语法 compile 检查 8 个相关文件。
+
+PYTHONDONTWRITEBYTECODE=1 python 最小运行时测试:
+    NonrigidDeformer(use_part_moe=True, use_part_pamo=True, num_parts=7)
+    forward 输出:
+        d_xyz      [1, 5, 3]
+        d_rotation [1, 5, 4]
+        d_scaling  [1, 5, 3]
+    get_part_motion_cond 输出:
+        [1, 7, 15]
+
+git diff --check
+git status --short --untracked-files=all
+```
+
+## 2026-07-16 part_pamo Step 2：part-level rigid residual branch
+
+用户要求：
+
+```text
+在 part_pamo 上继续第二步:
+    每个 part 不只靠点级 MLP，而是先预测一个 part 级整体运动修正。
+
+公式:
+    R_p, t_p = PartRigidHead(z_part)
+    d_part_rigid_i = R_p * (x_i - c_p) + c_p + t_p - x_i
+
+约束:
+    这个 branch 不重新做完整骨骼运动。
+    只学习 SMPL/LBS 之外的 part-level residual motion。
+    初始化必须 identity:
+        R_p = I
+        t_p = 0
+    训练一开始等价于原来的 part_moe_leg。
+```
+
+实现口径：
+
+```text
+仍然只在 --use_part_pamo 时启用。
+普通 baseline / part_moe / part_moe_leg / part_moe_foot / part_moe_arm 不走该分支。
+
+c_p 采用当前 canonical Gaussian 坐标 query_xyz 按 part label 求均值：
+    centers[p] = mean(query_xyz[label == p])
+
+如果某个 part 当前没有 Gaussian，中心回退为全体 Gaussian 中心。
+```
+
+网络修改：
+
+```text
+nets/mlp_delta_non_rigid.py
+    新增 PartRigidHead:
+        input:  z_part
+        output: rot_vec_p, t_p
+
+    rot_vec_p 通过 axis-angle Rodrigues 转为 R_p。
+    PartRigidHead 最后一层 weight/bias 全零初始化，所以初始:
+        rot_vec_p = 0 -> R_p = I
+        t_p = 0
+        d_part_rigid_i = 0
+
+    forward_part_moe 中流程变为:
+        part_motion_conds -> PartMotionEncoder -> z_part
+        z_part concat 到每个 Gaussian expert 输入
+        PartRigidHead(z_part) 生成每个 part 的 rigid residual
+        d_xyz = d_xyz_part_moe + part_weight * d_part_rigid
+
+    使用 part_weight 缩放 rigid residual，使它跟 Part-MoE warmup 同步进入。
+```
+
+渲染链路：
+
+```text
+gaussian_renderer/__init__.py
+    调用 non_rigid_deformer 时传入:
+        query_xyz=means3D
+
+means3D 是进入非刚性分支前的 canonical Gaussian 坐标。
+rigid residual 仍然在 SeqAvatar 原有 SMPL/LBS coarse_deform_c2source 之前加到 d_xyz，
+因此它是 SMPL/LBS 之外的 residual，不替代骨骼运动。
+```
+
+已验证：
+
+```text
+bash -n scripts/exps_zjumocap.sh
+bash -n scripts/exps_i3dhuman.sh
+bash -n scripts/exps_dnarendering.sh
+
+PYTHONDONTWRITEBYTECODE=1 python 语法 compile 检查 8 个相关文件。
+
+PYTHONDONTWRITEBYTECODE=1 python 最小运行时测试:
+    NonrigidDeformer(use_part_moe=True, use_part_pamo=True, num_parts=7)
+    forward 输出:
+        d_xyz      [1, 5, 3]
+        d_rotation [1, 5, 4]
+        d_scaling  [1, 5, 3]
+
+    identity 初始化验证:
+        apply_part_rigid_residual(zero_delta, ...)
+        max_abs = 0.0
+
+    普通 part_moe_leg 路径验证:
+        use_part_pamo=False 时 expert 第一层输入维度不加宽。
+
+git diff --check
+git status --short --untracked-files=all
+```
+
+## 2026-07-16 part_pamo Step 2 进一步验证
+
+用户要求验证：
+
+```text
+1. 单元测试 rigid residual 本身:
+    已知 R_p / t_p
+    x_new = x + d_part_rigid
+    expected = R_p @ (x - c_p) + c_p + t_p
+    max_abs < 1e-6
+
+    还要检查:
+        R=I, t=0 时 residual=0
+        同一 part 内两点距离不变
+        part 质心变为 c_p + t_p
+        空 part 不产生 NaN
+        part_weight=0 时不生效
+        part_weight=1 时完整生效
+
+2. 集成测试:
+    use_part_pamo=False vs use_part_pamo=True + PartRigidHead zero init
+    d_xyz 应接近 0 差异。
+
+    手动给某个 part 非零 t_p:
+        只看这个 part 的 Gaussian 是否整体平移
+        其他 part 不动
+```
+
+本次执行方式：
+
+```text
+不保留测试脚本，不生成验证文件。
+使用 PYTHONDONTWRITEBYTECODE=1 运行 inline Python。
+```
+
+单元测试结果：
+
+```text
+synthetic case:
+    2 个 active part
+    每个 part 5 个点
+    另有空 part 用于 NaN 检查
+
+手动设置:
+    part 0: 绕 z 轴 +30 度，t=[0.1, 0.0, 0.0]
+    part 1: 绕 z 轴 -30 度，t=[0.0, 0.2, 0.0]
+
+结果:
+    max_abs(x_new - expected): 0.0
+    identity_max: 0.0
+    empty_finite: True
+    part_weight=0 residual max: 0.0
+    part_weight=1 diff from full residual: 0.0
+
+同一 part 内距离保持、质心等于 c_p + t_p 均通过 assert。
+```
+
+最小集成测试结果：
+
+```text
+构造两套 NonrigidDeformer:
+    plain: use_part_pamo=False
+    pamo:  use_part_pamo=True, PartRigidHead zero init
+
+复制相同 shared MLP / head 权重后再 init_part_moe_from_shared。
+
+zero init 对比:
+    max |d_xyz_plain - d_xyz_pamo|      = 8.940696716308594e-08
+    max |d_rotation_plain - d_rotation_pamo| = 0.0
+    max |d_scaling_plain - d_scaling_pamo|  = 0.0
+
+part_weight=0 对比:
+    d_xyz / d_rotation / d_scaling 差异均为 0.0
+
+手动只给 part 2 设置:
+    t_2 = [0.25, -0.1, 0.05]
+
+结果:
+    part 2 额外位移误差 max: 7.078051567077637e-08
+    其他 part 额外位移 max: 1.1920928955078125e-07
+
+说明 label indexing、batch 维度、part mask 在该最小集成测试中没有错位。
+```
+
+SMPL/LBS 未被替代的验证：
+
+```text
+gaussian_renderer/__init__.py 顺序确认:
+    line 82-93: 调 non_rigid_deformer，并传入 query_xyz=means3D
+    line 98:    means3D = means3D + d_xyz
+    line 100-102: 继续调用 coarse_deform_c2source(...)
+
+因此 part rigid residual 只是在 coarse_deform_c2source 之前增加 residual d_xyz，
+后续 SMPL/LBS coarse deformation 仍照常执行。
+```
+
+未执行项：
+
+```text
+没有跑完整 rasterizer 渲染图像差异和真实训练 loss 对比。
+原因是完整图像验证需要加载真实数据、CUDA rasterizer 和模型流程，通常会产生渲染输出；
+本次按“不保留验证过程代码和生成物”的口径，只做了不落盘的 deformer 级集成验证和 renderer 顺序验证。
+
+基于 zero init 下 d_xyz/d_rotation/d_scaling 已接近完全一致，
+初始渲染图像和 loss 理论上也应一致；若后续要做端到端图像验证，
+建议单独指定一个序列、一个相机、一个 iteration，并把输出写到临时目录后删除。
+```
+
+验证后的清理状态：
+
+```text
+没有新增未跟踪验证文件。
+没有保留临时验证代码。
+```
+
+## 2026-07-16 part_pamo Step 3：internal learnable rigidity
+
+用户要求：
+
+```text
+PaMoSplat 还有 internal learnable rigidity。
+迁移到 SeqAvatar 的 part_pamo:
+    r_i = sigmoid(MLP_rigidity(x_emb_i, z_part_i))
+
+含义:
+    r_i 高:
+        Gaussian 更服从 part-level rigid motion
+    r_i 低:
+        Gaussian 更多依赖 part-specific nonrigid MLP
+
+最终输出:
+    d_i = d_part_mlp_i + alpha * r_i * d_part_rigid_i
+```
+
+实现口径：
+
+```text
+仍然只在 --use_part_pamo 时启用。
+脚本和数据读取不需要新增参数。
+
+alpha 继续沿用已有 Part-MoE warmup 后得到的 part_weight。
+因此 rigid residual 和 internal rigidity 一起随 Part-MoE 激活，不会在
+part_moe_start_iter 之前介入。
+```
+
+网络修改：
+
+```text
+nets/mlp_delta_non_rigid.py
+    新增 PartRigidityMLP:
+        input:  concat(x_emb_i, z_part_i)
+        output: sigmoid scalar r_i, shape [B, N, 1]
+
+    z_part_i 来自 Step 1 的 PartMotionEncoder，并按 Gaussian 的 part label gather。
+
+    Step 2 原公式:
+        d_xyz = d_part_mlp + part_weight * d_part_rigid
+
+    Step 3 后改为:
+        d_xyz = d_part_mlp + part_weight * r_i * d_part_rigid
+
+    r_i 是点级，因此同一 part 内不同 Gaussian 可以有不同刚性强度。
+```
+
+训练参数归属：
+
+```text
+PartRigidityMLP 是 NonrigidDeformer 的子模块。
+training_setup 里 non_rigid_deformer.parameters() 已覆盖它。
+
+Part-MoE 激活后 freeze_shared_after_part_moe 只冻结:
+    self.mlp
+    gaussian_warp
+    gaussian_rotation
+    gaussian_scaling
+
+不会冻结 PartMotionEncoder / PartRigidHead / PartRigidityMLP。
+```
+
+已验证：
+
+```text
+bash -n scripts/exps_zjumocap.sh
+bash -n scripts/exps_i3dhuman.sh
+bash -n scripts/exps_dnarendering.sh
+
+PYTHONDONTWRITEBYTECODE=1 python 语法 compile 检查 8 个相关文件。
+
+rigidity 数学测试:
+    r_i = 0:
+        residual max = 0.0
+    r_i = 1:
+        与完整 rigid residual diff = 0.0
+    r_i = [0, 0.25, 0.5, 0.75, 1.0, 0.2], part_weight=0.4:
+        与 0.4 * r_i * full_residual diff = 0.0
+    part_weight=0:
+        residual max = 0.0
+
+最小集成测试:
+    plain: use_part_pamo=False
+    pamo:  use_part_pamo=True, PartRigidHead zero init
+
+    zero init 对比:
+        max |d_xyz_plain - d_xyz_pamo| = 2.9802322387695312e-08
+        max |d_rotation_plain - d_rotation_pamo| = 0.0
+        max |d_scaling_plain - d_scaling_pamo| = 0.0
+
+    手动只给 part 2 设置平移，并设置该 part 三个点的 r_i:
+        [0.0, 0.5, 1.0]
+
+    结果:
+        part 2 scaled shift diff = 5.21540641784668e-08
+        other parts extra max = 2.9802322387695312e-08
+
+说明 internal rigidity 确实按点缩放 part-level rigid residual，
+且 label / part mask 没有明显错位。
+
+git diff --check
+git status --short --untracked-files=all
+```
+
+## 2026-07-16 part_pamo Step 3 真实训练验证
+
+用户要求按 5 点方案验证：
+
+```text
+1. 验证 part_moe_leg / part_pamo 开关隔离。
+2. 在真实 part_pamo 训练中打印 rigidity 统计。
+3. 检查 PartRigidityMLP / PartMotionEncoder / PartRigidHead 梯度。
+4. 检查 rigid residual 实际贡献大小。
+5. 固定真实 batch 做 part_moe_leg vs part_pamo forward 对照。
+```
+
+本次执行方式：
+
+```text
+不保留验证脚本。
+所有真实训练 / one-batch 验证输出都写到临时目录，命令结束后删除。
+
+真实短训为节省时间使用:
+    CoreView_377
+    iterations=4
+    part_moe_start_iter=1
+    part_moe_warmup=1
+    part_moe_global_keep=0
+    part_pamo_log_interval=1
+    part_pamo_dim=16
+    non_rigid_mlp_width=256
+
+这只改变验证规模，不改变 part_pamo 的代码路径。
+正式脚本默认仍是 part_pamo_dim=32。
+```
+
+开关隔离验证：
+
+```text
+真实 train.py 启动 part_moe_leg:
+    [PartPAMO] enabled=False; PartPAMO modules are not constructed.
+
+真实 train.py 启动 part_pamo:
+    [PartPAMO] enabled=True modules=PartMotionEncoder,PartRigidHead,PartRigidityMLP part_pamo_dim=16
+
+part_pamo 激活 Part-MoE 后:
+    [PartPAMO] Appending per-part motion code dim=16 to each expert input.
+
+说明:
+    part_moe_leg 不创建 PartMotionEncoder / PartRigidHead / PartRigidityMLP。
+    part_pamo 才创建并调用这些模块。
+```
+
+真实训练 rigidity 统计：
+
+```text
+iter 2:
+    r_mean=0.530715
+    r_std =0.022822
+    r_min =0.454957
+    r_max =0.603784
+
+iter 3:
+    r_mean=0.531873
+    r_std =0.022679
+    r_min =0.457118
+    r_max =0.603198
+
+iter 4:
+    r_mean=0.533615
+    r_std =0.022814
+    r_min =0.459061
+    r_max =0.604675
+
+结论:
+    r_i 不是全 0、全 1，也不是固定 0.5。
+    同一 part 内有非零 std。
+    不同 part 的 r_mean 有差异。
+```
+
+per-part 统计示例：
+
+```text
+iter 4:
+    part=1 count=2852 r_mean=0.531427 r_std=0.020166
+    part=2 count=778  r_mean=0.544152 r_std=0.020081
+    part=3 count=762  r_mean=0.526152 r_std=0.018682
+    part=4 count=1168 r_mean=0.554316 r_std=0.014909
+    part=5 count=665  r_mean=0.525984 r_std=0.020720
+    part=6 count=665  r_mean=0.510491 r_std=0.019935
+```
+
+梯度验证：
+
+```text
+iter 2:
+    rigid_norm=1.370981e-09
+    PartMotionEncoder grad norm=4.092928e-12
+    PartRigidHead    grad norm=3.011278e-01
+    PartRigidityMLP  grad norm=1.214389e-10
+
+iter 3:
+    rigid_norm=6.791169e-03
+    PartMotionEncoder grad norm=1.829209e-03
+    PartRigidHead    grad norm=5.405230e-01
+    PartRigidityMLP  grad norm=4.643150e-04
+
+iter 4:
+    rigid_norm=8.129032e-03
+    PartMotionEncoder grad norm=1.743164e-03
+    PartRigidHead    grad norm=3.482730e-01
+    PartRigidityMLP  grad norm=6.127174e-04
+
+解释:
+    iter 2 时 PartRigidHead 是 zero init，d_part_rigid 仍接近 0，
+    所以 PartRigidityMLP 梯度也接近 0，这符合公式
+        d_i = d_part_mlp_i + alpha * r_i * d_part_rigid_i
+    中 d_loss / d_r_i 依赖 d_part_rigid_i 的预期。
+
+    iter 3 / iter 4 时 d_part_rigid 变非零后，
+    PartMotionEncoder / PartRigidHead / PartRigidityMLP 都有非零梯度。
+```
+
+rigid residual 贡献验证：
+
+```text
+iter 2:
+    mlp_norm=9.484535e-02
+    rigid_norm=1.370981e-09
+    rigid_contrib=7.299856e-10
+    ratio=0.000000
+
+iter 3:
+    mlp_norm=8.582780e-02
+    rigid_norm=6.791169e-03
+    rigid_contrib=3.611372e-03
+    ratio=0.042077
+
+iter 4:
+    mlp_norm=8.060258e-02
+    rigid_norm=8.129032e-03
+    rigid_contrib=4.337328e-03
+    ratio=0.053811
+
+结论:
+    rigid contribution 没有长期为 0。
+    短训后 ratio 在 0.04 到 0.054，处在较稳的 0.02 到 0.2 观察区间内。
+    没有出现 rigid branch 一开始压过 part_moe_leg 的现象。
+```
+
+真实 one-batch forward 对照：
+
+```text
+使用真实 ZJU CoreView_377:
+    初始 Gaussian 数: 6890
+    part_motion_conds shape: (1, 7, 15)
+    active_parts: [1, 2, 3, 4, 5, 6]
+    target_part: 5
+
+part_moe_leg vs part_pamo, part_weight=0:
+    d_xyz      max diff = 1.862645149230957e-08
+    d_rotation max diff = 1.862645149230957e-08
+    d_scaling  max diff = 1.4901161193847656e-08
+
+part_moe_leg vs part_pamo, part_weight=1, PartRigidHead zero init:
+    d_xyz      max diff = 7.450580596923828e-09
+    d_rotation max diff = 0.0
+    d_scaling  max diff = 0.0
+
+手动给 part 5 设置平移:
+    t_5 = [0.12, -0.04, 0.02]
+    r_i = 0.5
+    part_weight = 1
+
+结果:
+    target part half-shift diff = 1.4901161193847656e-08
+    other parts extra max       = 1.4901161193847656e-08
+
+结论:
+    真实数据链路中的 part_motion_conds / part_label / batch 维度没有错位。
+    part_weight=0 时等价 part_moe_leg。
+    手动非零 rigid residual 只作用到目标 part，其他 part 基本不动。
+```
+
+补充确认：
+
+```text
+gaussian_renderer/__init__.py 的执行顺序仍然是:
+    1. non_rigid_deformer 输出 d_xyz
+    2. means3D = means3D + d_xyz
+    3. coarse_deform_c2source 继续执行 SMPL/LBS
+
+因此 part_pamo 的 rigid residual 没有替代 SMPL/LBS，只是在 LBS 之前增加 residual。
+```
+
+验证命令：
+
+```text
+bash -n scripts/exps_zjumocap.sh
+bash -n scripts/exps_i3dhuman.sh
+bash -n scripts/exps_dnarendering.sh
+
+PYTHONDONTWRITEBYTECODE=1 python -m py_compile \
+    nets/mlp_delta_non_rigid.py \
+    scene/gaussian_model.py \
+    gaussian_renderer/__init__.py \
+    scene/__init__.py \
+    scene/dataset_readers.py \
+    arguments/__init__.py \
+    train.py \
+    render.py
+
+git diff --check
+git status --short --untracked-files=all
+```
+
+清理状态：
+
+```text
+没有保留验证脚本。
+没有保留 output/_tmp_verify* 临时输出目录。
+没有保留 logs/**/_tmp_verify* 临时日志目录。
+```
+
+## 2026-07-17 DNA part_pamo 运行失败定位
+
+用户运行：
+
+```text
+bash /media/image/mxz/human/SeqAvatar/scripts/exps_dnarendering.sh part_pamo
+```
+
+失败位置：
+
+```text
+序列:
+    DNA-Rendering/0206_04
+
+训练进度:
+    2570 / 25000
+
+当时高斯点数:
+    #pts=40145
+
+报错:
+    RuntimeError: CUDA error: CUBLAS_STATUS_EXECUTION_FAILED
+    when calling cublasSgemm(...)
+
+栈位置:
+    train.py line 233
+    loss.backward()
+```
+
+判断：
+
+```text
+这次失败不是 part_pamo rigid / rigidity 分支直接触发。
+
+原因:
+    part_pamo 的 Part-MoE 激活点是:
+        part_moe_start_iter=10000
+
+    失败发生在 iter 2570，远早于 part labels 构建和 part experts 初始化。
+    当时还没有进入 Part-MoE / part_pamo 的专家路由、PartRigidHead、
+    PartRigidityMLP 路径。
+
+更可能原因:
+    CUDA/cuBLAS 反传阶段资源失败，通常和显存峰值、显存碎片、
+    cuBLAS workspace 或 CUDA 状态有关。
+
+DNA 脚本当前默认:
+    SKIP_LOAD_TEST_CAMERAS=0
+    IMAGE_DATA_DEVICE=cuda
+
+因此训练阶段会把训练相机和 novelview 测试相机图像/ mask 放在 GPU，
+再叠加 40145 个 Gaussian 的 rasterizer / LPIPS / non-rigid 反传，
+容易在某个 batch 触发 cuBLAS 执行失败。
+```
+
+建议复跑方式：
+
+```text
+优先降低训练阶段显存占用:
+
+SKIP_LOAD_TEST_CAMERAS=1 \
+IMAGE_DATA_DEVICE=cpu \
+SKIP_COMPLETED=1 \
+GPU_id=3 \
+bash scripts/exps_dnarendering.sh part_pamo
+
+如果只想从失败后的剩余序列跑:
+
+SEQUENCES_OVERRIDE="0206_04 0813_05 0007_04 0019_10" \
+SKIP_LOAD_TEST_CAMERAS=1 \
+IMAGE_DATA_DEVICE=cpu \
+GPU_id=3 \
+bash scripts/exps_dnarendering.sh part_pamo
+```
+
+补充：
+
+```text
+SKIP_LOAD_TEST_CAMERAS=1 只跳过 train.py 内部加载测试相机。
+脚本训练结束后仍会单独调用 render.py 做最终 novelview 评估。
+
+IMAGE_DATA_DEVICE=cpu 会让相机图像和 mask 常驻 CPU，
+train.py 每次取 batch 时再 .cuda()，速度可能略慢，但显存更稳。
+```
+
+## 2026-07-17 DNA 0044 part_pamo 比 part_moe_leg 差的原因分析
+
+用户观察：
+
+```text
+DNA-Rendering/0044_11 的 part_pamo 结果比 part_moe_leg 差。
+```
+
+指标对比：
+
+```text
+part_moe_leg:
+    output/DNA-Rendering/0044_11/part_moe_leg/20260623_180431
+    PSNR  = 33.000570344924924
+    SSIM  = 0.9782106434305509
+    LPIPS = 0.02107852928650876
+
+part_pamo:
+    output/DNA-Rendering/0044_11/part_pamo/20260716_214518
+    PSNR  = 32.96493280728658
+    SSIM  = 0.978027040263017
+    LPIPS = 0.02122311471030116
+
+差值 part_pamo - part_moe_leg:
+    PSNR  = -0.035637537638343986
+    SSIM  = -0.0001836031675338523
+    LPIPS = +0.00014458542379239964
+```
+
+第一判断：
+
+```text
+差距存在，但幅度很小。
+0.035 dB PSNR / 0.00018 SSIM / 0.000145 LPIPS 接近单次训练随机波动量级。
+不能只凭这一组结果断言 part_pamo 结构一定显著劣化。
+```
+
+公平性问题：
+
+```text
+这两个 run 不是严格同轨迹对照。
+
+part_moe_leg 在 iter 10000 构建 part label 时:
+    Total gaussians: 61950
+
+part_pamo 在 iter 10000 构建 part label 时:
+    Total gaussians: 59119
+
+差了 2831 个 Gaussian，约 4.6%。
+
+原因可能包括:
+    1. part_pamo 构建了额外模块，虽然 Part-MoE 激活前不参与 forward，
+       但模块初始化会消耗 torch RNG。
+    2. densify_and_split 中使用 torch.normal 采样新 Gaussian，
+       RNG 状态不同会让增密轨迹不同。
+    3. 因此 part_pamo 和旧 part_moe_leg 在 10000 步前已经不是完全相同模型状态。
+```
+
+part_pamo 自身诊断：
+
+```text
+DNA 0044 上 internal rigidity 几乎塌到 0。
+
+iter 11000:
+    r_mean=0.002066
+    r_std =0.001410
+    rigid_contrib=1.058419e-06
+    ratio=0.000026
+
+iter 15000:
+    r_mean=0.000106
+    r_std =0.000098
+    rigid_contrib=4.494924e-08
+    ratio=0.000001
+
+iter 20000:
+    r_mean=0.000019
+    r_std =0.000026
+    rigid_contrib=1.150937e-08
+    ratio=0.000000
+
+iter 25000:
+    r_mean=0.000018
+    r_std =0.000036
+    rigid_contrib=2.293534e-08
+    ratio=0.000001
+```
+
+结论：
+
+```text
+Step 2/3 的 part-level rigid residual 在 DNA 0044 上基本没有发挥作用。
+
+模型学到的是:
+    r_i -> 0
+
+结果是:
+    d_i = d_part_mlp_i + alpha * r_i * d_part_rigid_i
+基本退化成:
+    d_i ~= d_part_mlp_i
+
+也就是说，rigid residual branch 被 internal rigidity gate 主动关掉了。
+```
+
+为什么会这样：
+
+```text
+1. DNA 当前评估是 novelview，不是强 novel-pose。
+   SMPL/LBS + part_moe_leg 的 point-level nonrigid MLP 已经能解释大部分训练/测试需求。
+   part-level rigid residual 对 novelview 帮助不明显。
+
+2. PartRigidHead 是 part 级整体刚性修正，粒度比 point-level MLP 粗。
+   对衣服边界、手部、脸部、腿脚等细节，整体刚性 residual 容易引入错误方向。
+   优化器最简单的策略就是让 r_i 接近 0，把 rigid 分支关掉。
+
+3. rigid 分支被关掉后，part_pamo 剩下的有效差异主要是 Step 1:
+       expert 输入多了 z_part
+   这个 z_part 是由 part-level SMPL pose/velocity/acc 编码来的。
+   在 DNA novelview 上，这个运动编码可能提供的信息有限，反而增加了 expert 输入自由度，
+   容易带来轻微过拟合或扰动。
+
+4. 由于没有对 r_i 的分布做约束，sigmoid gate 可以无限接近 0。
+   一旦 r_i 很小，rigid branch 对 loss 的贡献和梯度都很弱，
+   后续基本很难重新变成有效分支。
+```
+
+后续建议：
+
+```text
+先不要直接用当前 part_pamo 作为最终版本。
+
+建议做三个小消融定位:
+
+1. part_pamo_step1_only:
+    只保留 z_part concat expert，关闭 PartRigidHead / PartRigidityMLP。
+    判断性能下降是不是来自运动编码本身。
+
+2. part_pamo_rigid_no_gate 或 r_min 版本:
+    例如 r_i = r_min + (1 - r_min) * sigmoid(...)
+    r_min 可先试 0.05 或 0.1。
+    防止 gate 直接塌到 0。
+
+3. part_pamo_no_z_expert:
+    不把 z_part concat 到 expert MLP，只用 z_part 预测 part rigid residual。
+    判断是不是 z_part 注入 expert 后过拟合。
+
+如果要做公平对比:
+    需要在当前同一份代码、同一 seed 下重跑 part_moe_leg 和 part_pamo。
+    更严格的做法是让 PartPAMO 模块延迟到 Part-MoE 激活时再初始化，
+    或保存/恢复 RNG，避免 Part-MoE 激活前增密轨迹因为额外模块初始化而分叉。
+```
+
+## 2026-07-17 如何让 Step 2/3 的 part-level rigid residual 真正发挥作用
+
+当前问题：
+
+```text
+DNA 0044 的日志说明:
+    r_i 很快塌到接近 0
+    rigid_contrib / mlp_contrib 接近 0
+
+因此当前 part_pamo 实际上没有在使用 part-level rigid residual。
+
+根因不是 alpha 不够大。
+根因是:
+    1. point-level part expert MLP 有足够能力解释所有残差；
+    2. rigid branch 是较粗的 part-level 运动，一旦方向不够准，会被 loss 惩罚；
+    3. r_i 没有下限或先验，优化器最容易把 sigmoid gate 推到 0；
+    4. r_i 接近 0 后，rigid branch 的贡献和 rigidity MLP 梯度都变弱，很难恢复。
+```
+
+优先改法：
+
+```text
+第一优先级:
+    给 internal rigidity 加下限和 warmup。
+
+建议:
+    r_raw = sigmoid(MLP_rigidity(x_emb_i, z_part_i))
+    r_i = r_min + (1 - r_min) * r_raw
+
+先试:
+    r_min = 0.05 或 0.1
+
+或者更稳:
+    10000-12000 iter:
+        r_min = 0.2
+    12000 之后:
+        r_min 线性降到 0.05
+
+目的:
+    防止 r_i 直接塌成 0；
+    让 PartRigidHead 在训练早期至少有可见贡献和梯度。
+```
+
+第二优先级：
+
+```text
+做分阶段训练，避免 expert MLP 抢走所有残差。
+
+建议:
+    Part-MoE 激活后的前 500-1000 iter:
+        1. 固定或下限约束 r_i，例如 r_i >= 0.2；
+        2. PartRigidHead / PartMotionEncoder 用正常 lr；
+        3. part experts 用较低 lr，或者短暂 freeze routed experts。
+
+之后:
+    放开 experts；
+    允许 r_i 学习，但保留 r_min=0.05。
+
+目的:
+    先让 rigid branch 学到 part-level 低频趋势，
+    再让 point-level MLP 负责细节。
+```
+
+第三优先级：
+
+```text
+显式把 d_part_mlp 约束成 detail residual，别让它同时学整体平移。
+
+可做软约束:
+    对每个 part 计算:
+        mean_d_mlp_p = mean(d_part_mlp_i | label_i == p)
+
+    加 loss:
+        L_detail_zero_mean = sum_p ||mean_d_mlp_p||^2
+
+目的:
+    让 part-level 平移趋势更自然地交给 PartRigidHead 的 t_p；
+    让 d_part_mlp_i 更多学习衣服边界、膝盖、脚踝等局部非刚性细节。
+
+更强版本:
+    直接从 d_part_mlp_i 中减掉 per-part mean，
+    但这个可能更激进，建议先用 soft loss。
+```
+
+第四优先级：
+
+```text
+减少 z_part 对 expert MLP 的直接干扰。
+
+当前 Step 1:
+    expert input = concat(x_emb_i, pose_feat, seq_xyz_feat, z_part_i)
+
+问题:
+    z_part 可能被 expert MLP 用来拟合点级残差，
+    rigid branch 仍然没有必要存在。
+
+建议做 ablation:
+    part_pamo_no_z_expert:
+        不把 z_part concat 到 expert；
+        z_part 只用于 PartRigidHead 和 PartRigidityMLP。
+
+如果 no_z_expert 更好，说明 z_part 注入 expert 是主要扰动源。
+```
+
+建议的 pamo_v2 组合：
+
+```text
+part_pamo_v2:
+    1. r_i 加 r_min 下限:
+        r_min warmup 0.2 -> 0.05
+
+    2. Part-MoE 激活后前 500-1000 iter:
+        降低 routed expert lr 或 freeze routed experts，
+        先训练 PartRigidHead。
+
+    3. 加 detail zero-mean loss:
+        L_detail_zero_mean = sum_p ||mean(d_part_mlp_i)||^2
+
+    4. 做 no_z_expert 对照:
+        z_part 只驱动 rigid/gate，不直接 concat 到 expert。
+```
+
+判断是否真正生效：
+
+```text
+训练日志里应该看到:
+    r_mean 不再长期 < 0.001
+    r_std 同一 part 内仍非零
+    rigid_contrib / mlp_contrib 不再接近 0
+
+较合理观察范围:
+    r_mean:
+        0.05 - 0.3
+
+    ratio = mean_norm(alpha * r_i * d_part_rigid_i) / mean_norm(d_part_mlp_i):
+        0.02 - 0.2
+
+如果 ratio 仍然 < 0.001:
+    rigid branch 还是没用上。
+
+如果 ratio > 0.5:
+    rigid branch 可能压过 part_moe_leg，需要减小 r_min / alpha / rigid lr。
+```
+
+公平对比补充：
+
+```text
+为了判断 pamo_v2 是否真的优于 part_moe_leg，
+需要先修正公平性:
+    让 PartPAMO 模块延迟到 Part-MoE 激活时初始化，
+    或在初始化 PartPAMO 模块前后保存/恢复 RNG。
+
+否则 part_pamo 和 part_moe_leg 在 10000 步前的 densification 轨迹会不同，
+指标差异会混入随机增密因素。
+```
+
+## 2026-07-17 gate 的作用以及如何保留 rigid residual
+
+用户问题：
+
+```text
+为什么要有 internal rigidity gate？
+能不能改这个 gate，让 rigid residual 保留？
+```
+
+为什么需要 gate：
+
+```text
+PartRigidHead 预测的是 part 级整体刚性 residual:
+    d_part_rigid_i
+
+这个 residual 对同一 part 内所有 Gaussian 共享同一个 R_p / t_p。
+它适合表达:
+    大腿、小腿、躯干主体区域的低频整体趋势
+
+但不一定适合:
+    衣服边界
+    关节附近
+    脚踝/膝盖
+    手部/脸部细节
+    segmentation 边界附近的点
+
+所以需要 point-wise gate:
+    r_i 高: 更服从 part-level rigid
+    r_i 低: 更多依赖 point-level nonrigid expert
+
+没有 gate 的风险:
+    rigid residual 会强行作用到整个 part，
+    容易把软组织/边界/关节细节一起拖动，导致渲染变差。
+```
+
+当前 gate 的问题：
+
+```text
+当前公式:
+    r_i = sigmoid(MLP_rigidity(...))
+    d_i = d_part_mlp_i + alpha * r_i * d_part_rigid_i
+
+问题:
+    sigmoid 输出可以无限接近 0。
+    DNA 0044 日志里 r_mean 最后约 1e-5 到 1e-4，
+    等价于把 rigid residual branch 关掉。
+
+因此当前 gate 太自由，缺少保留 rigid residual 的约束。
+```
+
+能不能改：
+
+```text
+可以，而且建议改。
+
+不建议完全删除 gate。
+更建议保留 gate 的 point-wise 选择能力，
+但给 rigid residual 一个不可被关闭的基础通道。
+```
+
+推荐改法 1：floor gate
+
+```text
+r_raw = sigmoid(MLP_rigidity(x_emb_i, z_part_i))
+r_i = r_min + (1 - r_min) * r_raw
+
+d_i = d_part_mlp_i + alpha * r_i * d_part_rigid_i
+
+推荐先试:
+    r_min = 0.05
+    r_min = 0.10
+
+含义:
+    每个 Gaussian 至少保留 5%-10% 的 part-level rigid residual。
+    MLP 仍然能学习哪些点更 rigid，但不能把 rigid residual 完全关掉。
+```
+
+推荐改法 2：warmup fixed gate，再放开学习
+
+```text
+Part-MoE 激活后前 500-1000 iter:
+    r_i = 0.2 或 0.3
+    不使用 PartRigidityMLP 输出
+
+之后:
+    r_i = r_min + (1 - r_min) * sigmoid(MLP_rigidity(...))
+    r_min = 0.05
+
+含义:
+    先让 PartRigidHead 学到有意义的 part-level residual，
+    再让 gate 学哪些点应该减少刚性。
+```
+
+推荐改法 3：base rigid + learned residual gate
+
+```text
+r_raw = sigmoid(MLP_rigidity(...))
+r_i = r_base + r_scale * r_raw
+
+例如:
+    r_base = 0.05
+    r_scale = 0.45
+
+则:
+    r_i 范围是 [0.05, 0.50]
+
+含义:
+    rigid residual 永远保留一部分，
+    但不会大到压过 point-level expert。
+```
+
+推荐改法 4：给 r_i 加均值约束
+
+```text
+L_r_mean = (mean(r_i) - r_target)^2
+
+先试:
+    r_target = 0.10 或 0.15
+    loss weight = 1e-4 到 1e-3
+
+含义:
+    防止 r_i 全部塌到 0。
+    但仍允许不同 Gaussian / 不同 part 有差异。
+```
+
+更符合部件先验的版本：
+
+```text
+不同 part 用不同 r_min:
+    body:           0.05
+    left_leg_foot:  0.10 或 0.15
+    right_leg_foot: 0.10 或 0.15
+    hands/face:     0.02 或 0.05
+    unknown:        0.00 或 0.02
+
+原因:
+    腿部主体更应该受 part-level rigid motion 影响；
+    脸、手、unknown 和边界点更需要 point-level nonrigid。
+```
+
+当前最推荐的实现路线：
+
+```text
+做一个独立消融:
+    part_pamo_gate_floor
+
+最小改动:
+    新增参数:
+        --part_pamo_rigidity_min
+        默认 0.0，保证旧 part_pamo 行为不变。
+
+    在 part_pamo_gate_floor 脚本模式中设:
+        --part_pamo_rigidity_min 0.05
+
+公式:
+    r_raw = PartRigidityMLP(...)
+    r_i = r_min + (1 - r_min) * r_raw
+
+验证目标:
+    r_mean 不再 < 0.001
+    ratio 不再长期为 0
+    目标范围:
+        r_mean 0.05 - 0.3
+        ratio  0.02 - 0.2
+```
+
+结论：
+
+```text
+gate 要保留，因为它负责区分刚性主体点和非刚性边界/关节点。
+但当前 gate 不能无限自由地关掉 rigid branch。
+
+最稳方案不是去掉 gate，
+而是改成:
+    有下限的 gate
+    或先固定再学习的 gate
+    或 part-dependent floor gate
+
+这样可以保留 PaMoSplat 的 internal rigidity 思想，
+同时确保 Step 2 的 part-level rigid residual 真正参与训练。
+```
+
+## 2026-07-20 part_pamo_gate_floor：降低 gate 关闭能力并用 GPU1 验证
+
+用户要求：
+
+```text
+用卡1跑降低 gate 之后的 part_pamo 实验，并判断有没有改善。
+```
+
+实现口径：
+
+```text
+新增独立消融:
+    part_pamo_gate_floor
+
+默认旧 part_pamo 不变:
+    --part_pamo_rigidity_min 0.0
+
+新实验默认:
+    --part_pamo_rigidity_min 0.05
+
+公式:
+    r_raw = sigmoid(MLP_rigidity(x_emb_i, z_part_i))
+    r_i = r_min + (1 - r_min) * r_raw
+    d_i = d_part_mlp_i + alpha * r_i * d_part_rigid_i
+```
+
+代码修改：
+
+```text
+arguments/__init__.py
+    新增 part_pamo_rigidity_min，默认 0.0。
+
+scene/gaussian_model.py
+    读取并传给 NonrigidDeformer。
+
+nets/mlp_delta_non_rigid.py
+    NonrigidDeformer 保存 part_pamo_rigidity_min。
+    compute_point_rigidity 中加 floor gate。
+    启动日志打印 rigidity_min。
+
+scripts/exps_dnarendering.sh
+    新增模式:
+        part_pamo_gate_floor
+
+    基于 part_pamo / part_moe_leg:
+        --use_part_moe
+        --use_part_pamo
+        --part_label_schema part_moe_leg
+        --num_parts 7
+        --part_pamo_rigidity_min 0.05
+
+    日志仍保存到:
+        /media/image/mxz/human/SeqAvatar/logs/pamo
+```
+
+启动前验证：
+
+```text
+bash -n scripts/exps_dnarendering.sh
+
+PYTHONDONTWRITEBYTECODE=1 python -m py_compile:
+    nets/mlp_delta_non_rigid.py
+    scene/gaussian_model.py
+    arguments/__init__.py
+    train.py
+    render.py
+    gaussian_renderer/__init__.py
+    scene/__init__.py
+    scene/dataset_readers.py
+
+git diff --check
+
+inline rigidity floor check:
+    part_pamo_rigidity_min=0.0 / 0.05 均通过；
+    r_min=0.05 时输出 rigidity 不低于 0.05。
+```
+
+运行计划：
+
+```text
+先跑 DNA-Rendering 0044_11，因为上一轮 part_pamo 和 part_moe_leg 对比、
+gate collapse 诊断都来自该序列。
+
+命令:
+    SEQUENCES_OVERRIDE=0044_11
+    GPU_id=1
+    SKIP_LOAD_TEST_CAMERAS=1
+    IMAGE_DATA_DEVICE=cpu
+    bash scripts/exps_dnarendering.sh part_pamo_gate_floor
+```
+
+运行结果：
+
+```text
+已在 GPU1 跑完 DNA-Rendering 0044_11。
+
+RUN_TIME:
+    20260720_160355
+
+输出目录:
+    output/DNA-Rendering/0044_11/part_pamo_gate_floor/20260720_160355/
+
+总日志:
+    logs/pamo/20260720_160355_DNA-Rendering_part_pamo_gate_floor.log
+
+最终 render.py novelview 指标:
+    PSNR  32.962922636667884
+    SSIM  0.9781010041634242
+    LPIPS 0.021254854928702115
+```
+
+与已有结果对比：
+
+```text
+part_moe_leg:
+    output/DNA-Rendering/0044_11/part_moe_leg/20260623_180431/
+    PSNR  33.000570344924924
+    SSIM  0.9782106434305509
+    LPIPS 0.02107852928650876
+
+原始 part_pamo:
+    output/DNA-Rendering/0044_11/part_pamo/20260716_214518/
+    PSNR  32.964932950337726
+    SSIM  0.97802731047074
+    LPIPS 0.021222742390818894
+
+part_pamo_gate_floor - 原始 part_pamo:
+    ΔPSNR  -0.002010313670
+    ΔSSIM  +0.000073693693
+    ΔLPIPS +0.000032112538
+
+part_pamo_gate_floor - part_moe_leg:
+    ΔPSNR  -0.037647708257
+    ΔSSIM  -0.000109639267
+    ΔLPIPS +0.000176325642
+```
+
+训练诊断：
+
+```text
+启动日志确认:
+    [PartPAMO] enabled=True
+    modules=PartMotionEncoder,PartRigidHead,PartRigidityMLP
+    rigidity_min=0.05
+
+iter 11000:
+    r_mean=0.050730
+    r_std=0.000685
+    ratio=0.000810
+    PartMotionEncoder / PartRigidHead / PartRigidityMLP 都有 grad
+
+iter 23000:
+    r_mean=0.050002
+    r_std=0.000004
+    ratio=0.005442
+
+iter 25000:
+    r_mean=0.050001
+    r_std=0.000002
+    r_min=0.050000
+    r_max=0.050137
+    mlp_norm=4.218914e-02
+    rigid_norm=1.755154e-03
+    rigid_contrib=7.898340e-05
+    ratio=0.001872
+```
+
+Gaussian 点数：
+
+```text
+part_moe_leg:
+    61950
+
+原始 part_pamo:
+    59119
+
+part_pamo_gate_floor:
+    58932
+```
+
+结论：
+
+```text
+降低 gate 关闭能力后，没有得到明确改善。
+
+相对原始 part_pamo:
+    SSIM 有极小提升，但 PSNR 和 LPIPS 都略差，整体不能算改善。
+
+相对 part_moe_leg:
+    PSNR / SSIM / LPIPS 全部更差。
+
+原因:
+    gate floor 技术上生效了，r_i 没有再掉到 0；
+    但 r_i 几乎贴着 0.05 下限，std 接近 0，说明 internal rigidity 仍没有形成
+    有意义的点级差异。
+
+    rigid residual 的实际贡献仍太小:
+        最终 ratio=0.001872
+    远低于之前期望的 0.02 - 0.2。
+
+判断:
+    仅把 gate 下限设为 0.05 不足以让 Step 2/3 产生有效收益。
+
+下一步更值得尝试:
+    1. 提高 floor 到 0.10 或 0.20。
+    2. 前若干千 iter 固定 r_i，再放开学习。
+    3. 给 PartRigidHead 更强学习机会，例如降低 part MLP 对 rigid 趋势的抢占。
+    4. 对 rigid contribution 加温和约束或目标范围监控，避免 ratio 长期接近 0。
+```
+
+## 2026-07-20 下一步如何检验 part_pamo 是否有用
+
+用户问题：
+
+```text
+下一步建议怎么检验 pamo 有没有用。
+```
+
+建议不要直接继续盲跑全量，而是拆成三层验证：
+
+```text
+第一层：机制是否有用
+    目标不是看最终 PSNR，而是确认 rigid residual 在真实训练中能产生有效贡献。
+
+    建议做固定 gate 对照:
+        part_pamo_r_fixed_0.2
+        part_pamo_r_fixed_0.5
+        part_pamo_r_fixed_1.0
+
+    公式:
+        d_i = d_part_mlp_i + alpha * r_fixed * d_part_rigid_i
+
+    判断:
+        如果 fixed r 明显优于当前 learnable gate，
+        说明 PAMO rigid branch 有潜力，问题主要是 gate collapse。
+
+        如果 r_fixed=0.5 / 1.0 仍然没提升甚至变差，
+        说明 part-level rigid residual 本身对当前 SeqAvatar/DNA 设置帮助有限，
+        或者中心 c_p / part label / motion feature 的定义还不够合适。
+```
+
+```text
+第二层：分支贡献是否足够
+    继续打印:
+        r_mean / r_std / per_part r_mean / per_part r_std
+        mean_norm(d_part_mlp)
+        mean_norm(d_part_rigid)
+        mean_norm(alpha * r_i * d_part_rigid)
+        ratio = rigid_contrib / mlp_contrib
+
+    当前 part_pamo_gate_floor 结果:
+        final ratio = 0.001872
+
+    这个量级太小，不足以影响最终渲染。
+
+    更合理的检验目标:
+        ratio 进入 0.02 - 0.2
+        r_std 不长期接近 0
+        per-part r_mean 有差异
+```
+
+```text
+第三层：看 PAMO 应该发挥作用的子集
+    不只看全帧平均 novel-view 指标。
+
+    PaMo/PAMO 的预期收益主要在:
+        快速摆腿
+        膝盖/脚踝附近
+        衣服边界随 part 整体运动的区域
+
+    建议额外做:
+        high-motion frames top 20% 评测
+        low-motion frames bottom 20% 评测
+        lower-body / leg part 区域局部指标
+
+    判断:
+        如果全局平均不提升，但 high-motion leg 子集提升，
+        说明该点仍有论文价值，可以作为“运动剧烈区域更稳”的创新点。
+
+        如果 high-motion 子集也不提升，
+        基本说明当前 part_pamo 对该任务没有实质收益。
+```
+
+推荐最小实验矩阵：
+
+```text
+固定 0044_11，先不要跑六序列。
+
+A. part_moe_leg
+    已有:
+        20260623_180431
+
+B. part_pamo_step1_only
+    只保留 z_part concat，不加 rigid residual / rigidity gate。
+    用来判断 Step 1 的 part motion code 是否本身有收益。
+
+C. part_pamo_r_fixed_0.2
+    关闭 learnable gate，固定 r=0.2。
+
+D. part_pamo_r_fixed_0.5
+    关闭 learnable gate，固定 r=0.5。
+
+E. part_pamo_r_fixed_1.0
+    强制完整 rigid residual。
+    这是 positive stress test，不一定最终采用。
+
+F. part_pamo_gate_floor_0.2
+    learnable gate + floor 0.2。
+    如果 C/D 有用，再测这个。
+```
+
+优先判断规则：
+
+```text
+1. 如果 B 比 part_moe_leg 好:
+       Step 1 的 motion encoding 是主要贡献。
+       rigid/gate 应该弱化或重新设计。
+
+2. 如果 B 不好，但 C/D 好:
+       rigid residual 有用，当前 learnable gate 失败。
+       下一步改 gate 策略。
+
+3. 如果 C/D/E 都不好:
+       part-level rigid residual 可能不适合当前设置，
+       不建议继续在 Step 2/3 上投入太多。
+
+4. 如果只 high-motion / leg 局部指标变好:
+       该方法仍可保留，但论文表述要强调运动剧烈 part 的收益，
+       不要只依赖全局平均指标。
+```
+
+## 2026-07-20 part_pamo 优化思路总结
+
+用户要求：
+
+```text
+总结 part_pamo 的优化思路。
+```
+
+当前 part_pamo 的结构：
+
+```text
+基线:
+    part_moe_leg
+
+Step 1:
+    给每个 SMPL part 加运动编码 z_part。
+    z_part concat 到对应 part expert 输入。
+
+Step 2:
+    用 z_part 预测 part-level rigid residual:
+        R_p, t_p = PartRigidHead(z_part)
+        d_part_rigid_i = R_p * (x_i - c_p) + c_p + t_p - x_i
+
+Step 3:
+    学点级 internal rigidity:
+        r_i = sigmoid(MLP_rigidity(x_emb_i, z_part_i))
+        d_i = d_part_mlp_i + alpha * r_i * d_part_rigid_i
+```
+
+当前现象：
+
+```text
+代码链路已验证接通。
+zero init 下与 part_moe_leg 基本等价。
+PartMotionEncoder / PartRigidHead / PartRigidityMLP 都能拿到梯度。
+
+但 0044_11 实验结果:
+    原始 part_pamo 差于 part_moe_leg。
+    part_pamo_gate_floor_0.05 也没有改善。
+
+主要诊断:
+    r_i 几乎贴着 0.05 下限。
+    r_std 接近 0。
+    rigid_contrib / mlp_contrib 最终只有 0.001872。
+
+因此当前问题不是模块没接上，
+而是 part-level rigid residual 在真实训练中的实际贡献太小，
+无法影响最终渲染。
+```
+
+优化主线：
+
+```text
+主线 1：先判断 rigid residual 本身有没有用
+    不要一开始就让 learnable gate 自由学习。
+    先做 fixed gate:
+        r=0.2
+        r=0.5
+        r=1.0
+
+    如果 fixed gate 有提升:
+        说明 Step 2 rigid branch 有潜力，问题是 Step 3 gate collapse。
+
+    如果 fixed gate 也没有提升:
+        说明当前 part-level rigid residual 本身可能不适合，
+        需要重新考虑 c_p、part label、motion feature 或直接弱化 Step 2/3。
+
+主线 2：把 Step 1 / Step 2 / Step 3 拆开
+    part_pamo_step1_only:
+        只用 z_part motion encoding，不加 rigid residual / rigidity gate。
+
+    part_pamo_r_fixed:
+        z_part + rigid residual + fixed r，不用 learnable gate。
+
+    part_pamo_full:
+        z_part + rigid residual + learnable gate。
+
+    这样才能知道收益或退化来自哪一层。
+
+主线 3：防止 gate 把 rigid branch 关掉
+    当前 sigmoid gate 太自由。
+    可选改法:
+        floor gate:
+            r_i = r_min + (1 - r_min) * sigmoid(...)
+
+        fixed-to-learned warmup:
+            前期固定 r_i=0.2/0.5，
+            等 PartRigidHead 学出非零 residual 后再放开 gate。
+
+        base rigid + learned residual gate:
+            d_i = d_part_mlp_i + alpha * (r_base + r_learned) * d_part_rigid_i
+
+主线 4：避免 part MLP 抢占 rigid 趋势
+    part-specific MLP 表达能力强，可能直接吸收所有位移，
+    导致 PartRigidHead 学不到稳定趋势。
+
+    可尝试:
+        降低 part MLP 学习率或容量。
+        rigid branch 在 Part-MoE 激活后先训练若干 iter。
+        对 rigid contribution ratio 加监控或轻量正则。
+
+主线 5：用更匹配 PAMO 的评价方式
+    不只看全局 novel-view 平均。
+    PAMO 应主要改善:
+        高运动帧
+        腿部/脚踝/膝盖区域
+        衣物边界随 part 整体运动的趋势
+
+    需要补充:
+        high-motion top 20% frames 指标
+        low-motion bottom 20% frames 指标
+        lower-body / leg 局部指标
+```
+
+推荐优先级：
+
+```text
+第一优先级:
+    跑 part_pamo_step1_only。
+    跑 part_pamo_r_fixed_0.2 / 0.5。
+
+第二优先级:
+    如果 fixed gate 有用，再做:
+        part_pamo_gate_floor_0.2
+        fixed-to-learned gate warmup
+
+第三优先级:
+    做 high-motion / lower-body 局部评测。
+
+放弃条件:
+    如果 step1_only、r_fixed_0.2、r_fixed_0.5、r_fixed_1.0 都不优于 part_moe_leg，
+    且 high-motion leg 子集也没有收益，
+    则不建议继续把 part_pamo 作为主创新点。
+```
+
+## 2026-07-20 part_pamo 完整机制验证启动
+
+用户要求：
+
+```text
+用卡1和3跑完完整验证并汇报结果。
+```
+
+本次验证口径：
+
+```text
+固定 DNA-Rendering 0044_11。
+使用 GPU1 和 GPU3 并行跑机制验证矩阵。
+
+本次会重跑当前代码下的 part_moe_leg 作为公平基线，
+然后跑:
+    part_pamo_step1_only
+    part_pamo_r_fixed_0.2
+    part_pamo_r_fixed_0.5
+    part_pamo_r_fixed_1.0
+    part_pamo_gate_floor_0.2
+```
+
+新增独立开关：
+
+```text
+arguments/__init__.py:
+    --part_pamo_step1_only
+    --part_pamo_fixed_rigidity，默认 -1.0
+
+nets/mlp_delta_non_rigid.py:
+    part_pamo_step1_only=True:
+        只创建/调用 PartMotionEncoder。
+        不创建 PartRigidHead。
+        不创建 PartRigidityMLP。
+        只验证 Step 1 的 z_part motion encoding。
+
+    part_pamo_fixed_rigidity >= 0:
+        创建 PartMotionEncoder + PartRigidHead。
+        不创建 PartRigidityMLP。
+        r_i 固定为指定常数。
+
+    默认:
+        保持原 part_pamo 行为。
+```
+
+新增 DNA 脚本模式：
+
+```text
+scripts/exps_dnarendering.sh:
+    part_pamo_step1_only
+    part_pamo_r_fixed_0.2
+    part_pamo_r_fixed_0.5
+    part_pamo_r_fixed_1.0
+    part_pamo_gate_floor_0.2
+```
+
+启动前验证：
+
+```text
+bash -n scripts/exps_dnarendering.sh
+
+PYTHONDONTWRITEBYTECODE=1 python -m py_compile:
+    nets/mlp_delta_non_rigid.py
+    scene/gaussian_model.py
+    arguments/__init__.py
+    train.py
+    render.py
+    gaussian_renderer/__init__.py
+    scene/__init__.py
+    scene/dataset_readers.py
+
+inline CPU forward:
+    step1_only:
+        modules=PartMotionEncoder
+        has_rigid=False
+        has_gate=False
+
+    fixed_0.2:
+        modules=PartMotionEncoder,PartRigidHead
+        has_rigid=True
+        has_gate=False
+        fixed=0.2
+
+    learnable floor:
+        modules=PartMotionEncoder,PartRigidHead,PartRigidityMLP
+        has_rigid=True
+        has_gate=True
+
+    三种输出 shape 均保持:
+        d_xyz [1, N, 3]
+        d_rotation [1, N, 4]
+        d_scaling [1, N, 3]
+
+git diff --check
+```
+
+计划启动命令：
+
+```text
+GPU1:
+    SEQUENCES_OVERRIDE=0044_11 GPU_id=1 SKIP_LOAD_TEST_CAMERAS=1 IMAGE_DATA_DEVICE=cpu \
+    bash scripts/exps_dnarendering.sh part_moe_leg
+
+    SEQUENCES_OVERRIDE=0044_11 GPU_id=1 SKIP_LOAD_TEST_CAMERAS=1 IMAGE_DATA_DEVICE=cpu \
+    bash scripts/exps_dnarendering.sh part_pamo_r_fixed_0.5
+
+    SEQUENCES_OVERRIDE=0044_11 GPU_id=1 SKIP_LOAD_TEST_CAMERAS=1 IMAGE_DATA_DEVICE=cpu \
+    bash scripts/exps_dnarendering.sh part_pamo_gate_floor_0.2
+
+GPU3:
+    SEQUENCES_OVERRIDE=0044_11 GPU_id=3 SKIP_LOAD_TEST_CAMERAS=1 IMAGE_DATA_DEVICE=cpu \
+    bash scripts/exps_dnarendering.sh part_pamo_step1_only
+
+    SEQUENCES_OVERRIDE=0044_11 GPU_id=3 SKIP_LOAD_TEST_CAMERAS=1 IMAGE_DATA_DEVICE=cpu \
+    bash scripts/exps_dnarendering.sh part_pamo_r_fixed_0.2
+
+    SEQUENCES_OVERRIDE=0044_11 GPU_id=3 SKIP_LOAD_TEST_CAMERAS=1 IMAGE_DATA_DEVICE=cpu \
+    bash scripts/exps_dnarendering.sh part_pamo_r_fixed_1.0
+```
+
+## 2026-07-20 part_pamo 完整机制验证停止
+
+用户要求：
+
+```text
+停止运行。
+```
+
+执行状态：
+
+```text
+已检查当前进程:
+    train.py
+    render.py
+    scripts/exps_dnarendering.sh
+
+结果:
+    没有发现仍在运行的 SeqAvatar 训练或渲染进程。
+    因此没有额外 kill 进程。
+    不删除已有输出。
+```
+
+停止前已完成的有效结果：
+
+```text
+当前代码 part_moe_leg:
+    RUN_TIME 20260720_194556
+    PSNR  33.019845469792685
+    SSIM  0.9782838453849156
+    LPIPS 0.021065409497047462
+    #pts  62269
+
+part_pamo_step1_only:
+    RUN_TIME 20260720_194557
+    PSNR  33.02426986694336
+    SSIM  0.9782492324709892
+    LPIPS 0.021121497095252077
+    #pts  60691
+
+part_pamo_r_fixed_0.2:
+    RUN_TIME 20260720_203338
+    PSNR  32.978520425160724
+    SSIM  0.97816135485967
+    LPIPS 0.02105262337718159
+    #pts  61766
+    final ratio 0.010664
+
+part_pamo_r_fixed_0.5:
+    RUN_TIME 20260720_203445
+    PSNR  33.02952477137248
+    SSIM  0.9781892021497091
+    LPIPS 0.02123006567514191
+    #pts  61987
+    final ratio 0.012487
+```
+
+未完成项：
+
+```text
+part_pamo_gate_floor_0.2:
+    训练已完成。
+    RUN_TIME 20260720_212710
+    #pts 59756
+    final ratio 0.009767
+    自动 render 失败:
+        torch.cuda.is_available() is False
+
+part_pamo_r_fixed_1.0:
+    RUN_TIME 20260720_215556
+    训练在 Part-MoE 激活后失败。
+    错误:
+        CUDA error: unknown error
+```
+
+环境异常：
+
+```text
+nvidia-smi -L 显示 GPU2 device handle unknown。
+之后 CUDA_VISIBLE_DEVICES=0/1/3 的最小 torch.cuda 测试均返回:
+    torch.cuda.is_available() = False
+    device_count = 0
+
+因此当前无法继续补 render 或重跑 r_fixed_1.0。
+需要先恢复 GPU/NVML/CUDA 运行状态。
+```
+
+## 2026-07-20 part_pamo 已完成验证的阶段结论
+
+用户问题：
+
+```text
+刚才跑完的能得到什么结论吗。
+```
+
+可用对照：
+
+```text
+当前代码 part_moe_leg:
+    PSNR  33.019845469792685
+    SSIM  0.9782838453849156
+    LPIPS 0.021065409497047462
+
+part_pamo_step1_only:
+    PSNR  33.02426986694336
+    SSIM  0.9782492324709892
+    LPIPS 0.021121497095252077
+    ΔPSNR  +0.004424397151
+    ΔSSIM  -0.000034612914
+    ΔLPIPS +0.000056087598
+
+part_pamo_r_fixed_0.2:
+    PSNR  32.978520425160724
+    SSIM  0.97816135485967
+    LPIPS 0.02105262337718159
+    ΔPSNR  -0.041325044632
+    ΔSSIM  -0.000122490525
+    ΔLPIPS -0.000012786120
+    final ratio 0.010664
+
+part_pamo_r_fixed_0.5:
+    PSNR  33.02952477137248
+    SSIM  0.9781892021497091
+    LPIPS 0.02123006567514191
+    ΔPSNR  +0.009679301580
+    ΔSSIM  -0.000094643235
+    ΔLPIPS +0.000164656178
+    final ratio 0.012487
+```
+
+阶段结论：
+
+```text
+1. Step 1 的 part motion encoding 有一点正向信号。
+   step1_only 的 PSNR 比当前 part_moe_leg 高约 +0.0044。
+   但 SSIM 和 LPIPS 略差，所以不能说稳定提升。
+
+2. Step 2 的 rigid residual 不是完全没用。
+   r_fixed_0.5 的 PSNR 比当前 part_moe_leg 高约 +0.0097，
+   说明强制保留一定 rigid residual 后，至少 PSNR 有正向信号。
+
+3. 但 rigid residual 贡献仍然偏小。
+   r_fixed_0.2 final ratio=0.010664。
+   r_fixed_0.5 final ratio=0.012487。
+   仍低于原先希望的 0.02 - 0.2。
+
+4. learnable gate / floor gate 仍有 collapse 倾向。
+   gate_floor_0.2 训练完成时:
+       r_mean=0.200001
+       r_std=0.000001
+       ratio=0.009767
+   说明 gate 基本贴着 floor，没有学出点级 internal rigidity 差异。
+
+5. 目前不能宣称完整 part_pamo 优于 part_moe_leg。
+   已完成结果是:
+       PSNR 有弱正向信号；
+       SSIM/LPIPS 不稳定；
+       ratio 仍偏小；
+       r_i 没有形成有意义的空间差异。
+```
+
+推荐判断：
+
+```text
+part_pamo 目前适合作为继续优化候选，不适合作为已经成立的最终创新点。
+
+更稳的下一步:
+    保留 Step 1。
+    暂时不要用完全 learnable gate 作为主结果。
+    继续围绕 fixed/warmup gate 和 high-motion/leg 局部评测判断是否有真实收益。
+
+如果后续补完:
+    gate_floor_0.2 render
+    r_fixed_1.0
+    high-motion frames 指标
+
+仍然只表现为 PSNR 微小提升、SSIM/LPIPS 不稳，
+则 Step 2/3 不建议作为主创新点。
+```
+
+## 2026-07-20 part_pamo 补全未完成实验
+
+用户要求：
+
+```text
+用卡0卡1卡3补全刚才没跑完的实验，最后告诉总的结果。
+```
+
+启动前状态：
+
+```text
+GPU/NVML 已恢复。
+nvidia-smi -L 可识别 GPU0/1/2/3。
+CUDA_VISIBLE_DEVICES=0/1/3 的最小 torch.cuda 测试均通过:
+    torch.cuda.is_available() = True
+    device_count = 1
+```
+
+补全计划：
+
+```text
+GPU0:
+    补 render:
+        part_pamo_gate_floor_0.2
+        RUN_TIME 20260720_212710
+
+GPU1:
+    重跑完整:
+        part_pamo_r_fixed_1.0
+
+GPU3:
+    保留为失败重试卡。
+    不同时重复跑同一实验，避免输出混乱。
+```
+
+补全结果：
+
+```text
+已完成:
+    GPU0:
+        补完 part_pamo_gate_floor_0.2 的 final novelview render。
+        RUN_TIME 20260720_212710
+
+    GPU1:
+        重跑并完成 part_pamo_r_fixed_1.0 的 train + final novelview render。
+        RUN_TIME 20260720_234745
+
+    GPU3:
+        没有重复启动同名实验，避免产生两个 RUN_TIME 的同名结果导致判断混乱。
+        本轮唯一未完成训练项是 r_fixed_1.0，已由 GPU1 成功补完。
+```
+
+0044_11 当前代码完整对照：
+
+```text
+part_moe_leg:
+    RUN_TIME 20260720_194556
+    PSNR  33.019845469792685
+    SSIM  0.9782838453849156
+    LPIPS 0.021065409497047462
+    #pts  62269
+
+part_pamo_step1_only:
+    RUN_TIME 20260720_194557
+    PSNR  33.02426986694336
+    SSIM  0.9782492324709892
+    LPIPS 0.021121497095252077
+    #pts  60691
+    ΔPSNR  +0.004424397151
+    ΔSSIM  -0.000034612914
+    ΔLPIPS +0.000056087598
+
+part_pamo_r_fixed_0.2:
+    RUN_TIME 20260720_203338
+    PSNR  32.978520425160724
+    SSIM  0.97816135485967
+    LPIPS 0.02105262337718159
+    #pts  61766
+    final ratio 0.010664
+    ΔPSNR  -0.041325044632
+    ΔSSIM  -0.000122490525
+    ΔLPIPS -0.000012786120
+
+part_pamo_r_fixed_0.5:
+    RUN_TIME 20260720_203445
+    PSNR  33.02952477137248
+    SSIM  0.9781892021497091
+    LPIPS 0.02123006567514191
+    #pts  61987
+    final ratio 0.012487
+    ΔPSNR  +0.009679301580
+    ΔSSIM  -0.000094643235
+    ΔLPIPS +0.000164656178
+
+part_pamo_gate_floor_0.2:
+    RUN_TIME 20260720_212710
+    PSNR  32.98445512453715
+    SSIM  0.9781745622555414
+    LPIPS 0.021087642122680942
+    #pts  59756
+    final r_mean 0.200001
+    final r_std  0.000001
+    final ratio  0.009767
+    ΔPSNR  -0.035390345256
+    ΔSSIM  -0.000109283129
+    ΔLPIPS +0.000022232626
+
+part_pamo_r_fixed_1.0:
+    RUN_TIME 20260720_234745
+    PSNR  33.0063467502594
+    SSIM  0.978175613284111
+    LPIPS 0.02100635617195318
+    #pts  62241
+    final ratio 0.011873
+    ΔPSNR  -0.013498719533
+    ΔSSIM  -0.000108232101
+    ΔLPIPS -0.000059053325
+```
+
+本轮补全后的结论：
+
+```text
+1. part_pamo 没有稳定超过 part_moe_leg。
+   只有 step1_only 和 r_fixed_0.5 的 PSNR 略高:
+       step1_only: +0.0044
+       r_fixed_0.5: +0.0097
+   但它们的 SSIM 都低于 part_moe_leg，LPIPS 也没有稳定变好。
+
+2. Step 1 的 part motion encoding 是目前最稳的正向信号。
+   它几乎不改动主结构，只让 PSNR 有轻微提升，但幅度太小，仍需要更多序列确认。
+
+3. Step 2/3 的 rigid residual 确实接通并有梯度，但贡献偏小。
+   fixed r=0.2 / 0.5 / 1.0 的 final ratio 都约为 0.01:
+       0.010664 / 0.012487 / 0.011873
+   即使强制 r=1，rigid contribution 也没有明显放大到预期的 0.02 - 0.2。
+
+4. learnable gate / gate floor 仍然没有学出 internal rigidity。
+   gate_floor_0.2 最终:
+       r_mean=0.200001
+       r_std=0.000001
+   基本贴着 floor，说明点级 rigidity 没有形成空间差异。
+
+5. r_fixed_1.0 不是更好选择。
+   它 LPIPS 比 part_moe_leg 好一点:
+       ΔLPIPS=-0.000059
+   但 PSNR 和 SSIM 都下降:
+       ΔPSNR=-0.0135
+       ΔSSIM=-0.000108
+
+总判断:
+    part_pamo 当前只能作为候选方向，不能作为已经成立的主创新点。
+    如果只看 0044_11，part_moe_leg 仍是更稳基线。
+    part_pamo 里最值得保留继续试的是 Step 1；Step 2/3 需要重新设计约束或训练策略，
+    否则 rigid residual 实际贡献太小，learnable rigidity 也容易塌到常数。
+```
+
+## 2026-07-21 part_pamo 当前方案是否值得继续优化
+
+用户问题：
+
+```text
+总结当前方案是否值得优化。
+```
+
+判断：
+
+```text
+当前 part_pamo 不建议继续按原方案大投入优化。
+
+值得保留:
+    Step 1: part motion encoding
+
+暂不建议作为主线继续投入:
+    Step 2: part-level rigid residual branch
+    Step 3: internal learnable rigidity gate
+```
+
+原因：
+
+```text
+1. 0044_11 上没有稳定超过 part_moe_leg。
+   当前完整对照里只有:
+       step1_only: PSNR +0.0044
+       r_fixed_0.5: PSNR +0.0097
+   但 SSIM/LPIPS 都不稳定，不能证明整体质量提升。
+
+2. rigid residual 接通了，但贡献太小。
+   fixed r=0.2 / 0.5 / 1.0 的 final ratio 都约 0.01。
+   即使强制 r=1，rigid contribution 仍没有明显进入 0.02 - 0.2 的预期区间。
+
+3. learnable rigidity 没学出点级差异。
+   gate_floor_0.2 最终:
+       r_mean=0.200001
+       r_std=0.000001
+   说明 gate 基本塌到常数/floor，没有体现 PaMoSplat internal rigidity 的核心价值。
+
+4. 继续调 gate floor / fixed r 的收益不大。
+   fixed r=1.0 没有带来更强收益，说明问题不是 gate 太小这么简单，
+   而是当前 part rigid residual 本身没有形成有效可利用的残差运动。
+```
+
+建议：
+
+```text
+短期:
+    只保留 Step 1 作为 part_pamo_step1_only 或 motion_part_moe 分支，继续多序列验证。
+    不把 Step 2/3 作为主实验结果。
+
+如果还想救 Step 2/3:
+    不要继续只调 r/gate。
+    应该改 rigid residual 的学习目标或约束，例如:
+        只在腿/脚高运动 part 启用
+        只在 high-motion frames 评估和训练增强
+        给 rigid residual 显式正则/目标，避免被点级 MLP 吸收
+        改为 part-local coordinate residual，而不是直接全 part rigid transform
+
+决策:
+    当前方案适合作为“探索过但不成立”的记录。
+    真正值得继续优化的只有 Step 1。
+```
+
+## 2026-07-21 如何强化 part motion encoding
+
+用户问题：
+
+```text
+part motion encoding 当前起作用很少，怎么强化它的作用。
+```
+
+当前弱的主要原因：
+
+```text
+1. z_part 只是 concat 到 expert 输入末尾。
+   expert 是从原 shared MLP 复制来的，新增 z_part 输入列初始化为 0。
+   这保证初始等价 part_moe_leg，但也让网络很容易继续沿用原路径，忽略 z_part。
+
+2. part_motion_feat 信息太粗。
+   当前每个 part 只有:
+       mean(part_pose_t)
+       mean(part_pose_{t-1})
+       mean(part_pose_{t+1})
+       mean(velocity)
+       mean(acc)
+   共 15 维。
+   对腿/脚这种多关节 part，简单均值会抹掉膝盖、脚踝等局部差异。
+
+3. 运动编码没有显式监督。
+   它只通过最终 RGB/loss 间接学习，且 part-specific MLP 本身容量很大，
+   很容易把运动相关残差直接吸收到点级 MLP，而不使用 z_part。
+
+4. 运动信号没有被高运动帧强化。
+   如果训练中多数帧运动不剧烈，z_part 的边际收益会被平均掉。
+```
+
+强化优先级：
+
+```text
+优先级 1：改 z_part 注入方式，不再只 concat。
+    建议做 motion FiLM:
+        gamma_p, beta_p = MotionFiLM(z_part)
+        h = gamma_p * h + beta_p
+    把 z_part 用来调制 expert 的 hidden feature。
+
+    初始仍可保持等价:
+        gamma 初始化为 1
+        beta 初始化为 0
+
+    这样 z_part 不是只作为输入列，而是直接调制 expert 中间表达，
+    更难被网络忽略。
+
+优先级 2：增强 part_motion_feat。
+    不要只用 joint mean。
+    对每个 part 计算:
+        pose mean / std
+        velocity mean / std / norm / max_norm
+        acceleration mean / std / norm / max_norm
+        part center velocity / acceleration，来自 SMPL posed xyz
+
+    这样能保留:
+        这个 part 整体是否在动
+        part 内部关节是否不同步
+        运动强度是否集中在膝盖、脚踝等局部
+
+优先级 3：给 motion 分支更强优化权重。
+    PartMotionEncoder 和 motion FiLM 单独 param group:
+        lr = expert_lr * 2 或 *5
+    同时对 z_part 相关新增层不要全零太久。
+    可以保持输出等价初始化，但让 motion 分支的学习率更高。
+
+优先级 4：训练时突出 high-motion frames。
+    根据 part_velocity / part_acc 的 norm 给帧加权或重采样。
+    对腿脚实验可以优先放大:
+        left_leg_foot
+        right_leg_foot
+    的高运动帧。
+
+优先级 5：给 z_part 一个辅助目标。
+    例如让 z_part 预测每个 part 的平均非刚性残差或 residual norm:
+        pred_part_residual = MLP_aux(z_part)
+        target = stopgrad(mean(|d_xyz_part_mlp|) or mean residual per part)
+    这个 loss 权重很小，只用来防止 z_part 完全无效。
+```
+
+推荐下一版消融：
+
+```text
+新增独立实验:
+    part_pamo_motion_film
+
+只基于 Step 1，不启用 Step 2/3。
+
+保留:
+    PartMotionEncoder
+    part_motion_conds
+    part_moe_leg schema
+
+新增:
+    1. richer part_motion_feat
+    2. MotionFiLM(z_part) 调制 expert hidden feature
+    3. PartMotionEncoder / MotionFiLM 更高 lr
+    4. 每 1000 iter 打印:
+        z_norm
+        film_gamma_mean/std
+        film_beta_norm
+        PartMotionEncoder grad
+        MotionFiLM grad
+
+预期判断:
+    如果 z_part 真起作用:
+        film_beta_norm 不应长期接近 0
+        gamma/std 应逐渐有变化
+        high-motion frames 指标应比 part_moe_leg 更明显提升
+```
+
+不建议优先做：
+
+```text
+1. 单纯把 part_pamo_dim 从 32 加到 64/128。
+   如果注入方式仍是 concat，网络仍可能忽略。
+
+2. 继续调 Step 2/3 的 gate。
+   当前问题不是 gate 数值，而是 rigid residual 本身贡献小。
+
+3. 直接强制 z_part 大权重。
+   这样容易破坏 part_moe_leg 的稳定初始化，导致指标下降。
+```
+
+## 2026-07-21 part_pamo motion encoding 强化判断实验
+
+用户要求：
+
+```text
+part motion encoding 当前起作用很少，尝试几个判断方案。
+用 GPU0 和 GPU1，在 DNA-Rendering 的 0044_11 和 0206_04 两个序列上跑，
+最后总结结果。
+```
+
+新增独立实验模式：
+
+```text
+scripts/exps_dnarendering.sh part_pamo_motion_film
+    基于 part_pamo_step1_only。
+    保留原 Step1 concat z_part 到 expert 输入。
+    额外增加 PartMotionFiLM(z_part_i)，identity init：
+        gamma = 1
+        beta = 0
+    对每个 PartNonrigidExpert 的 hidden layers 做 FiLM。
+    不启用 Step2/Step3 rigid residual。
+
+scripts/exps_dnarendering.sh part_pamo_motion_film_rich
+    基于 part_pamo_motion_film。
+    part_motion_feat_mode=rich。
+    PartMotionEncoder 输入从 15 维扩展到 28 维：
+        原 15 维 mean features
+        pose_t std
+        velocity std
+        acceleration std
+        velocity norm mean/max
+        acceleration norm mean/max
+    PartMotionEncoder + PartMotionFiLM 使用单独 lr multiplier：
+        --part_pamo_motion_lr_mult，默认 2.0
+```
+
+隔离性：
+
+```text
+默认:
+    part_pamo_motion_film=False
+    part_pamo_motion_feat_mode=mean
+    part_pamo_motion_lr_mult=1.0
+
+因此 part_moe_leg / part_pamo / part_pamo_step1_only /
+part_pamo_r_fixed_* / part_pamo_gate_floor_* 的默认路径不变。
+```
+
+已做启动前验证：
+
+```text
+bash -n scripts/exps_dnarendering.sh
+
+PYTHONDONTWRITEBYTECODE=1 python -m py_compile:
+    arguments/__init__.py
+    nets/mlp_delta_non_rigid.py
+    scene/dataset_readers.py
+    scene/__init__.py
+    scene/gaussian_model.py
+    train.py
+    render.py
+    gaussian_renderer/__init__.py
+
+CPU 小张量 forward:
+    part_pamo_motion_film, mean feature:
+        d_xyz      [1, 9, 3]
+        d_rotation [1, 9, 4]
+        d_scaling  [1, 9, 3]
+        initial film_beta_abs=0.0
+
+    part_pamo_motion_film_rich, rich feature:
+        d_xyz      [1, 9, 3]
+        d_rotation [1, 9, 4]
+        d_scaling  [1, 9, 3]
+        initial film_beta_abs=0.0
+
+dataset reader 直接函数测试:
+    mean -> part_motion_conds [1, 7, 15]
+    rich -> part_motion_conds [1, 7, 28]
+```
+
+## 2026-07-21 part_pamo motion encoding 强化判断实验完整结果
+
+用户要求：
+
+```text
+用 GPU0 和 GPU1 分别尝试 motion encoding 强化判断方案，
+在 DNA-Rendering 的 0044_11 和 0206_04 两个序列上跑完并总结。
+```
+
+本次实际运行：
+
+```text
+GPU0:
+    0044_11 / part_pamo_motion_film_rich
+    RUN_TIME=20260721_0044_film_rich
+
+GPU1:
+    0206_04 / part_pamo_motion_film_rich
+    RUN_TIME=20260721_0206_film_rich
+
+同时纳入对比的已完成实验:
+    0044_11 / part_moe_leg / 20260720_194556
+    0044_11 / part_pamo_step1_only / 20260720_194557
+    0044_11 / part_pamo_motion_film / 20260721_0044_film
+    0206_04 / part_moe_leg / 20260630_170907
+    0206_04 / part_pamo_motion_film / 20260721_0206_film
+```
+
+最终 novel-view 指标：
+
+```text
+0044_11:
+    part_moe_leg:
+        PSNR 33.0198454698
+        SSIM 0.9782838454
+        LPIPS 0.0210654095
+        points 62269
+
+    part_pamo_step1_only:
+        PSNR 33.0242698669
+        SSIM 0.9782492325
+        LPIPS 0.0211214971
+        points 60691
+        vs part_moe_leg:
+            PSNR +0.0044
+            SSIM -0.000035
+            LPIPS +0.000056
+
+    part_pamo_motion_film:
+        PSNR 32.9431526661
+        SSIM 0.9780628939
+        LPIPS 0.0211996398
+        points 60129
+        vs part_moe_leg:
+            PSNR -0.0767
+            SSIM -0.000221
+            LPIPS +0.000134
+
+    part_pamo_motion_film_rich:
+        PSNR 32.9821028074
+        SSIM 0.9781765704
+        LPIPS 0.0210681518
+        points 60118
+        vs part_moe_leg:
+            PSNR -0.0377
+            SSIM -0.000107
+            LPIPS +0.000003
+        vs part_pamo_motion_film:
+            PSNR +0.0390
+            SSIM +0.000114
+            LPIPS -0.000131
+
+0206_04:
+    part_moe_leg:
+        PSNR 31.5415921052
+        SSIM 0.9705195760
+        LPIPS 0.0327569437
+        points 58702
+
+    part_pamo_motion_film:
+        PSNR 31.4967257500
+        SSIM 0.9700696304
+        LPIPS 0.0338414388
+        points 41029
+        vs part_moe_leg:
+            PSNR -0.0449
+            SSIM -0.000450
+            LPIPS +0.001084
+
+    part_pamo_motion_film_rich:
+        PSNR 31.4254674594
+        SSIM 0.9702403083
+        LPIPS 0.0333342852
+        points 40908
+        vs part_moe_leg:
+            PSNR -0.1161
+            SSIM -0.000279
+            LPIPS +0.000577
+        vs part_pamo_motion_film:
+            PSNR -0.0713
+            SSIM +0.000171
+            LPIPS -0.000507
+```
+
+motion branch 诊断：
+
+```text
+0044_11 / part_pamo_motion_film / iter 25000:
+    z_norm=2.247541e-01
+    gamma_delta_abs=2.283984e-02
+    beta_abs=1.063425e-03
+    PartMotionEncoder grad nonzero
+    PartMotionFiLM grad nonzero
+
+0044_11 / part_pamo_motion_film_rich / iter 25000:
+    z_norm=1.224082e-01
+    gamma_delta_abs=4.634235e-02
+    beta_abs=1.607426e-03
+    PartMotionEncoder grad nonzero
+    PartMotionFiLM grad nonzero
+
+0206_04 / part_pamo_motion_film / iter 25000:
+    z_norm=1.383678e-01
+    gamma_delta_abs=1.979188e-02
+    beta_abs=1.187511e-03
+    PartMotionEncoder grad nonzero
+    PartMotionFiLM grad nonzero
+
+0206_04 / part_pamo_motion_film_rich / iter 25000:
+    z_norm=3.840259e-03
+    gamma_delta_abs=4.304950e-02
+    beta_abs=1.771267e-03
+    PartMotionEncoder grad nonzero
+    PartMotionFiLM grad nonzero
+```
+
+结论：
+
+```text
+1. motion encoding / MotionFiLM 不是“没接上”:
+    两个序列、mean/rich 两种设置下，PartMotionEncoder 和 PartMotionFiLM
+    都有非零梯度，FiLM 的 gamma/beta 也明显偏离 identity。
+
+2. 但当前强化方式没有带来稳定指标收益:
+    0044_11:
+        rich 比 mean-FiLM 好，但仍低于 part_moe_leg，
+        只在 LPIPS 上几乎追平 part_moe_leg。
+    0206_04:
+        mean-FiLM 和 rich-FiLM 均低于 part_moe_leg，
+        rich 的 LPIPS/SSIM 比 mean-FiLM 好一些，但 PSNR 更差。
+
+3. rich feature 能强化 FiLM 调制幅度:
+    gamma_delta_abs 从约 0.02 提升到约 0.043~0.046。
+    说明更强 motion feature 确实会改变网络行为。
+    但是这种改变目前不是正向稳定收益。
+
+4. 0206 的点数差异较大，需要谨慎解释:
+    part_moe_leg best run 有 58702 points；
+    pamo motion film / rich 只有约 41000 points。
+    指标下降可能同时来自 motion 注入和 densify/prune 轨迹改变。
+
+5. 当前建议:
+    part_pamo_motion_film 和 part_pamo_motion_film_rich 暂不作为主方案。
+    它们证明 motion 分支可以被激活，但没有证明能提高最终重建质量。
+    后续如果继续优化，优先做更保守的 gated/regularized FiLM，
+    或只在 high-motion frames / high-motion parts 启用，而不是全帧全 part 调制。
+```
+
+清理状态：
+
+```text
+没有保留临时验证脚本。
+没有发现仍在运行的 part_pamo_motion_film_rich train/render 进程。
+```

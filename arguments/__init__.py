@@ -77,20 +77,20 @@ class ModelParams(ParamGroup):
         self.part_moe_global_keep = 0.1
         self.num_parts = 5
         self.part_label_schema = "anatomy5"
+        self.use_part_pamo = False
+        self.part_pamo_dim = 32
+        self.part_pamo_log_interval = 1000
+        self.part_pamo_rigidity_min = 0.0
+        self.part_pamo_step1_only = False
+        self.part_pamo_fixed_rigidity = -1.0
+        self.part_pamo_motion_film = False
+        self.part_pamo_motion_feat_mode = "mean"
+        self.part_pamo_motion_lr_mult = 1.0
         self.part_max_smpl_dist = 0.08
         self.part_grouping_mode = "prior_only"
         self.part_label_path = ""
         self.smpl_vertex_seg_path = ""
         self.part_log_dir = ""
-        self.use_state = False
-        self.state_start_iter = 1500
-        self.state_ramp_iter = 3000
-        self.state_max_alpha = 1.0
-        self.state_dim = 64
-        self.state_hidden_dim = 128
-        self.state_layers = 3
-        self.state_identity_init = True
-        self.state_cond_mode = "pose"
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
