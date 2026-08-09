@@ -92,18 +92,66 @@ class GaussianModel:
         self.nonrigid_deltaposeconds_flag = args.nonrigid_deltaposeconds_flag
         self.nonrigid_deltaxyzconds_flag = args.nonrigid_deltaxyzconds_flag
         self.use_part_moe = getattr(args, "use_part_moe", False)
+        self.use_tri = bool(getattr(args, "use_tri", False))
+        self.use_tri_part = bool(getattr(args, "use_tri_part", False))
+        self.use_tri_gate = bool(getattr(args, "use_tri_gate", False))
+        self.tri_plane_dim = int(getattr(args, "tri_plane_dim", 32))
+        self.tri_plane_res = int(getattr(args, "tri_plane_res", 64))
+        self.tri_plane_extent = float(getattr(args, "tri_plane_extent", 1.2))
+        self.tri_gate_alpha = float(getattr(args, "tri_gate_alpha", 0.2))
+        self.tri_gate_init = float(getattr(args, "tri_gate_init", 0.5))
+        self.tri_gate_hidden_dim = int(getattr(args, "tri_gate_hidden_dim", 128))
+        self.tri_gate_mode = str(getattr(args, "tri_gate_mode", "additive")).lower()
+        self.tri_gate_start_iter = int(getattr(args, "tri_gate_start_iter", 3000))
+        self.tri_gate_warmup = int(getattr(args, "tri_gate_warmup", 3000))
+        self.tri_part_alpha = float(getattr(args, "tri_part_alpha", 1.0))
+        self.tri_part_motion_gain = float(getattr(args, "tri_part_motion_gain", 0.5))
+        self.tri_part_boundary_gain = float(getattr(args, "tri_part_boundary_gain", 0.5))
+        self.tri_part_hidden_dim = int(getattr(args, "tri_part_hidden_dim", 64))
+        self.part_label_schema = str(getattr(args, "part_label_schema", "anatomy5"))
+        self.use_part_budget = bool(getattr(args, "use_part_budget", False))
+        self.part_budget_alpha = float(getattr(args, "part_budget_alpha", 1.0))
+        self.part_budget_start_iter = int(getattr(args, "part_budget_start_iter", 16000))
+        self.part_budget_warmup = int(getattr(args, "part_budget_warmup", 1000))
+        self.part_budget_hidden_dim = int(getattr(args, "part_budget_hidden_dim", 128))
+        self.part_budget_token_dim = int(getattr(args, "part_budget_token_dim", 32))
+        if self.tri_gate_mode not in ("additive", "concat", "scale"):
+            raise ValueError("[TRI_GATE] --tri_gate_mode must be 'additive', 'concat', or 'scale'.")
+        if self.use_tri_part and not self.use_tri:
+            raise ValueError("[TRI_PART] --use_tri_part must be used with --use_tri.")
+        if self.use_tri_gate and not self.use_tri:
+            raise ValueError("[TRI_GATE] --use_tri_gate must be used with --use_tri.")
+        if self.use_tri_gate and self.use_tri_part:
+            raise ValueError("[TRI_GATE] --use_tri_gate and --use_tri_part are separate ablations.")
+        if self.use_part_budget and not self.use_part_moe:
+            raise ValueError("[PART_BUDGET] --use_part_budget must be used with --use_part_moe.")
+        if self.use_part_budget and (self.part_label_schema != "part_moe_leg" or int(getattr(args, "num_parts", 0)) != 7):
+            raise ValueError("[PART_BUDGET] part_budget is defined on top of part_moe_leg: use --part_label_schema part_moe_leg --num_parts 7.")
+        if self.use_tri:
+            part_label_schema = self.part_label_schema
+            if not self.use_part_moe:
+                raise ValueError("[TRI] --use_tri must be used with --use_part_moe.")
+            if part_label_schema != "part_moe_leg" or int(getattr(args, "num_parts", 0)) != 7:
+                raise ValueError("[TRI] tri is defined on top of part_moe_leg: use --part_label_schema part_moe_leg --num_parts 7.")
+            print("[TRI] enabled=True; running on top of part_moe_leg.")
+            if self.use_tri_part:
+                print(
+                    "[TRI_PART] enabled=True; part/motion-aware residual tri feature fusion. "
+                    f"alpha={self.tri_part_alpha} motion_gain={self.tri_part_motion_gain} "
+                    f"boundary_gain={self.tri_part_boundary_gain} hidden={self.tri_part_hidden_dim}"
+                )
+            if self.use_tri_gate:
+                print(
+                    "[TRI_GATE] enabled=True; gated adapter tri feature fusion. "
+                    f"alpha={self.tri_gate_alpha} init={self.tri_gate_init} hidden={self.tri_gate_hidden_dim} "
+                    f"mode={self.tri_gate_mode} start={self.tri_gate_start_iter} warmup={self.tri_gate_warmup}"
+                )
         self.part_moe_start_iter = getattr(args, "part_moe_start_iter", 15000)
         self.part_moe_warmup = getattr(args, "part_moe_warmup", 1000)
         self.part_moe_global_keep = getattr(args, "part_moe_global_keep", 0.1)
-        self.use_part_pamo = bool(getattr(args, "use_part_pamo", False) and self.use_part_moe)
-        self.part_pamo_dim = getattr(args, "part_pamo_dim", 32)
-        self.part_pamo_rigidity_min = getattr(args, "part_pamo_rigidity_min", 0.0)
-        self.part_pamo_step1_only = getattr(args, "part_pamo_step1_only", False)
-        self.part_pamo_fixed_rigidity = getattr(args, "part_pamo_fixed_rigidity", -1.0)
-        self.part_pamo_motion_film = getattr(args, "part_pamo_motion_film", False)
-        self.part_pamo_motion_feat_mode = getattr(args, "part_pamo_motion_feat_mode", "mean")
-        self.part_pamo_motion_lr_mult = float(getattr(args, "part_pamo_motion_lr_mult", 1.0))
         self.part_moe_alpha = 0.0
+        self.tri_gate_alpha_scale = 1.0
+        self.part_budget_alpha_scale = 0.0
         self.num_parts = getattr(args, "num_parts", 5)
         self._part_label = None
         self._part_conf = None
@@ -128,13 +176,27 @@ class GaussianModel:
                         seq_len=args.seq_len, seq_xyz_knn=self.seq_xyz_knn, time_step_num=args.time_step_num, smpl_type=smpl_type,
                         use_part_moe=self.use_part_moe, num_parts=self.num_parts,
                         part_moe_global_keep=self.part_moe_global_keep,
-                        use_part_pamo=self.use_part_pamo,
-                        part_pamo_dim=self.part_pamo_dim,
-                        part_pamo_rigidity_min=self.part_pamo_rigidity_min,
-                        part_pamo_step1_only=self.part_pamo_step1_only,
-                        part_pamo_fixed_rigidity=self.part_pamo_fixed_rigidity,
-                        part_pamo_motion_film=self.part_pamo_motion_film,
-                        part_pamo_motion_feat_mode=self.part_pamo_motion_feat_mode).to(self.device)
+                        use_tri=self.use_tri,
+                        tri_plane_dim=self.tri_plane_dim,
+                        tri_plane_res=self.tri_plane_res,
+                        tri_plane_extent=self.tri_plane_extent,
+                        use_tri_part=self.use_tri_part,
+                        use_tri_gate=self.use_tri_gate,
+                        tri_gate_alpha=self.tri_gate_alpha,
+                        tri_gate_init=self.tri_gate_init,
+                        tri_gate_hidden_dim=self.tri_gate_hidden_dim,
+                        tri_gate_mode=self.tri_gate_mode,
+                        tri_part_alpha=self.tri_part_alpha,
+                        tri_part_motion_gain=self.tri_part_motion_gain,
+                        tri_part_boundary_gain=self.tri_part_boundary_gain,
+                        tri_part_hidden_dim=self.tri_part_hidden_dim,
+                        part_label_schema=self.part_label_schema,
+                        use_part_budget=self.use_part_budget,
+                        part_budget_alpha=self.part_budget_alpha,
+                        part_budget_start_iter=self.part_budget_start_iter,
+                        part_budget_warmup=self.part_budget_warmup,
+                        part_budget_hidden_dim=self.part_budget_hidden_dim,
+                        part_budget_token_dim=self.part_budget_token_dim).to(self.device)
                             
     def capture(self):
         return (
@@ -335,43 +397,8 @@ class GaussianModel:
 
         if self.non_rigid_flag:
             base_lr = training_args.non_rigid_deformer_lr
-            motion_lr_mult = float(getattr(self, "part_pamo_motion_lr_mult", 1.0))
-            if self.use_part_pamo and abs(motion_lr_mult - 1.0) > 1e-8:
-                motion_modules = [
-                    getattr(self.non_rigid_deformer, "PartMotionEncoder", None),
-                    getattr(self.non_rigid_deformer, "PartMotionFiLM", None),
-                ]
-                motion_params = []
-                motion_param_ids = set()
-                for module in motion_modules:
-                    if module is None:
-                        continue
-                    for param in module.parameters():
-                        motion_params.append(param)
-                        motion_param_ids.add(id(param))
-                other_params = [
-                    param for param in self.non_rigid_deformer.parameters()
-                    if id(param) not in motion_param_ids
-                ]
-                if other_params:
-                    mlp_l += [{
-                        'params': other_params,
-                        'lr': base_lr,
-                        "name": "non_rigid_deformer",
-                    }]
-                if motion_params:
-                    mlp_l += [{
-                        'params': motion_params,
-                        'lr': base_lr * motion_lr_mult,
-                        "name": "part_pamo_motion",
-                    }]
-                    print(
-                        f"[PartPAMO] motion params use lr_mult={motion_lr_mult} "
-                        f"lr={base_lr * motion_lr_mult}"
-                    )
-            else:
-                mlp_l += [{'params': self.non_rigid_deformer.parameters(), 'lr': base_lr,
-                     "name": "non_rigid_deformer"},]
+            mlp_l += [{'params': self.non_rigid_deformer.parameters(), 'lr': base_lr,
+                 "name": "non_rigid_deformer"},]
 
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
         self.xyz_scheduler_args = get_expon_lr_func(lr_init=training_args.position_lr_init*self.spatial_lr_scale,

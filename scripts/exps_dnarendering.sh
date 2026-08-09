@@ -3,151 +3,83 @@ set -euo pipefail
 
 # Usage:
 #   bash scripts/exps_dnarendering.sh
-#   bash scripts/exps_dnarendering.sh orginal
-#   bash scripts/exps_dnarendering.sh use_part_moe
+#   bash scripts/exps_dnarendering.sh original
 #   bash scripts/exps_dnarendering.sh part_moe_leg
-#   bash scripts/exps_dnarendering.sh part_moe_foot
-#   bash scripts/exps_dnarendering.sh part_moe_arm
-#   bash scripts/exps_dnarendering.sh part_pamo
-#   bash scripts/exps_dnarendering.sh part_pamo_gate_floor
-#   bash scripts/exps_dnarendering.sh part_pamo_step1_only
-#   bash scripts/exps_dnarendering.sh part_pamo_motion_film
-#   bash scripts/exps_dnarendering.sh part_pamo_motion_film_rich
-#   bash scripts/exps_dnarendering.sh part_pamo_r_fixed_0.2
+#   bash scripts/exps_dnarendering.sh part_budget
+#   bash scripts/exps_dnarendering.sh tri
+#   bash scripts/exps_dnarendering.sh tri_part
+#   bash scripts/exps_dnarendering.sh tri_gate
 #
 # 常用覆盖方式：
-#   GPU_id=3 bash scripts/exps_dnarendering.sh use_part_moe
-#   SEQUENCES_OVERRIDE="0007_04 0019_10" GPU_id=3 bash scripts/exps_dnarendering.sh use_part_moe
+#   GPU_id=3 bash scripts/exps_dnarendering.sh part_moe_leg
+#   GPU_id=3 bash scripts/exps_dnarendering.sh part_budget
+#   GPU_id=3 bash scripts/exps_dnarendering.sh tri
+#   GPU_id=3 bash scripts/exps_dnarendering.sh tri_part
+#   GPU_id=3 bash scripts/exps_dnarendering.sh tri_gate
+#   SEQUENCES_OVERRIDE="0007_04 0019_10" GPU_id=3 bash scripts/exps_dnarendering.sh part_moe_leg
+#   TRI_PLANE_DIM=32 TRI_PLANE_RES=64 TRI_PLANE_EXTENT=1.0 GPU_id=3 bash scripts/exps_dnarendering.sh tri
+#
+# tri 调参只改 TRI_PLANE_* 等命令行环境变量；实验名固定为 tri。
+# 不再新建 triA/triB/triC 这类消融名称，具体参数会写入日志。
 
 # ================= 消融模式 =================
-MODE=${1:-orginal}
+MODE=${1:-original}
 part_label_schema=anatomy5
 num_parts=5
 final_eval_only=0
-part_pamo_enabled=0
-part_pamo_rigidity_min=0.0
-part_pamo_step1_only=0
-part_pamo_fixed_rigidity=-1.0
-part_pamo_motion_film=0
-part_pamo_motion_feat_mode=mean
-part_pamo_motion_lr_mult=1.0
+tri_enabled=0
+tri_part_enabled=0
+tri_gate_enabled=0
+part_budget_enabled=0
 case "$MODE" in
-    orginal|original)
-        experiment_name=orginal
+    original)
+        experiment_name=original
         part_moe_enabled=0
         ;;
-    use_part_moe|part_moe)
-        experiment_name=part_moe
-        part_moe_enabled=1
-        ;;
-    use_part_moe_leg|part_moe_leg)
+    part_moe_leg)
         experiment_name=part_moe_leg
         part_moe_enabled=1
         part_label_schema=part_moe_leg
         num_parts=7
         final_eval_only=1
         ;;
-    use_part_pamo|part_pamo)
-        experiment_name=part_pamo
+    part_budget)
+        experiment_name=part_budget
         part_moe_enabled=1
-        part_pamo_enabled=1
+        part_budget_enabled=1
         part_label_schema=part_moe_leg
         num_parts=7
         final_eval_only=1
         ;;
-    use_part_pamo_gate_floor|part_pamo_gate_floor)
-        experiment_name=part_pamo_gate_floor
+    tri)
+        experiment_name=tri
         part_moe_enabled=1
-        part_pamo_enabled=1
-        part_pamo_rigidity_min=${PART_PAMO_RIGIDITY_MIN:-0.05}
+        tri_enabled=1
         part_label_schema=part_moe_leg
         num_parts=7
         final_eval_only=1
         ;;
-    part_pamo_gate_floor_0.2)
-        experiment_name=part_pamo_gate_floor_0.2
+    tri_part)
+        experiment_name=tri_part
         part_moe_enabled=1
-        part_pamo_enabled=1
-        part_pamo_rigidity_min=${PART_PAMO_RIGIDITY_MIN:-0.2}
+        tri_enabled=1
+        tri_part_enabled=1
         part_label_schema=part_moe_leg
         num_parts=7
         final_eval_only=1
         ;;
-    part_pamo_step1_only)
-        experiment_name=part_pamo_step1_only
+    tri_gate)
+        experiment_name=tri_gate
         part_moe_enabled=1
-        part_pamo_enabled=1
-        part_pamo_step1_only=1
+        tri_enabled=1
+        tri_gate_enabled=1
         part_label_schema=part_moe_leg
-        num_parts=7
-        final_eval_only=1
-        ;;
-    part_pamo_motion_film)
-        experiment_name=part_pamo_motion_film
-        part_moe_enabled=1
-        part_pamo_enabled=1
-        part_pamo_step1_only=1
-        part_pamo_motion_film=1
-        part_label_schema=part_moe_leg
-        num_parts=7
-        final_eval_only=1
-        ;;
-    part_pamo_motion_film_rich)
-        experiment_name=part_pamo_motion_film_rich
-        part_moe_enabled=1
-        part_pamo_enabled=1
-        part_pamo_step1_only=1
-        part_pamo_motion_film=1
-        part_pamo_motion_feat_mode=rich
-        part_pamo_motion_lr_mult=${PART_PAMO_MOTION_LR_MULT:-2.0}
-        part_label_schema=part_moe_leg
-        num_parts=7
-        final_eval_only=1
-        ;;
-    part_pamo_r_fixed_0.2)
-        experiment_name=part_pamo_r_fixed_0.2
-        part_moe_enabled=1
-        part_pamo_enabled=1
-        part_pamo_fixed_rigidity=0.2
-        part_label_schema=part_moe_leg
-        num_parts=7
-        final_eval_only=1
-        ;;
-    part_pamo_r_fixed_0.5)
-        experiment_name=part_pamo_r_fixed_0.5
-        part_moe_enabled=1
-        part_pamo_enabled=1
-        part_pamo_fixed_rigidity=0.5
-        part_label_schema=part_moe_leg
-        num_parts=7
-        final_eval_only=1
-        ;;
-    part_pamo_r_fixed_1.0)
-        experiment_name=part_pamo_r_fixed_1.0
-        part_moe_enabled=1
-        part_pamo_enabled=1
-        part_pamo_fixed_rigidity=1.0
-        part_label_schema=part_moe_leg
-        num_parts=7
-        final_eval_only=1
-        ;;
-    use_part_moe_foot|part_moe_foot)
-        experiment_name=part_moe_foot
-        part_moe_enabled=1
-        part_label_schema=part_moe_foot
-        num_parts=7
-        final_eval_only=1
-        ;;
-    use_part_moe_arm|part_moe_arm)
-        experiment_name=part_moe_arm
-        part_moe_enabled=1
-        part_label_schema=part_moe_arm
         num_parts=7
         final_eval_only=1
         ;;
     *)
         echo "[ERROR] Unknown mode: $MODE"
-        echo "        Supported modes: orginal, use_part_moe, part_moe_leg, part_moe_foot, part_moe_arm, part_pamo, part_pamo_gate_floor, part_pamo_gate_floor_0.2, part_pamo_step1_only, part_pamo_motion_film, part_pamo_motion_film_rich, part_pamo_r_fixed_0.2, part_pamo_r_fixed_0.5, part_pamo_r_fixed_1.0"
+        echo "        Supported modes: original, part_moe_leg, part_budget, tri, tri_part, tri_gate"
         exit 1
         ;;
 esac
@@ -159,7 +91,8 @@ GPU_id=${GPU_id:-3}
 PYTHON_BIN=${PYTHON_BIN:-/media/image/mxz/.conda/envs/seqavatar/bin/python}
 DATA_PATH=${DATA_PATH:-/media/image/mxz/human/SeqAvatar/DNA-Rendering}
 PART_LOG_DIR=${PART_LOG_DIR:-/media/image/mxz/human/SeqAvatar/logs/part}
-PAMO_LOG_DIR=${PAMO_LOG_DIR:-/media/image/mxz/human/SeqAvatar/logs/pamo}
+PART_BUDGET_LOG_DIR=${PART_BUDGET_LOG_DIR:-/media/image/mxz/human/SeqAvatar/logs/budget}
+TRI_LOG_DIR=${TRI_LOG_DIR:-/media/image/mxz/human/SeqAvatar/logs/tri}
 
 cd "$REPO_ROOT"
 export PATH="$(dirname "$PYTHON_BIN"):$PATH"
@@ -195,8 +128,34 @@ lpips_loss_w=0.01
 part_moe_start_iter=10000
 part_moe_warmup=1000
 part_moe_global_keep=0.1
-part_pamo_dim=${PART_PAMO_DIM:-32}
-part_pamo_log_interval=${PART_PAMO_LOG_INTERVAL:-1000}
+tri_plane_dim=${TRI_PLANE_DIM:-32}
+tri_plane_res=${TRI_PLANE_RES:-64}
+tri_plane_extent=${TRI_PLANE_EXTENT:-1.0}
+tri_gate_alpha=${TRI_GATE_ALPHA:-0.2}
+tri_gate_init=${TRI_GATE_INIT:-0.5}
+tri_gate_hidden_dim=${TRI_GATE_HIDDEN_DIM:-128}
+tri_gate_mode=${TRI_GATE_MODE:-additive}
+tri_gate_start_iter=${TRI_GATE_START_ITER:-3000}
+tri_gate_warmup=${TRI_GATE_WARMUP:-3000}
+tri_part_alpha=${TRI_PART_ALPHA:-1.0}
+tri_part_motion_gain=${TRI_PART_MOTION_GAIN:-0.5}
+tri_part_boundary_gain=${TRI_PART_BOUNDARY_GAIN:-0.5}
+tri_part_hidden_dim=${TRI_PART_HIDDEN_DIM:-64}
+tri_part_reg_w=${TRI_PART_REG_W:-0.0001}
+part_budget_alpha=${PART_BUDGET_ALPHA:-1.0}
+part_budget_start_iter=${PART_BUDGET_START_ITER:-$((part_moe_start_iter + 1000))}
+part_budget_warmup=${PART_BUDGET_WARMUP:-1000}
+part_budget_hidden_dim=${PART_BUDGET_HIDDEN_DIM:-128}
+part_budget_token_dim=${PART_BUDGET_TOKEN_DIM:-32}
+
+if [ "$part_budget_enabled" = "1" ]; then
+    if [ -z "${SKIP_LOAD_TEST_CAMERAS:-}" ]; then
+        skip_load_test_cameras=1
+    fi
+    if [ -z "${IMAGE_DATA_DEVICE:-}" ]; then
+        image_data_device=cpu
+    fi
+fi
 
 test_iterations=(3000 "$part_moe_start_iter" "$iter")
 save_iterations=(3000 "$part_moe_start_iter" "$iter")
@@ -208,8 +167,11 @@ if [ "$final_eval_only" = "1" ]; then
 fi
 
 # ================= 总日志设置 =================
-if [ "$part_pamo_enabled" = "1" ]; then
-    GLOBAL_LOG_DIR="$PAMO_LOG_DIR"
+if [ "$tri_enabled" = "1" ]; then
+    GLOBAL_LOG_DIR="$TRI_LOG_DIR"
+    GLOBAL_LOG_FILE="$GLOBAL_LOG_DIR/${RUN_TIME}_DNA-Rendering_${experiment_name}.log"
+elif [ "$part_budget_enabled" = "1" ]; then
+    GLOBAL_LOG_DIR="$PART_BUDGET_LOG_DIR"
     GLOBAL_LOG_FILE="$GLOBAL_LOG_DIR/${RUN_TIME}_DNA-Rendering_${experiment_name}.log"
 elif [ "$part_moe_enabled" = "1" ]; then
     GLOBAL_LOG_DIR="$PART_LOG_DIR"
@@ -222,8 +184,10 @@ mkdir -p "$GLOBAL_LOG_DIR"
 
 # train.py/render.py 在 --use_part_moe 时会自动建立自己的 part 日志。
 # 这里把那些拆分日志放到临时目录，最终只保留上面的训练+测试总日志。
-if [ "$part_pamo_enabled" = "1" ]; then
-    AUTO_PART_LOG_DIR="$PAMO_LOG_DIR/.auto_${RUN_TIME}_${experiment_name}"
+if [ "$tri_enabled" = "1" ]; then
+    AUTO_PART_LOG_DIR="$TRI_LOG_DIR/.auto_${RUN_TIME}_${experiment_name}"
+elif [ "$part_budget_enabled" = "1" ]; then
+    AUTO_PART_LOG_DIR="$PART_BUDGET_LOG_DIR/.auto_${RUN_TIME}_${experiment_name}"
 else
     AUTO_PART_LOG_DIR="$PART_LOG_DIR/.auto_${RUN_TIME}_${experiment_name}"
 fi
@@ -244,16 +208,32 @@ echo "[INFO] Run time: $RUN_TIME"
 echo "[INFO] GPU_id: $GPU_id"
 echo "[INFO] PYTHON_BIN: $PYTHON_BIN"
 echo "[INFO] DATA_PATH: $DATA_PATH"
+echo "[INFO] TRI_LOG_DIR: $TRI_LOG_DIR"
+echo "[INFO] PART_BUDGET_LOG_DIR: $PART_BUDGET_LOG_DIR"
 echo "[INFO] PART_LABEL_SCHEMA: $part_label_schema"
-echo "[INFO] PART_PAMO_ENABLED: $part_pamo_enabled"
-echo "[INFO] PART_PAMO_DIM: $part_pamo_dim"
-echo "[INFO] PART_PAMO_LOG_INTERVAL: $part_pamo_log_interval"
-echo "[INFO] PART_PAMO_RIGIDITY_MIN: $part_pamo_rigidity_min"
-echo "[INFO] PART_PAMO_STEP1_ONLY: $part_pamo_step1_only"
-echo "[INFO] PART_PAMO_FIXED_RIGIDITY: $part_pamo_fixed_rigidity"
-echo "[INFO] PART_PAMO_MOTION_FILM: $part_pamo_motion_film"
-echo "[INFO] PART_PAMO_MOTION_FEAT_MODE: $part_pamo_motion_feat_mode"
-echo "[INFO] PART_PAMO_MOTION_LR_MULT: $part_pamo_motion_lr_mult"
+echo "[INFO] TRI_ENABLED: $tri_enabled"
+echo "[INFO] TRI_PART_ENABLED: $tri_part_enabled"
+echo "[INFO] TRI_GATE_ENABLED: $tri_gate_enabled"
+echo "[INFO] PART_BUDGET_ENABLED: $part_budget_enabled"
+echo "[INFO] PART_BUDGET_ALPHA: $part_budget_alpha"
+echo "[INFO] PART_BUDGET_START_ITER: $part_budget_start_iter"
+echo "[INFO] PART_BUDGET_WARMUP: $part_budget_warmup"
+echo "[INFO] PART_BUDGET_HIDDEN_DIM: $part_budget_hidden_dim"
+echo "[INFO] PART_BUDGET_TOKEN_DIM: $part_budget_token_dim"
+echo "[INFO] TRI_PLANE_DIM: $tri_plane_dim"
+echo "[INFO] TRI_PLANE_RES: $tri_plane_res"
+echo "[INFO] TRI_PLANE_EXTENT: $tri_plane_extent"
+echo "[INFO] TRI_GATE_ALPHA: $tri_gate_alpha"
+echo "[INFO] TRI_GATE_INIT: $tri_gate_init"
+echo "[INFO] TRI_GATE_HIDDEN_DIM: $tri_gate_hidden_dim"
+echo "[INFO] TRI_GATE_MODE: $tri_gate_mode"
+echo "[INFO] TRI_GATE_START_ITER: $tri_gate_start_iter"
+echo "[INFO] TRI_GATE_WARMUP: $tri_gate_warmup"
+echo "[INFO] TRI_PART_ALPHA: $tri_part_alpha"
+echo "[INFO] TRI_PART_MOTION_GAIN: $tri_part_motion_gain"
+echo "[INFO] TRI_PART_BOUNDARY_GAIN: $tri_part_boundary_gain"
+echo "[INFO] TRI_PART_HIDDEN_DIM: $tri_part_hidden_dim"
+echo "[INFO] TRI_PART_REG_W: $tri_part_reg_w"
 echo "[INFO] NUM_PARTS: $num_parts"
 echo "[INFO] NON_RIGID_MLP_DEPTH: $non_rigid_mlp_depth"
 echo "[INFO] NON_RIGID_MLP_WIDTH: $non_rigid_mlp_width"
@@ -314,26 +294,44 @@ if [ "$part_moe_enabled" = "1" ]; then
         --part_label_schema "$part_label_schema"
         --part_log_dir "$AUTO_PART_LOG_DIR"
     )
-    if [ "$part_pamo_enabled" = "1" ]; then
+    if [ "$tri_enabled" = "1" ]; then
         PART_MOE_ARGS+=(
-            --use_part_pamo
-            --part_pamo_dim "$part_pamo_dim"
-            --part_pamo_log_interval "$part_pamo_log_interval"
-            --part_pamo_rigidity_min "$part_pamo_rigidity_min"
-            --part_pamo_fixed_rigidity "$part_pamo_fixed_rigidity"
-            --part_pamo_motion_feat_mode "$part_pamo_motion_feat_mode"
-            --part_pamo_motion_lr_mult "$part_pamo_motion_lr_mult"
+            --use_tri
+            --tri_plane_dim "$tri_plane_dim"
+            --tri_plane_res "$tri_plane_res"
+            --tri_plane_extent "$tri_plane_extent"
         )
-        if [ "$part_pamo_motion_film" = "1" ]; then
+        if [ "$tri_part_enabled" = "1" ]; then
             PART_MOE_ARGS+=(
-                --part_pamo_motion_film
+                --use_tri_part
+                --tri_part_alpha "$tri_part_alpha"
+                --tri_part_motion_gain "$tri_part_motion_gain"
+                --tri_part_boundary_gain "$tri_part_boundary_gain"
+                --tri_part_hidden_dim "$tri_part_hidden_dim"
+                --tri_part_reg_w "$tri_part_reg_w"
             )
         fi
-        if [ "$part_pamo_step1_only" = "1" ]; then
+        if [ "$tri_gate_enabled" = "1" ]; then
             PART_MOE_ARGS+=(
-                --part_pamo_step1_only
+                --use_tri_gate
+                --tri_gate_alpha "$tri_gate_alpha"
+                --tri_gate_init "$tri_gate_init"
+                --tri_gate_hidden_dim "$tri_gate_hidden_dim"
+                --tri_gate_mode "$tri_gate_mode"
+                --tri_gate_start_iter "$tri_gate_start_iter"
+                --tri_gate_warmup "$tri_gate_warmup"
             )
         fi
+    fi
+    if [ "$part_budget_enabled" = "1" ]; then
+        PART_MOE_ARGS+=(
+            --use_part_budget
+            --part_budget_alpha "$part_budget_alpha"
+            --part_budget_start_iter "$part_budget_start_iter"
+            --part_budget_warmup "$part_budget_warmup"
+            --part_budget_hidden_dim "$part_budget_hidden_dim"
+            --part_budget_token_dim "$part_budget_token_dim"
+        )
     fi
 fi
 

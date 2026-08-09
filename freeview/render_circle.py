@@ -491,7 +491,7 @@ if __name__ == "__main__":
     parser.add_argument("--model_root", type=Path, default=DEFAULT_MODEL_ROOT)
     parser.add_argument("--output_root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--output_subdir", default="render_circle")
-    parser.add_argument("--experiment", default="part_moe_arm")
+    parser.add_argument("--experiment", default="part_moe_leg")
     parser.add_argument("--run", default="latest")
     parser.add_argument("--timestamp", default=None)
     parser.add_argument("--gpu", default=GPU_ID)

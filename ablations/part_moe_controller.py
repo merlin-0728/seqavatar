@@ -141,6 +141,7 @@ class PartMoeController:
                     "part_grouping_mode": str(getattr(self.args, "part_grouping_mode", "prior_only")),
                     "max_smpl_dist": max_dist,
                     "use_part_moe": True,
+                    "use_tri": bool(getattr(self.args, "use_tri", False)),
                     "part_moe_start_iter": int(getattr(self.args, "part_moe_start_iter", self.start_iter)),
                     "num_parts": num_parts,
                     "part_label_schema": schema,

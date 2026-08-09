@@ -68,16 +68,17 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor,
                 pose_conds = pc.cond_dict[pose_id]['pose_conds']
                 seq_pose_conds = pc.cond_dict[pose_id]['seq_pose_conds']
                 seq_xyz_conds = pc.cond_dict[pose_id]['seq_xyz_conds']
-                part_motion_conds = pc.cond_dict[pose_id].get('part_motion_conds', None)
 
                 _, vert_ids = pc.custom_knn_near(pc.canon_vertices, means3D)
                 query_pts_delta_conds = seq_xyz_conds[vert_ids, :,:,:].permute(0,1,3,2,4,5).contiguous()
 
                 part_label = None
+                part_conf = None
                 part_enabled = False
                 if getattr(pc, "use_part_moe", False):
                     part_enabled = pc.part_label_enabled
                     part_label = pc.get_part_label if part_enabled else None
+                    part_conf = pc.get_part_conf if part_enabled else None
 
                 d_xyz, d_rotation, d_scaling = pc.non_rigid_deformer(
                     pos_embd,
@@ -86,10 +87,12 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor,
                     query_pts_delta_conds,
                     part_label=part_label,
                     part_enabled=part_enabled,
-                    part_motion_conds=part_motion_conds,
+                    part_conf=part_conf,
                     query_xyz=means3D,
                     part_moe_alpha=getattr(pc, "part_moe_alpha", 0.0),
                     part_moe_global_keep=getattr(pc, "part_moe_global_keep", 0.1),
+                    tri_gate_alpha_scale=getattr(pc, "tri_gate_alpha_scale", 1.0),
+                    part_budget_alpha_scale=getattr(pc, "part_budget_alpha_scale", 1.0),
                 )
                 d_nonrigid = (d_xyz, d_rotation, d_scaling)
             else:

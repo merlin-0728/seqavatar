@@ -53,99 +53,36 @@ def compute_part_moe_alpha(iteration, dataset):
     return t * max_part_weight
 
 
-def module_grad_stats(module):
-    if module is None:
-        return {"norm": 0.0, "max": 0.0, "params": 0, "with_grad": 0}
-    total_sq = 0.0
-    max_abs = 0.0
-    params = 0
-    with_grad = 0
-    for param in module.parameters():
-        params += 1
-        if param.grad is None:
-            continue
-        grad = param.grad.detach()
-        with_grad += 1
-        total_sq += float(torch.sum(grad * grad).item())
-        max_abs = max(max_abs, float(grad.abs().max().item()))
-    return {
-        "norm": total_sq ** 0.5,
-        "max": max_abs,
-        "params": params,
-        "with_grad": with_grad,
-    }
+def compute_tri_gate_alpha_scale(iteration, dataset):
+    if not getattr(dataset, "use_tri_gate", False):
+        return 1.0
+    start_iter = int(getattr(dataset, "tri_gate_start_iter", 3000))
+    if iteration <= start_iter:
+        return 0.0
+    warmup = int(getattr(dataset, "tri_gate_warmup", 3000))
+    if warmup <= 0:
+        return 1.0
+    t = float(iteration - start_iter) / float(warmup)
+    return max(0.0, min(1.0, t))
 
 
-def log_part_pamo_diagnostics(iteration, gaussians, dataset):
-    if not getattr(dataset, "use_part_pamo", False):
-        return
-    interval = int(getattr(dataset, "part_pamo_log_interval", 1000))
-    if interval <= 0 or iteration % interval != 0:
-        return
-    if not (
-        getattr(gaussians, "use_part_moe", False)
-        and gaussians.part_label_enabled
-        and gaussians.non_rigid_deformer.part_moe_active
-    ):
-        return
-
-    deformer = gaussians.non_rigid_deformer
-    stats = getattr(deformer, "part_pamo_last_stats", {})
-    if not stats:
-        print(f"[PartPAMO Diagnostics][iter {iteration}] no active stats; part_weight={gaussians.part_moe_alpha:.6f}")
-        return
-
-    motion_grad = module_grad_stats(getattr(deformer, "PartMotionEncoder", None))
-    film_grad = module_grad_stats(getattr(deformer, "PartMotionFiLM", None))
-    rigid_grad = module_grad_stats(getattr(deformer, "PartRigidHead", None))
-    rigidity_grad = module_grad_stats(getattr(deformer, "PartRigidityMLP", None))
-    print(
-        f"[PartPAMO Motion][iter {iteration}] "
-        f"part_weight={stats.get('part_weight', gaussians.part_moe_alpha):.6f} "
-        f"feat_mode={stats.get('motion_feat_mode', 'unknown')} "
-        f"motion_film={stats.get('motion_film', False)} "
-        f"z_norm={stats.get('z_norm_mean', 0.0):.6e} "
-        f"z_norm_std={stats.get('z_norm_std', 0.0):.6e} "
-        f"z_part_norm={stats.get('z_part_norm_mean', 0.0):.6e}"
-    )
-    if "film_gamma_delta_abs_mean" in stats:
-        print(
-            f"[PartPAMO FiLM][iter {iteration}] "
-            f"gamma_delta_mean={stats['film_gamma_delta_mean']:.6e} "
-            f"gamma_delta_std={stats['film_gamma_delta_std']:.6e} "
-            f"gamma_delta_abs={stats['film_gamma_delta_abs_mean']:.6e} "
-            f"beta_mean={stats['film_beta_mean']:.6e} "
-            f"beta_std={stats['film_beta_std']:.6e} "
-            f"beta_abs={stats['film_beta_abs_mean']:.6e}"
+def compute_part_budget_alpha_scale(iteration, dataset):
+    if not getattr(dataset, "use_part_budget", False):
+        return 0.0
+    start_iter = int(
+        getattr(
+            dataset,
+            "part_budget_start_iter",
+            int(getattr(dataset, "part_moe_start_iter", 15000)) + 1000,
         )
-    if "r_mean" in stats:
-        print(
-            f"[PartPAMO Diagnostics][iter {iteration}] "
-            f"part_weight={stats['part_weight']:.6f} "
-            f"r_mean={stats['r_mean']:.6f} r_std={stats['r_std']:.6f} "
-            f"r_min={stats['r_min']:.6f} r_max={stats['r_max']:.6f} "
-            f"mlp_norm={stats['mlp_norm_mean']:.6e} "
-            f"rigid_norm={stats['rigid_norm_mean']:.6e} "
-            f"rigid_contrib={stats['rigid_contrib_norm_mean']:.6e} "
-            f"ratio={stats['ratio']:.6f}"
-        )
-        for item in stats.get("per_part", []):
-            print(
-                f"[PartPAMO Diagnostics][iter {iteration}] "
-                f"part={item['part']} count={item['count']} "
-                f"r_mean={item['r_mean']:.6f} r_std={item['r_std']:.6f}"
-            )
-    print(
-        f"[PartPAMO Grad][iter {iteration}] "
-        f"PartMotionEncoder norm={motion_grad['norm']:.6e} max={motion_grad['max']:.6e} "
-        f"with_grad={motion_grad['with_grad']}/{motion_grad['params']} | "
-        f"PartMotionFiLM norm={film_grad['norm']:.6e} max={film_grad['max']:.6e} "
-        f"with_grad={film_grad['with_grad']}/{film_grad['params']} | "
-        f"PartRigidHead norm={rigid_grad['norm']:.6e} max={rigid_grad['max']:.6e} "
-        f"with_grad={rigid_grad['with_grad']}/{rigid_grad['params']} | "
-        f"PartRigidityMLP norm={rigidity_grad['norm']:.6e} max={rigidity_grad['max']:.6e} "
-        f"with_grad={rigidity_grad['with_grad']}/{rigidity_grad['params']}"
     )
+    if iteration <= start_iter:
+        return 0.0
+    warmup = int(getattr(dataset, "part_budget_warmup", 1000))
+    if warmup <= 0:
+        return 1.0
+    t = float(iteration - start_iter) / float(warmup)
+    return max(0.0, min(1.0, t))
 
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
@@ -201,6 +138,18 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         gaussians.update_learning_rate(iteration)
         gaussians.part_moe_alpha = compute_part_moe_alpha(iteration, dataset)
+        gaussians.tri_gate_alpha_scale = compute_tri_gate_alpha_scale(iteration, dataset)
+        gaussians.part_budget_alpha_scale = compute_part_budget_alpha_scale(iteration, dataset)
+        if (
+            getattr(dataset, "use_tri_gate", False)
+            and iteration == int(getattr(dataset, "tri_gate_start_iter", 3000)) + 1
+        ):
+            print(
+                f"[TRI_GATE Status] active=True "
+                f"alpha_scale={gaussians.tri_gate_alpha_scale:.6f} "
+                f"alpha_max={getattr(dataset, 'tri_gate_alpha', 0.2)} "
+                f"warmup={getattr(dataset, 'tri_gate_warmup', 3000)}"
+            )
         if (
             getattr(dataset, "use_part_moe", False)
             and gaussians.part_label_enabled
@@ -211,6 +160,18 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 f"[PartMoE Status] active=True part_enabled=True "
                 f"alpha={gaussians.part_moe_alpha:.6f} "
                 f"global_keep={gaussians.part_moe_global_keep}"
+            )
+        if (
+            getattr(dataset, "use_part_budget", False)
+            and gaussians.part_label_enabled
+            and gaussians.non_rigid_deformer.part_moe_active
+            and iteration == int(getattr(dataset, "part_budget_start_iter", 16000)) + 1
+        ):
+            print(
+                f"[PartBudget Status] active=True part_enabled=True "
+                f"alpha_scale={gaussians.part_budget_alpha_scale:.6f} "
+                f"alpha={getattr(dataset, 'part_budget_alpha', 1.0)} "
+                f"warmup={getattr(dataset, 'part_budget_warmup', 1000)}"
             )
 
         # Every 1000 its we increase the levels of SH up to a maximum degree
@@ -252,9 +213,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # iospos ioscov loss
         loss_aiap_xyz, loss_aiap_cov = full_aiap_loss(scene.gaussians.get_xyz, render_pkg["deformed_means3D"], scene.gaussians.get_covariance(), render_pkg["deformed_cov3D"])
         loss = loss + opt.iospos_w * loss_aiap_xyz + opt.ioscov_w * loss_aiap_cov
+        tri_part_reg_loss = None
+        if getattr(dataset, "use_tri_part", False):
+            tri_part_reg_loss = getattr(scene.gaussians.non_rigid_deformer, "last_tri_part_reg_loss", None)
+            tri_part_reg_w = float(getattr(dataset, "tri_part_reg_w", 0.0))
+            if tri_part_reg_loss is not None and tri_part_reg_w > 0.0:
+                loss = loss + tri_part_reg_w * tri_part_reg_loss
 
         loss.backward()
-        log_part_pamo_diagnostics(iteration, gaussians, dataset)
 
         # end time
         end_time = time.time()
@@ -277,6 +243,47 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 progress_bar.set_postfix({"#pts": gaussians._xyz.shape[0], "Ll1 Loss": f"{Ll1_loss_for_log:.{3}f}", "mask Loss": f"{mask_loss_for_log:.{2}f}",
                                           "ssim": f"{ssim_loss_for_log:.{2}f}", "lpips": f"{lpips_loss_for_log:.{2}f}"})
                 progress_bar.update(10)
+            if getattr(dataset, "use_tri_part", False) and iteration % 1000 == 0:
+                stats = getattr(scene.gaussians.non_rigid_deformer, "last_tri_part_stats", None)
+                if stats is not None:
+                    print(
+                        "[TRI_PART Stats] "
+                        f"iter={iteration} "
+                        f"gate_mean={stats['gate_mean'].item():.6f} "
+                        f"gate_std={stats['gate_std'].item():.6f} "
+                        f"motion_mean={stats['motion_mean'].item():.6f} "
+                        f"boundary_mean={stats['boundary_mean'].item():.6f} "
+                        f"residual_norm={stats['residual_norm'].item():.6f} "
+                        f"reg={stats['reg_loss'].detach().item():.8f}"
+                    )
+            if getattr(dataset, "use_part_budget", False) and iteration % 1000 == 0:
+                stats = getattr(scene.gaussians.non_rigid_deformer, "last_part_budget_stats", None)
+                if stats is not None:
+                    budget_mean = stats["budget_mean"].detach().cpu().tolist()
+                    budget_std = stats["budget_std"].detach().cpu().tolist()
+                    budget_min = stats["budget_min"].detach().cpu().tolist()
+                    budget_max = stats["budget_max"].detach().cpu().tolist()
+                    print(
+                        "[PartBudget Stats] "
+                        f"iter={iteration} "
+                        f"mean={budget_mean} "
+                        f"std={budget_std} "
+                        f"min={budget_min} "
+                        f"max={budget_max} "
+                        f"feature_delta_norm={stats['feature_delta_norm'].item():.6f} "
+                        f"adapter_norm={stats['adapter_norm'].item():.6f} "
+                        f"entropy={stats['entropy'].item():.6f} "
+                        f"logits_mean={stats['logits_mean'].item():.6f} "
+                        f"motion_mean={stats['motion_mean'].item():.6f} "
+                        f"boundary_mean={stats['boundary_mean'].item():.6f}"
+                    )
+                    per_part_mean = stats["per_part_budget_mean"].detach().mean(dim=0).cpu().tolist()
+                    per_part_std = stats["per_part_budget_std"].detach().mean(dim=0).cpu().tolist()
+                    for pid, (mean_vals, std_vals) in enumerate(zip(per_part_mean, per_part_std)):
+                        print(
+                            f"  [PartBudget p{pid}] "
+                            f"mean={mean_vals} std={std_vals}"
+                        )
             if iteration == opt.iterations:
                 progress_bar.close()
 

@@ -46,22 +46,16 @@ class Scene:
 
         # generate multiple time steps
         time_steps = generate_time_steps(args.minimal_time_step, args.max_time_step, 1, args.time_step_num, args.seq_len)
-        reader_kwargs = {
-            "use_part_pamo": getattr(args, "use_part_pamo", False),
-            "part_label_schema": getattr(args, "part_label_schema", "anatomy5"),
-            "num_parts": getattr(args, "num_parts", 5),
-            "part_pamo_motion_feat_mode": getattr(args, "part_pamo_motion_feat_mode", "mean"),
-        }
 
         if 'ZJU-MoCap' in args.source_path: 
             print("Assuming ZJU-MoCap dataset!")
-            scene_info = sceneLoadTypeCallbacks["ZJU_MoCap"](args.source_path, args.white_background, args.eval, time_steps, **reader_kwargs)
+            scene_info = sceneLoadTypeCallbacks["ZJU_MoCap"](args.source_path, args.white_background, args.eval, time_steps)
         elif 'I3D-Human' in args.source_path: 
             print("Assuming I3D-Human dataset!")
-            scene_info = sceneLoadTypeCallbacks["I3DHuman"](args.source_path, args.white_background, args.eval, time_steps, **reader_kwargs)
+            scene_info = sceneLoadTypeCallbacks["I3DHuman"](args.source_path, args.white_background, args.eval, time_steps)
         elif 'DNA-Rendering' in args.source_path:
             print("Assuming DNA-Rendering dataset!")
-            scene_info = sceneLoadTypeCallbacks["DNARendering"](args.source_path, args.white_background, args.eval, time_steps, **reader_kwargs)
+            scene_info = sceneLoadTypeCallbacks["DNARendering"](args.source_path, args.white_background, args.eval, time_steps)
         else:
             assert False, "Could not recognize scene type!"
         

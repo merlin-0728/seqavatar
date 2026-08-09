@@ -20,6 +20,8 @@ from plyfile import PlyData, PlyElement
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PART_LOG_ROOT = REPO_ROOT / "logs" / "part"
+TRI_LOG_ROOT = REPO_ROOT / "logs" / "tri"
+PART_BUDGET_LOG_ROOT = REPO_ROOT / "logs" / "budget"
 
 LABELS = {
     0: "unknown",
@@ -58,47 +60,11 @@ PART_LABEL_SCHEMAS = {
         5: "left_leg_foot",
         6: "right_leg_foot",
     },
-    "part_moe_foot": {
-        0: "unknown",
-        1: "body",
-        2: "left_hand",
-        3: "right_hand",
-        4: "face",
-        5: "left_foot",
-        6: "right_foot",
-    },
-    "part_moe_arm": {
-        0: "unknown",
-        1: "body",
-        2: "left_arm_hand",
-        3: "right_arm_hand",
-        4: "face",
-        5: "left_leg_foot",
-        6: "right_leg_foot",
-    },
 }
 
 PART_LABEL_COLORS = {
     "anatomy5": {idx: LABEL_COLORS[idx] for idx in PART_LABEL_SCHEMAS["anatomy5"]},
     "part_moe_leg": {
-        0: LABEL_COLORS[0],
-        1: LABEL_COLORS[1],
-        2: LABEL_COLORS[2],
-        3: LABEL_COLORS[3],
-        4: LABEL_COLORS[4],
-        5: (255, 165, 0),
-        6: (128, 0, 255),
-    },
-    "part_moe_foot": {
-        0: LABEL_COLORS[0],
-        1: LABEL_COLORS[1],
-        2: LABEL_COLORS[2],
-        3: LABEL_COLORS[3],
-        4: LABEL_COLORS[4],
-        5: (255, 165, 0),
-        6: (128, 0, 255),
-    },
-    "part_moe_arm": {
         0: LABEL_COLORS[0],
         1: LABEL_COLORS[1],
         2: LABEL_COLORS[2],
@@ -206,7 +172,11 @@ def infer_model_log_stem(args, script_name):
         model_rel = Path("manual")
 
     mode = "part"
-    if getattr(args, "use_part_moe", False):
+    if getattr(args, "use_part_budget", False):
+        mode = "part_budget"
+    elif getattr(args, "use_tri", False):
+        mode = "tri"
+    elif getattr(args, "use_part_moe", False):
         mode = "part_moe"
 
     bits = [script_name, mode, *model_rel.parts]
@@ -218,7 +188,13 @@ def enable_part_stdout_logging(args, script_name, force=False):
     if not force and not getattr(args, "use_part_moe", False):
         return None
 
-    log_dir = resolve_part_log_dir(getattr(args, "part_log_dir", None))
+    if getattr(args, "use_part_budget", False):
+        default_log_dir = PART_BUDGET_LOG_ROOT
+    elif getattr(args, "use_tri", False):
+        default_log_dir = TRI_LOG_ROOT
+    else:
+        default_log_dir = PART_LOG_ROOT
+    log_dir = resolve_part_log_dir(getattr(args, "part_log_dir", None) or default_log_dir)
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     stem = infer_model_log_stem(args, script_name)
     log_path = log_dir / f"{stem}_{timestamp}.log"
@@ -373,7 +349,7 @@ def load_smpl_neutral(smpl_type="smplx", actor_gender="neutral"):
         return pickle.load(f, encoding="latin1")
 
 
-# 用 SMPL-X LBS 主导关节把每个 SMPL-X 顶点粗分为 body/hand/face，可选额外分腿脚、纯脚或手臂手。
+# 用 SMPL-X LBS 主导关节把每个 SMPL-X 顶点粗分为 body/hand/face，可选额外分左右腿脚。
 def smplx_lbs_vertex_labels(smpl_neutral, schema="anatomy5"):
     get_part_label_names(schema)
     weights_obj = smpl_neutral["weights"]
@@ -408,56 +384,13 @@ def smplx_lbs_vertex_labels(smpl_neutral, schema="anatomy5"):
     face = ids_with_prefix(["Head", "Jaw", "L_Eye", "R_Eye"])
     left_leg_foot = ids_with_prefix(["L_Hip", "L_Knee", "L_Ankle", "L_Foot", "L_Toes", "L_Thigh", "L_Calf"])
     right_leg_foot = ids_with_prefix(["R_Hip", "R_Knee", "R_Ankle", "R_Foot", "R_Toes", "R_Thigh", "R_Calf"])
-    left_foot = ids_with_prefix(["L_Foot", "L_Toes", "L_BigToe", "L_SmallToe", "L_Heel"])
-    right_foot = ids_with_prefix(["R_Foot", "R_Toes", "R_BigToe", "R_SmallToe", "R_Heel"])
-    left_arm_hand = ids_with_prefix(
-        [
-            "L_Elbow",
-            "L_Wrist",
-            "L_Arm",
-            "L_ForeArm",
-            "L_UpperArm",
-            "L_LowerArm",
-            "L_Hand",
-            "L_Index",
-            "L_Middle",
-            "L_Ring",
-            "L_Pinky",
-            "L_Thumb",
-        ]
-    )
-    right_arm_hand = ids_with_prefix(
-        [
-            "R_Elbow",
-            "R_Wrist",
-            "R_Arm",
-            "R_ForeArm",
-            "R_UpperArm",
-            "R_LowerArm",
-            "R_Hand",
-            "R_Index",
-            "R_Middle",
-            "R_Ring",
-            "R_Pinky",
-            "R_Thumb",
-        ]
-    )
 
     labels = np.ones(weights.shape[0], dtype=np.uint8)
     if schema == "part_moe_leg":
         labels[np.isin(dominant, list(left_leg_foot))] = 5
         labels[np.isin(dominant, list(right_leg_foot))] = 6
-    elif schema == "part_moe_foot":
-        labels[np.isin(dominant, list(left_foot))] = 5
-        labels[np.isin(dominant, list(right_foot))] = 6
-    elif schema == "part_moe_arm":
-        labels[np.isin(dominant, list(left_leg_foot))] = 5
-        labels[np.isin(dominant, list(right_leg_foot))] = 6
-        labels[np.isin(dominant, list(left_arm_hand))] = 2
-        labels[np.isin(dominant, list(right_arm_hand))] = 3
-    if schema != "part_moe_arm":
-        labels[np.isin(dominant, list(left_hand))] = 2
-        labels[np.isin(dominant, list(right_hand))] = 3
+    labels[np.isin(dominant, list(left_hand))] = 2
+    labels[np.isin(dominant, list(right_hand))] = 3
     labels[np.isin(dominant, list(face))] = 4
     return labels, {
         "method": "smplx_lbs_dominant_part_fallback",
@@ -465,12 +398,8 @@ def smplx_lbs_vertex_labels(smpl_neutral, schema="anatomy5"):
         "left_hand_ids": sorted(left_hand),
         "right_hand_ids": sorted(right_hand),
         "face_ids": sorted(face),
-        "left_leg_foot_ids": sorted(left_leg_foot) if schema in {"part_moe_leg", "part_moe_arm"} else [],
-        "right_leg_foot_ids": sorted(right_leg_foot) if schema in {"part_moe_leg", "part_moe_arm"} else [],
-        "left_foot_ids": sorted(left_foot) if schema == "part_moe_foot" else [],
-        "right_foot_ids": sorted(right_foot) if schema == "part_moe_foot" else [],
-        "left_arm_hand_ids": sorted(left_arm_hand) if schema == "part_moe_arm" else [],
-        "right_arm_hand_ids": sorted(right_arm_hand) if schema == "part_moe_arm" else [],
+        "left_leg_foot_ids": sorted(left_leg_foot) if schema == "part_moe_leg" else [],
+        "right_leg_foot_ids": sorted(right_leg_foot) if schema == "part_moe_leg" else [],
         "vertex_label_counts": label_counts(labels, schema=schema),
     }
 
@@ -479,18 +408,6 @@ def smplx_lbs_vertex_labels(smpl_neutral, schema="anatomy5"):
 def map_smpl_seg_name_to_part_id(name, schema="anatomy5"):
     get_part_label_names(schema)
     key = str(name).lower()
-    if schema == "part_moe_arm":
-        if key in {"leftarm", "leftforearm", "lefthand", "lefthandindex1"}:
-            return 2
-        if key in {"rightarm", "rightforearm", "righthand", "righthandindex1"}:
-            return 3
-        if key == "head":
-            return 4
-        if key in {"leftupleg", "leftleg", "leftfoot", "lefttoebase"}:
-            return 5
-        if key in {"rightupleg", "rightleg", "rightfoot", "righttoebase"}:
-            return 6
-        return 1
     if key in {"lefthand", "lefthandindex1"}:
         return 2
     if key in {"righthand", "righthandindex1"}:
@@ -501,11 +418,6 @@ def map_smpl_seg_name_to_part_id(name, schema="anatomy5"):
         if key in {"leftupleg", "leftleg", "leftfoot", "lefttoebase"}:
             return 5
         if key in {"rightupleg", "rightleg", "rightfoot", "righttoebase"}:
-            return 6
-    if schema == "part_moe_foot":
-        if key in {"leftfoot", "lefttoebase"}:
-            return 5
-        if key in {"rightfoot", "righttoebase"}:
             return 6
     return 1
 

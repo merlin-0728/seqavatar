@@ -113,6 +113,10 @@ def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParam
         scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
         if getattr(dataset, "use_part_moe", False):
             gaussians.part_moe_alpha = max(0.0, min(1.0, 1.0 - float(getattr(dataset, "part_moe_global_keep", 0.1))))
+        if getattr(dataset, "use_part_budget", False):
+            gaussians.part_budget_alpha_scale = 1.0
+        if getattr(dataset, "use_tri_gate", False):
+            gaussians.tri_gate_alpha_scale = 1.0
         if getattr(dataset, "use_part_moe", False):
             part_label_path = dataset.part_label_path
             if not part_label_path:
@@ -124,7 +128,11 @@ def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParam
                     "gaussian_part_label.npy",
                 )
             if os.path.exists(part_label_path):
-                gaussians.load_part_labels(part_label_path)
+                part_conf_path = os.path.join(os.path.dirname(part_label_path), "gaussian_part_conf.npy")
+                gaussians.load_part_labels(
+                    part_label_path,
+                    part_conf_path if os.path.exists(part_conf_path) else None,
+                )
                 print(f"[Render] Loaded part labels: {part_label_path}")
             else:
                 print(f"[Render] Part label file not found, cached d_nonrigid must be available: {part_label_path}")

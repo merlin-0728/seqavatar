@@ -4007,6 +4007,210 @@ gaussian_renderer/__init__.py 顺序确认:
 没有保留临时验证代码。
 ```
 
+## 2026-08-09 part_budget 有效重跑进度续接
+
+用户要求：
+
+```text
+打开 part_budget 重新跑并给最后评价指标，用卡 3。
+```
+
+当前有效重跑：
+
+```text
+tmux session:
+    part_budget_dna_rerun_20260809_010458
+
+主日志:
+    /media/image/mxz/human/SeqAvatar/logs/budget/20260809_010458_DNA-Rendering_part_budget.log
+
+确认:
+    cfg_args/use_part_budget=True
+    命令包含 --use_part_budget
+    日志出现 [PART_BUDGET] enabled=True
+    PartBudget Stats 已持续打印，说明分支确实接入训练。
+```
+
+当前已完成 4/6 个 DNA 序列：
+
+```text
+0044_11:
+    PSNR 33.005961147944134
+    SSIM 0.9782079353928566
+    LPIPS 0.02111889289226383
+
+0051_09:
+    PSNR 28.7546360651652
+    SSIM 0.9720434183875719
+    LPIPS 0.03035795715016623
+
+0206_04:
+    PSNR 31.473957554499307
+    SSIM 0.9701999674240748
+    LPIPS 0.033340699629237254
+
+0813_05:
+    PSNR 36.233865865071614
+    SSIM 0.9873911579449971
+    LPIPS 0.017785114779447515
+```
+
+当前状态：
+
+```text
+正在 GPU 3 上继续跑第 5 个序列 0007_04。
+剩余序列:
+    0019_10
+```
+
+## 2026-08-09 part_budget 有效重跑最终结果
+
+运行信息：
+
+```text
+GPU:
+    3
+
+tmux:
+    part_budget_dna_rerun_20260809_010458
+
+主日志:
+    /media/image/mxz/human/SeqAvatar/logs/budget/20260809_010458_DNA-Rendering_part_budget.log
+
+结果:
+    6/6 DNA 序列全部跑完。
+    tmux 已退出。
+    未检索到 Traceback / IndexError / RuntimeError / OOM。
+```
+
+part_budget 六序列结果：
+
+```text
+0044_11:
+    PSNR 33.005961147944134
+    SSIM 0.9782079353928566
+    LPIPS 0.02111889289226383
+    LPIPS*1000 21.11889289226383
+
+0051_09:
+    PSNR 28.7546360651652
+    SSIM 0.9720434183875719
+    LPIPS 0.03035795715016623
+    LPIPS*1000 30.357957150166232
+
+0206_04:
+    PSNR 31.473957554499307
+    SSIM 0.9701999674240748
+    LPIPS 0.033340699629237254
+    LPIPS*1000 33.34069962923726
+
+0813_05:
+    PSNR 36.233865865071614
+    SSIM 0.9873911579449971
+    LPIPS 0.017785114779447515
+    LPIPS*1000 17.785114779447515
+
+0007_04:
+    PSNR 29.607305606206257
+    SSIM 0.9588569129506747
+    LPIPS 0.04381065218088528
+    LPIPS*1000 43.81065218088528
+
+0019_10:
+    PSNR 35.40017274220784
+    SSIM 0.981486864387989
+    LPIPS 0.020604321577896673
+    LPIPS*1000 20.604321577896673
+```
+
+part_budget 平均值：
+
+```text
+PSNR:
+    32.412649830182396
+
+SSIM:
+    0.974697709414694
+
+LPIPS:
+    0.0278362730349828
+
+LPIPS*1000:
+    27.8362730349828
+```
+
+对比 DNA part_moe_leg 基线：
+
+```text
+baseline 日志:
+    /media/image/mxz/human/SeqAvatar/logs/part/20260623_180431_DNA-Rendering_part_moe_leg.log
+
+part_moe_leg 平均:
+    PSNR 32.39075858328077
+    SSIM 0.974622116320663
+    LPIPS 0.027993953922608245
+    LPIPS*1000 27.993953922608245
+
+part_budget - part_moe_leg:
+    PSNR +0.021891246901624584
+    SSIM +0.00007559309403104564
+    LPIPS*1000 -0.1576808876254457
+```
+
+逐序列变化：
+
+```text
+0044_11:
+    PSNR +0.005390246709190194
+    SSIM -0.000003036359945918221
+    LPIPS*1000 +0.04112230769048181
+
+0051_09:
+    PSNR +0.055731598536173266
+    SSIM +0.0003578260540961775
+    LPIPS*1000 -0.4692763633405185
+
+0206_04:
+    PSNR -0.04500829378763882
+    SSIM -0.00012703736623131956
+    LPIPS*1000 -0.22252170989910808
+
+0813_05:
+    PSNR +0.031395753224693124
+    SSIM +0.000051344434420230733
+    LPIPS*1000 -0.12680551347633157
+
+0007_04:
+    PSNR +0.04018796284993442
+    SSIM -0.000034307440122005595
+    LPIPS*1000 -0.09175512629250315
+
+0019_10:
+    PSNR +0.043650213877356236
+    SSIM +0.0002087692419687759
+    LPIPS*1000 -0.07684892043471545
+```
+
+结论：
+
+```text
+part_budget 这次有效重跑相对 part_moe_leg 有正向但很小的平均收益。
+
+优点:
+    6 个序列里 5 个 PSNR 提升。
+    5 个序列 LPIPS*1000 下降。
+    平均 PSNR / SSIM / LPIPS 都优于 part_moe_leg。
+
+不足:
+    平均 PSNR 只提升约 +0.0219 dB。
+    0044_11 的 LPIPS 略差。
+    0206_04 的 PSNR 和 SSIM 下降。
+
+判断:
+    当前 part_budget 已经真正接入并能学习到非均匀 budget 分布，
+    但收益仍属于弱提升，不是强创新结果。
+```
+
 ## 2026-07-16 part_pamo Step 3：internal learnable rigidity
 
 用户要求：
@@ -6275,4 +6479,6530 @@ motion branch 诊断：
 ```text
 没有保留临时验证脚本。
 没有发现仍在运行的 part_pamo_motion_film_rich train/render 进程。
+```
+
+## 2026-07-21 放弃当前 part_pamo，转向自适应动态区域建模
+
+用户判断：
+
+```text
+当前 pamo 方法决定放弃。
+动态区域 / 部件区域不能只靠统一 densify 和统一 MLP。
+应该根据:
+    1. 运动强弱
+    2. 部件属性
+    3. 局部刚性程度
+决定哪里需要更强形变能力，哪里需要更稳定约束。
+```
+
+可行性判断：
+
+```text
+这个新思路是可行的，而且比当前 part_pamo 更贴合已有实验现象。
+
+原因:
+    1. part_moe_leg 已证明“部件专属形变能力”有价值。
+    2. part_pamo 的失败说明:
+        仅把 part motion code 注入网络，或者增加全局统一的 part-level residual，
+        不足以稳定提升效果。
+    3. 0044/0206 的 pamo motion film 结果显示:
+        motion 分支确实能改变网络行为，但改变不一定正向。
+    4. 0206 中 pamo 点数明显少于 part_moe_leg，提示 densify/prune 轨迹
+        也可能是动态区域建模失败的重要因素。
+
+因此下一步更合理的方向不是继续加 motion encoder，
+而是做“motion-aware / part-aware / rigidity-aware 的容量和约束分配”。
+```
+
+建议的新方向命名：
+
+```text
+part_adaptive_dynamic
+或
+motion_aware_part_capacity
+```
+
+核心思想：
+
+```text
+对每个 Gaussian 或每个 part 估计一个 dynamic score:
+    s_i = f(part_id, motion_strength, local_rigidity, residual/error)
+
+用 s_i 控制:
+    1. densify/prune 阈值
+    2. non-rigid MLP 容量或 expert 路由
+    3. 正则强度
+    4. 是否更依赖稳定刚性约束
+
+高动态 / 低刚性区域:
+    更容易 densify
+    更强 non-rigid capacity
+    更弱刚性/平滑约束
+
+低动态 / 高刚性区域:
+    更保守 densify
+    更强稳定约束
+    避免过拟合和漂移
+```
+
+优先实现建议：
+
+```text
+第一步先不要改网络主体。
+先做 motion-aware densify/prune 或 part-aware densify schedule。
+原因:
+    当前 part_pamo 的一个明显问题是点数轨迹被改变；
+    如果动态区域没有足够 Gaussian，后面的 MLP 再强也补不回来。
+
+第二步再做 capacity 分配:
+    对高动态 part 使用更宽/更深 expert，或更高 expert LR。
+    对低动态 part 保持 part_moe_leg 原设置。
+
+第三步再加 rigidity-aware regularization:
+    不是直接加 rigid residual，
+    而是用局部刚性分数控制正则强弱。
+```
+
+## 2026-07-21 新方案：motion/part/rigidity adaptive capacity
+
+用户要求：
+
+```text
+不要再想 PaMoSplat residual。
+重新设计一个方案:
+    根据运动强弱、部件属性、局部刚性程度，
+    决定哪里需要更强形变能力，哪里需要更稳定约束。
+```
+
+方案命名：
+
+```text
+MPAC:
+    Motion-Part Adaptive Capacity
+
+或中文:
+    运动-部件-刚性自适应容量分配
+```
+
+核心观点：
+
+```text
+不是给所有 Gaussian 同等 densify、同等 MLP、同等正则。
+而是给每个 Gaussian / part 计算 capacity score:
+    capacity_i = f(motion_i, part_prior_i, rigidity_i, error_i)
+
+capacity_i 高:
+    说明这个区域需要更强表达能力。
+
+stability_i 高:
+    说明这个区域应该更稳定，少自由形变。
+```
+
+输入信号：
+
+```text
+1. motion_strength:
+    来自 SMPL part 的 velocity / acceleration。
+    可以先按 part 计算，再 broadcast 到该 part 的 Gaussian。
+
+2. part_prior:
+    部件属性先验。
+    torso/head:
+        更稳定。
+    upper/lower leg、arm:
+        中等。
+    foot/hand、关节边界、衣物边缘:
+        更动态、更需要形变容量。
+
+3. local_rigidity:
+    不做 rigid residual。
+    只估计这个 Gaussian 是否局部刚性。
+    可由以下信号构成:
+        skinning weight entropy
+        到关节边界距离
+        同 part 邻域 residual 方差
+        同 part 邻域 motion 一致性
+
+4. error_score:
+    训练中的 EMA photometric residual / gradient norm。
+    高运动但低误差:
+        不一定加容量。
+    高运动且高误差:
+        优先加容量和 densify。
+```
+
+网络设计：
+
+```text
+以 part_moe_leg 为基线。
+每个 part 不再只有一个 expert，而是分成两个容量等级:
+
+    StableExpert_p:
+        低容量、强约束。
+        用于刚性强、运动弱、误差低区域。
+
+    DynamicExpert_p:
+        高容量、弱约束。
+        用于运动强、局部刚性低、误差高区域。
+
+由 CapacityRouter 输出:
+    g_i = sigmoid(MLP_capacity(
+        x_emb_i,
+        part_onehot_i,
+        motion_strength_i,
+        rigidity_i,
+        error_score_i
+    ))
+
+最终 deformation:
+    d_i = (1 - g_i) * StableExpert_p(input_i)
+        + g_i       * DynamicExpert_p(input_i)
+
+这里 g_i 不是 PaMoSplat rigid gate。
+它控制“使用稳定专家还是动态专家”，本质是自适应容量路由。
+```
+
+densify / prune 设计：
+
+```text
+给每个 Gaussian 一个 densify_priority:
+    densify_priority_i =
+        render_grad_i
+        * (1 + a * motion_strength_i)
+        * (1 + b * error_score_i)
+        * (1 + c * (1 - rigidity_i))
+        * part_weight_prior_i
+
+高动态、低刚性、高误差区域:
+    降低 densify threshold。
+    更容易 split / clone。
+
+高刚性、低误差区域:
+    提高 densify threshold。
+    避免无意义增点和漂移。
+
+prune 也对应调整:
+    动态高误差区域不要过早 prune。
+    稳定低贡献区域可以正常 prune。
+```
+
+约束设计：
+
+```text
+不统一正则。
+每个 Gaussian 的稳定约束权重:
+    lambda_stable_i =
+        lambda_base
+        * rigidity_i
+        * (1 - motion_strength_i)
+        * (1 - error_score_i)
+
+对高 rigidity 区域:
+    加强 temporal smooth / neighbor consistency / deformation magnitude regularization。
+
+对低 rigidity 高 motion 区域:
+    降低这些约束，让 DynamicExpert 有空间拟合衣物边缘、关节附近、快速摆动。
+```
+
+为什么它比 part_pamo 更合理：
+
+```text
+part_pamo 的问题:
+    给所有点同样注入 motion code。
+    motion 分支确实学习了，但没有判断“哪里该用、用多少、是否需要更多点”。
+
+MPAC 的重点:
+    先判断区域类型，再分配建模资源。
+    高动态区域获得:
+        更多点
+        更强 expert
+        更弱稳定约束
+    稳定区域获得:
+        更少额外自由度
+        更强约束
+        更稳定训练
+```
+
+建议消融顺序：
+
+```text
+Ablation 1:
+    part_moe_leg + motion/part/rigidity aware densify only
+    不改网络。
+    目标:
+        先验证点数分布是否改善，尤其 0206 的动态区域点数是否不足。
+
+Ablation 2:
+    加 CapacityRouter + Stable/Dynamic dual experts。
+    不加复杂正则。
+    目标:
+        验证动态区域是否需要更强 expert。
+
+Ablation 3:
+    加 rigidity-aware regularization。
+    目标:
+        验证稳定区域是否能减少漂移、减少过拟合。
+
+Ablation 4:
+    三者组合。
+    目标:
+        完整 MPAC。
+```
+
+预期验证指标：
+
+```text
+除了 PSNR/SSIM/LPIPS，还要看:
+    每个 part 的 Gaussian 数量变化
+    高 motion part 的 densify 次数
+    g_i 的均值/方差/per-part 分布
+    StableExpert 和 DynamicExpert 的使用比例
+    deformation norm 在高/低 rigidity 区域的差异
+    训练后低 motion 区域是否更稳定
+```
+
+## 2026-07-25 是否试过加 optical flow
+
+用户问题：
+
+```text
+之前有没有试过加光流的做法
+```
+
+检查结果：
+
+```text
+没有发现之前真正做过 optical flow 相关实验。
+
+repo / note 中搜索:
+    光流
+    optical
+    flow
+    RAFT / raft
+    FlowNet / flownet
+
+只有 note 里早期的:
+    note/state_warm_a04_flow.svg
+    note/state_warm_a04_flow_zh.svg
+
+这里的 flow 是流程图 flow chart，不是 optical flow。
+```
+
+结论：
+
+```text
+之前的 state / part_pamo / motion_film 都是基于 pose、part、velocity、acceleration、
+FiLM 或 expert routing 的运动建模，没有引入图像光流监督、光流一致性 loss、
+RAFT 预估光流、或基于光流的 densify/动态区域判断。
+```
+
+## 2026-07-25 清理多余消融实验，只保留 original 与 part_moe_leg
+
+用户要求：
+
+```text
+删除多余的消融实验代码及其开关。
+只保留 original 和 part_moe_leg。
+之后如果再提到 part_moe，默认就是 part_moe_leg 这个实验。
+```
+
+实现口径：
+
+```text
+保留:
+    original / orginal baseline
+    part_moe_leg
+
+脚本别名:
+    use_part_moe
+    part_moe
+    use_part_moe_leg
+    part_moe_leg
+
+全部统一映射到:
+    experiment_name=part_moe_leg
+    --use_part_moe
+    --part_label_schema part_moe_leg
+    --num_parts 7
+```
+
+已删除/停用：
+
+```text
+part_pamo 及所有变体:
+    --use_part_pamo
+    --part_pamo_dim
+    --part_pamo_log_interval
+    --part_pamo_rigidity_min
+    --part_pamo_step1_only
+    --part_pamo_fixed_rigidity
+    --part_pamo_motion_film
+    --part_pamo_motion_feat_mode
+    --part_pamo_motion_lr_mult
+
+网络分支:
+    PartMotionEncoder
+    PartMotionFiLM
+    PartRigidHead
+    PartRigidityMLP
+    part-level rigid residual
+    internal rigidity gate
+
+其他消融 schema:
+    part_moe_foot
+    part_moe_arm
+```
+
+代码修改：
+
+```text
+arguments/__init__.py
+    删除 part_pamo 参数开关。
+
+nets/mlp_delta_non_rigid.py
+    NonrigidDeformer 只保留 shared MLP 和 Part-MoE experts。
+    PartNonrigidExpert 不再加宽输入，不再支持 FiLM。
+    forward_part_moe 只按 part label 路由和 global/part warmup blend。
+
+scene/dataset_readers.py
+    cond_dict 不再生成 part_motion_conds。
+    删除 part motion 预计算 helper。
+
+scene/__init__.py
+    不再向 dataset reader 传 part_pamo 参数。
+
+gaussian_renderer/__init__.py
+    non_rigid_deformer 调用不再传 part_motion_conds / query_xyz。
+
+scene/gaussian_model.py
+    删除 part_pamo 属性和特殊 motion LR 参数组。
+
+train.py
+    删除 part_pamo diagnostics / grad stats 日志。
+
+part_label/common.py
+    只保留 anatomy5 和 part_moe_leg schema。
+
+scripts/exps_zjumocap.sh
+scripts/exps_i3dhuman.sh
+scripts/exps_dnarendering.sh
+    只支持 orginal/original 和 use_part_moe/part_moe/part_moe_leg。
+    part_moe 统一输出到 part_moe_leg 目录。
+    DNA part_moe_leg 继续保留 final_eval_only=1。
+
+freeview/freeview.py
+freeview/render_circle.py
+freeview/render_grid_video.py
+    默认 experiment 从 part_moe_arm 改为 part_moe_leg。
+```
+
+已验证：
+
+```text
+bash -n scripts/exps_zjumocap.sh
+bash -n scripts/exps_i3dhuman.sh
+bash -n scripts/exps_dnarendering.sh
+
+PYTHONDONTWRITEBYTECODE=1 python -m py_compile:
+    arguments/__init__.py
+    nets/mlp_delta_non_rigid.py
+    scene/gaussian_model.py
+    gaussian_renderer/__init__.py
+    scene/__init__.py
+    scene/dataset_readers.py
+    train.py
+    render.py
+    part_label/common.py
+    freeview/freeview.py
+    freeview/render_circle.py
+    freeview/render_grid_video.py
+
+最小 Part-MoE forward:
+    NonrigidDeformer(use_part_moe=True, num_parts=7)
+    init_part_moe_from_shared()
+    forward(part_label, part_moe_alpha=0.5)
+
+输出:
+    d_xyz      [1, 11, 3]
+    d_rotation [1, 11, 4]
+    d_scaling  [1, 11, 3]
+
+残留扫描:
+    part_pamo / use_part_pamo / PartMotion / PartRigid / Rigidity /
+    part_moe_foot / part_moe_arm / motion_film
+    在可执行代码中无命中。
+
+git diff --check:
+    通过。
+```
+
+运行计划：
+
+```text
+DNA 六序列 tri 实验已启动。
+
+GPU0:
+    RUN_TIME=20260726_0020_tri_gpu0
+    sequences:
+        0044_11
+        0051_09
+        0206_04
+    global log:
+        logs/tri/20260726_0020_tri_gpu0_DNA-Rendering_tri.log
+
+GPU1:
+    RUN_TIME=20260726_0020_tri_gpu1
+    sequences:
+        0813_05
+        0007_04
+        0019_10
+    global log:
+        logs/tri/20260726_0020_tri_gpu1_DNA-Rendering_tri.log
+```
+
+注意：
+
+```text
+state 关键字仍会在 safe_state、checkpoint state_dict、optimizer state 中出现。
+这些是正常运行状态，不是已删除的 state 消融实验代码。
+```
+
+## 2026-07-25 收紧脚本入口别名
+
+用户追问：
+
+```text
+use_part_moe / part_moe / use_part_moe_leg / part_moe_leg 都统一映射到 part_moe_leg 是啥意思？
+没删吗？
+```
+
+澄清与修正：
+
+```text
+之前保留的是脚本入口兼容别名，不是独立实验分支。
+为避免歧义，本次继续收紧脚本 mode：
+    只接受 orginal/original
+    只接受 part_moe_leg
+
+删除的脚本 mode 别名:
+    use_part_moe
+    part_moe
+    use_part_moe_leg
+
+保留的 Python 参数:
+    --use_part_moe
+
+原因:
+    --use_part_moe 是启用 Part-MoE 逻辑的内部布尔开关。
+    part_moe_leg 实验运行时仍必须把它传给 train.py/render.py。
+    它不是一个独立消融实验名。
+```
+
+当前运行方式：
+
+```text
+baseline:
+    bash scripts/exps_*.sh orginal
+    或
+    bash scripts/exps_*.sh original
+
+Part-MoE 腿部分组:
+    bash scripts/exps_*.sh part_moe_leg
+```
+
+复查结果：
+
+```text
+bash -n 三个实验脚本通过。
+git diff --check 通过。
+
+脚本 case 入口已经不再接受:
+    use_part_moe
+    part_moe
+    use_part_moe_leg
+
+脚本中仍出现 --use_part_moe 的位置只用于 PART_MOE_ARGS，
+它是 train.py/render.py 启用 Part-MoE 的内部参数，不是实验 mode。
+```
+
+## 2026-07-25 删除 orginal 拼写错误入口
+
+用户说明：
+
+```text
+orginal 是之前打错了，删掉，只保留 original。
+```
+
+修正：
+
+```text
+三个实验脚本默认 MODE 改为:
+    original
+
+baseline case 入口只接受:
+    original
+
+baseline 输出 experiment_name 改为:
+    original
+
+脚本支持模式现在严格为:
+    original
+    part_moe_leg
+```
+
+## 2026-07-25 新建 tri 独立消融实验开关
+
+用户要求：
+
+```text
+新建一个独立的消融实验开关 tri。
+相关实验日志保存在:
+    /media/image/mxz/human/SeqAvatar/logs/tri
+
+注意:
+    代码和其他消融实验相互独立。
+    必须在 part_moe_leg 的基础上进行。
+    不是在 original 的基础上修改。
+```
+
+实现口径：
+
+```text
+新增 Python 开关:
+    --use_tri
+
+新增脚本 mode:
+    tri
+
+tri 模式强制继承 part_moe_leg 配置:
+    --use_part_moe
+    --use_tri
+    --part_label_schema part_moe_leg
+    --num_parts 7
+
+输出实验目录:
+    output/<dataset>/<sequence>/tri/<RUN_TIME>/
+
+总日志目录:
+    /media/image/mxz/human/SeqAvatar/logs/tri
+
+Part-MoE 自动分层日志:
+    /media/image/mxz/human/SeqAvatar/logs/tri/.auto_<RUN_TIME>_tri
+```
+
+代码修改：
+
+```text
+arguments/__init__.py
+    新增 use_tri=False。
+
+scene/gaussian_model.py
+    读取 use_tri。
+    如果 use_tri=True，则强制校验:
+        use_part_moe=True
+        part_label_schema=part_moe_leg
+        num_parts=7
+
+nets/mlp_delta_non_rigid.py
+    NonrigidDeformer 新增 use_tri。
+    新增 forward_tri() 独立 hook。
+    当前 forward_tri() 等价调用 forward_part_moe()，
+    后续 TRI 的网络级创新只改这个分支，不影响 original / part_moe_leg。
+
+part_label/common.py
+    use_tri=True 时 part 日志前缀使用 tri。
+    未显式传 part_log_dir 时，默认日志目录为 logs/tri。
+
+ablations/part_moe_controller.py
+    part label meta 中记录 use_tri。
+
+scripts/exps_zjumocap.sh
+scripts/exps_i3dhuman.sh
+scripts/exps_dnarendering.sh
+    新增 tri mode。
+    tri mode 使用 logs/tri。
+    tri mode 仍走 part_moe_leg 的分组、启动 iteration、warmup、global_keep。
+    DNA tri 沿用 part_moe_leg 的 final_eval_only=1。
+```
+
+当前状态：
+
+```text
+tri 目前是独立实验开关和独立网络 hook。
+在具体 TRI 网络结构实现前，forward_tri 暂时等价于 part_moe_leg。
+这样可以保证新实验入口、日志、cfg_args、label meta 已经隔离，
+同时不提前改变 part_moe_leg 和 original 的行为。
+```
+
+已验证：
+
+```text
+bash -n scripts/exps_zjumocap.sh
+bash -n scripts/exps_i3dhuman.sh
+bash -n scripts/exps_dnarendering.sh
+
+PYTHONDONTWRITEBYTECODE=1 python -m py_compile:
+    arguments/__init__.py
+    nets/mlp_delta_non_rigid.py
+    scene/gaussian_model.py
+    part_label/common.py
+    ablations/part_moe_controller.py
+    train.py
+    render.py
+
+最小 TRI forward:
+    NonrigidDeformer(use_part_moe=True, use_tri=True, num_parts=7)
+    init_part_moe_from_shared()
+    forward(part_label, part_moe_alpha=0.5)
+
+输出:
+    use_tri True
+    d_xyz      [1, 11, 3]
+    d_rotation [1, 11, 4]
+    d_scaling  [1, 11, 3]
+
+git diff --check:
+    通过。
+```
+
+## 2026-07-26 tri：canonical Gaussian tri-plane feature
+
+用户要求：
+
+```text
+在 DNA 数据集上进行 tri 实验。
+在 canonical Gaussian 坐标处采样三平面特征:
+    x_i -> sample tri-plane -> f_tri(x_i)
+
+再 concat 到 non-rigid MLP 输入:
+    input_i = concat(x_emb_i, pose_feat, seq_pose_feat, seq_xyz_feat, f_tri_i)
+
+要求:
+    在六个 DNA 序列上跑完并给出评价指标。
+```
+
+实现口径：
+
+```text
+tri 仍然只在 part_moe_leg 基础上启用:
+    --use_part_moe
+    --use_tri
+    --part_label_schema part_moe_leg
+    --num_parts 7
+
+original 和 part_moe_leg 不采样 tri-plane，不加宽输入维度。
+```
+
+网络修改：
+
+```text
+nets/mlp_delta_non_rigid.py
+    新增 TriPlaneFeature:
+        learnable planes: [3, tri_plane_dim, tri_plane_res, tri_plane_res]
+        默认:
+            tri_plane_dim=32
+            tri_plane_res=64
+            tri_plane_extent=1.2
+
+    对 canonical query_xyz 归一化到 [-1, 1]:
+        xyz_norm = clamp(query_xyz / tri_plane_extent, -1, 1)
+
+    分别采样:
+        XY plane
+        XZ plane
+        YZ plane
+
+    f_tri_i:
+        三个 plane feature 平均，shape [B, N, tri_plane_dim]
+
+    use_tri=True 时:
+        feats = [x_emb, pose_feat, seq_pose_feat, seq_xyz_feat, f_tri]
+        再进入 shared MLP / forward_tri / Part-MoE experts。
+
+    Part-MoE experts 初始化时复制已经带 tri 输入的 shared MLP。
+```
+
+初始化与训练：
+
+```text
+tri-plane 参数零初始化。
+MLP 第一层只在 use_tri=True 时增加 tri_plane_dim 输入。
+新增 tri 输入列保留随机初始化，使 f_tri=0 时初始输出不受影响，
+同时 tri-plane 可以通过这些随机输入列获得非零梯度。
+
+tri-plane 参数属于 NonrigidDeformer 子模块，
+因此被现有 non_rigid_deformer optimizer 参数组覆盖。
+Part-MoE 启动后 freeze_shared_after_part_moe 只冻结 shared MLP/head，
+不会冻结 TriPlaneFeature。
+```
+
+链路修改：
+
+```text
+gaussian_renderer/__init__.py
+    调用 non_rigid_deformer 时传入:
+        query_xyz=means3D
+
+    means3D 是进入 non-rigid deformer 前的 canonical Gaussian 坐标。
+
+arguments/__init__.py
+    新增:
+        --tri_plane_dim
+        --tri_plane_res
+        --tri_plane_extent
+
+scene/gaussian_model.py
+    保存并传入 tri_plane_* 参数。
+
+scripts/exps_dnarendering.sh
+scripts/exps_zjumocap.sh
+scripts/exps_i3dhuman.sh
+    tri mode 下显式传入 tri_plane_*。
+```
+
+已验证：
+
+```text
+bash -n 三个实验脚本通过。
+
+PYTHONDONTWRITEBYTECODE=1 python -m py_compile:
+    arguments/__init__.py
+    nets/mlp_delta_non_rigid.py
+    scene/gaussian_model.py
+    gaussian_renderer/__init__.py
+    part_label/common.py
+    ablations/part_moe_controller.py
+    train.py
+    render.py
+
+最小 TRI forward + grad:
+    plain_in = 9
+    tri_in   = 17   # 测试中 tri_plane_dim=8
+    out:
+        d_xyz      [1, 11, 3]
+        d_rotation [1, 11, 4]
+        d_scaling  [1, 11, 3]
+    tri_grad_max = 4.0174793684855103e-04
+
+git diff --check:
+    通过。
+```
+
+## 2026-07-26 tri DNA 六序列完整运行结果
+
+用户要求：
+
+```text
+在 DNA 数据集上进行 tri 实验。
+在 canonical Gaussian 坐标处采样三平面特征:
+    x_i -> sample tri-plane -> f_tri(x_i)
+
+再 concat 到 non-rigid MLP 输入:
+    input_i = concat(x_emb_i, pose_feat, seq_pose_feat, seq_xyz_feat, f_tri_i)
+
+要求在六个 DNA 序列上跑完并给出评价指标。
+```
+
+运行命令：
+
+```text
+RUN_TIME=20260726_0020_tri_gpu0 GPU_id=0 SEQUENCES_OVERRIDE="0044_11 0051_09 0206_04" \
+    bash scripts/exps_dnarendering.sh tri
+
+RUN_TIME=20260726_0020_tri_gpu1 GPU_id=1 SEQUENCES_OVERRIDE="0813_05 0007_04 0019_10" \
+    bash scripts/exps_dnarendering.sh tri
+```
+
+日志：
+
+```text
+logs/tri/20260726_0020_tri_gpu0_DNA-Rendering_tri.log
+logs/tri/20260726_0020_tri_gpu1_DNA-Rendering_tri.log
+```
+
+运行确认：
+
+```text
+六个序列均完成 train.py + render.py。
+两个总日志均显示:
+    All sequences finished.
+
+六个序列均在 10000 iteration 成功:
+    Build labels
+    Loaded part labels
+    Initializing 7 experts from the shared non-rigid MLP
+    Added 7 expert param groups
+
+说明 tri 是跑在 part_moe_leg 之上，且 expert 初始化、路由和 render 加载
+part labels 的链路均通过。
+```
+
+TRI 指标：
+
+```text
+结果文件，由 train.py 在 25000 eval 时写出:
+    output/DNA-Rendering/<seq>/tri/<run_time>/metrics/results_novelview_25000.json
+
+seq       PSNR       SSIM       LPIPS
+0007_04   29.5785    0.9586     0.0444
+0019_10   35.4580    0.9816     0.0206
+0044_11   33.0066    0.9782     0.0211
+0051_09   28.6086    0.9712     0.0308
+0206_04   31.5952    0.9709     0.0331
+0813_05   36.2102    0.9873     0.0178
+avg       32.4095    0.9746     0.0280
+```
+
+render.py 总日志复算指标：
+
+```text
+seq       PSNR       SSIM       LPIPS
+0007_04   29.5787    0.9587     0.0444
+0019_10   35.4591    0.9816     0.0205
+0044_11   33.0067    0.9782     0.0211
+0051_09   28.7028    0.9719     0.0303
+0206_04   31.5964    0.9709     0.0331
+0813_05   36.2146    0.9873     0.0178
+avg       32.4264    0.9747     0.0279
+```
+
+与已有 part_moe_leg 六序列完整基线 `20260623_180431` 对比
+（使用 results_novelview_25000.json）：
+
+```text
+seq       dPSNR      dSSIM      dLPIPS
+0044_11   +0.0061   -0.0001    -0.0000
+0051_09   +0.0037   +0.0002    -0.0005
+0206_04   +0.0779   +0.0006    -0.0005
+0813_05   +0.0117   -0.0000    -0.0001
+0007_04   +0.0120   -0.0002    +0.0005
+0019_10   +0.1026   +0.0003    -0.0001
+avg       +0.0357   +0.0001    -0.0001
+```
+
+结论：
+
+```text
+TRI 相比 part_moe_leg 的平均提升为:
+    PSNR  +0.0357
+    SSIM  +0.0001
+    LPIPS -0.0001
+
+方向整体为正，但幅度很小。
+当前 tri-plane concat 到 non-rigid MLP 的方案可作为有效但弱提升的第二创新点初版；
+如果继续优化，重点应放在增强 tri feature 的使用强度，而不是继续扩大普通 MLP。
+```
+
+## 2026-07-26 tri feature 强化方向
+
+用户问题：
+
+```text
+怎么进一步强化 tri-plane feature 的使用强度。
+是进行调参实验吗？跟什么参数有关？
+```
+
+当前实现里 tri-plane 的入口：
+
+```text
+query_xyz -> TriPlaneFeature -> f_tri
+f_tri 只在 shared non-rigid MLP 的第一层被 concat 一次
+然后再复制到 part_moe_leg experts。
+```
+
+最直接的可调参数：
+
+```text
+tri_plane_dim
+    feature 维度，越大容量越强，但也更容易被其他特征淹没。
+
+tri_plane_res
+    平面分辨率，越高越细，但显存和优化难度更高。
+
+tri_plane_extent
+    归一化范围，太大时大量点落在 [-1,1] 中间窄区，太小会 clip。
+
+tri_plane 初始化和学习率
+    当前是零初始化，收敛更稳，但 tri 进入模型较慢。
+```
+
+更关键的不是单纯调参，而是“增强注入方式”：
+
+```text
+1. 给 f_tri 加独立投影或门控
+   例如 tri_proj(f_tri) 后再进 MLP，或者 tri_gate * f_tri。
+
+2. 把 tri 特征注入多层，而不是只在第一层 concat 一次
+   这样 tri 不容易被前层压掉。
+
+3. 给 tri 一个残差路径
+   让 d_xyz / d_rotation / d_scaling 显式依赖 tri 分支输出。
+
+4. 降低 tri 的稀释效应
+   让 tri 和 pose / seq 特征先分别编码，再融合。
+
+5. 用更贴近人体的三平面
+   全局 tri-plane 可以换成 body-centric / part-centric tri-plane。
+```
+
+经验上优先顺序：
+
+```text
+先调 tri_plane_extent / tri_plane_dim / tri_plane_res
+再加 tri_proj 或门控
+再考虑多层注入或 part-centric tri-plane
+```
+
+## 2026-07-26 tri sweep 计划
+
+目标：
+
+```text
+用 0/1/2 三张卡在六个 DNA 序列上做 tri-plane 调参，
+尽量增强 tri-plane feature 的使用强度，并选出最好的配置。
+```
+
+候选配置：
+
+```text
+A:
+    TRI_PLANE_DIM=64
+    TRI_PLANE_RES=64
+    TRI_PLANE_EXTENT=1.2
+
+B:
+    TRI_PLANE_DIM=64
+    TRI_PLANE_RES=96
+    TRI_PLANE_EXTENT=1.0
+```
+
+说明：
+
+```text
+A 主要测“加大 tri 容量”。
+B 主要测“加大 tri 容量 + 提高空间细节 + 稍微收紧 canonical 覆盖范围”。
+```
+
+## 2026-07-26 tri sweep A 结果
+
+当前已完成配置 A:
+
+```text
+TRI_PLANE_DIM=64
+TRI_PLANE_RES=64
+TRI_PLANE_EXTENT=1.2
+```
+
+六序列最终结果来自:
+
+```text
+output/DNA-Rendering/<seq>/tri/20260726_triA_d64_r64_e12/metrics/results_novelview_25000.json
+```
+
+结果汇总:
+
+| Sequence | PSNR | SSIM | LPIPS |
+|---|---:|---:|---:|
+| 0007_04 | 29.5739 | 0.9588 | 0.0442 |
+| 0019_10 | 35.4125 | 0.9815 | 0.0208 |
+| 0044_11 | 33.0145 | 0.9782 | 0.0213 |
+| 0051_09 | 28.6164 | 0.9713 | 0.0310 |
+| 0206_04 | 31.5893 | 0.9709 | 0.0329 |
+| 0813_05 | 36.1516 | 0.9872 | 0.0181 |
+| Average | 32.3930 | 0.9746 | 0.0280 |
+
+对比默认 tri (`20260726_0020`)：
+
+```text
+Default tri average:
+    PSNR 32.4095
+    SSIM 0.9746
+    LPIPS 0.0280
+
+A 相比默认 tri:
+    PSNR -0.0165
+    SSIM +0.0000
+    LPIPS +0.0001
+```
+
+阶段性结论:
+
+```text
+A 没有稳定超过默认 tri，只能算持平略弱。
+如果继续做 tri-plane 调参，B 组仍然值得跑。
+```
+
+## 2026-07-26 tri sweep B 计划
+
+准备启动配置 B:
+
+```text
+TRI_PLANE_DIM=64
+TRI_PLANE_RES=96
+TRI_PLANE_EXTENT=1.0
+```
+
+计划沿用同样的三卡拆分:
+
+```text
+GPU 0: 0044_11 0007_04
+GPU 1: 0051_09 0206_04
+GPU 2: 0813_05 0019_10
+```
+
+## 2026-07-26 tri sweep B2 结果
+
+配置 B 原先使用后台 `nohup` 启动时没有真正进入训练，因此本次有效结果使用 B2：
+
+```text
+RUN_TIME=20260726_triB2_d64_r96_e10
+TRI_PLANE_DIM=64
+TRI_PLANE_RES=96
+TRI_PLANE_EXTENT=1.0
+```
+
+六序列 `results_novelview_25000.json` 结果：
+
+| Sequence | PSNR | SSIM | LPIPS |
+|---|---:|---:|---:|
+| 0007_04 | 29.5654 | 0.9590 | 0.0438 |
+| 0019_10 | 35.3991 | 0.9814 | 0.0208 |
+| 0044_11 | 32.9949 | 0.9783 | 0.0212 |
+| 0051_09 | 28.6507 | 0.9713 | 0.0308 |
+| 0206_04 | 31.5965 | 0.9709 | 0.0330 |
+| 0813_05 | 36.1984 | 0.9872 | 0.0180 |
+| Average | 32.4008 | 0.9747 | 0.0279 |
+
+和默认 tri 对比：
+
+```text
+默认 tri average:
+    PSNR  32.4095
+    SSIM  0.9746
+    LPIPS 0.0280
+
+B2 相比默认 tri:
+    PSNR  -0.0087
+    SSIM  +0.0001
+    LPIPS -0.0000
+```
+
+阶段性结论：
+
+```text
+B2 的 LPIPS 和 SSIM 略好，但 PSNR 没有超过默认 tri。
+单纯把 dim 提到 64、res 提到 96 并收紧 extent 到 1.0，不是稳定更优配置。
+```
+
+## 2026-07-26 tri sweep C 计划
+
+为了单独验证“增强 tri-plane 使用强度”里最直接的坐标覆盖因素，准备补 C 组：
+
+```text
+RUN_TIME=20260726_triC_d32_r64_e10
+TRI_PLANE_DIM=32
+TRI_PLANE_RES=64
+TRI_PLANE_EXTENT=1.0
+```
+
+与默认 tri 相比，C 只把 `tri_plane_extent` 从 1.2 收紧到 1.0，不扩大 dim/res。
+目的：减少过大 extent 对 canonical 坐标采样的稀释，观察是否比单纯加容量更有效。
+
+## 2026-07-26 tri sweep C 结果
+
+配置 C：
+
+```text
+RUN_TIME=20260726_triC_d32_r64_e10
+TRI_PLANE_DIM=32
+TRI_PLANE_RES=64
+TRI_PLANE_EXTENT=1.0
+```
+
+六序列最终结果：
+
+| Sequence | PSNR | SSIM | LPIPS |
+|---|---:|---:|---:|
+| 0007_04 | 29.5694 | 0.9587 | 0.0447 |
+| 0019_10 | 35.4260 | 0.9816 | 0.0205 |
+| 0044_11 | 33.0195 | 0.9782 | 0.0210 |
+| 0051_09 | 28.6221 | 0.9712 | 0.0308 |
+| 0206_04 | 31.6237 | 0.9710 | 0.0330 |
+| 0813_05 | 36.2604 | 0.9874 | 0.0178 |
+| Average | 32.4202 | 0.9747 | 0.0280 |
+
+与默认 tri / A / B2 对比：
+
+```text
+default tri:
+    PSNR  32.4095
+    SSIM  0.974615
+    LPIPS 0.027974
+
+A_d64_r64_e12:
+    PSNR  32.3930
+    SSIM  0.974642
+    LPIPS 0.028034
+
+B2_d64_r96_e10:
+    PSNR  32.4008
+    SSIM  0.974675
+    LPIPS 0.027933
+
+C_d32_r64_e10:
+    PSNR  32.4202
+    SSIM  0.974673
+    LPIPS 0.027966
+```
+
+结论：
+
+```text
+C 是当前四组里最好的。
+它没有带来大幅提升，但在 PSNR 上超过默认 tri，LPIPS 也基本持平略优。
+tri-plane 最有效的强化方向不是继续增大 dim/res，而是把 extent 收紧到更贴近人体 canonical 分布。
+```
+
+异常记录：
+
+```text
+0206_04 在 C 组第一次用 GPU1 跑到约 2480 iter 时触发 CUDA illegal memory access。
+已删除不完整 output 后，改用 GPU3 重跑成功完成。
+最终平均使用的是 GPU3 完整结果。
+```
+
+## 2026-07-26 tri 最佳全序列精确指标
+
+用户要求：
+
+```text
+总结最好的一次全序列评价指标 psnr / ssim / lpips*1000，不要四舍五入。
+```
+
+最佳配置仍为：
+
+```text
+RUN_TIME=20260726_triC_d32_r64_e10
+TRI_PLANE_DIM=32
+TRI_PLANE_RES=64
+TRI_PLANE_EXTENT=1.0
+```
+
+从六个 `results_novelview_25000.json` 读取的精确结果：
+
+| Sequence | PSNR | SSIM | LPIPS*1000 |
+|---|---:|---:|---:|
+| 0007_04 | 29.56935234069824 | 0.9587227498491605 | 44.70729020734628000 |
+| 0019_10 | 35.42599445978801 | 0.9816343893607458 | 20.45246589307984000 |
+| 0044_11 | 33.01947676340739 | 0.9781564354896546 | 21.018070510278146000 |
+| 0051_09 | 28.622101895014445 | 0.9711858620246251 | 30.79613036631296000 |
+| 0206_04 | 31.623733441034954 | 0.9709839204947154 | 32.99347322123746000 |
+| 0813_05 | 36.260351737340294 | 0.9873521268367768 | 17.82754632489135000 |
+| Average | 32.42016843954722216666666667 | 0.9746725806759463666666666667 | 27.96582942052433933333333333 |
+
+## 2026-07-26 triC 参数与第一次 tri 对比
+
+用户问题：
+
+```text
+triC_d32_r64_e10 这次具体参数设置是什么，和第一次 tri 相比进行了哪些修改。
+```
+
+对比依据：
+
+```text
+第一次 tri:
+    output/DNA-Rendering/0044_11/tri/20260726_0020_tri_gpu0/cfg_args
+
+triC:
+    output/DNA-Rendering/0044_11/tri/20260726_triC_d32_r64_e10/cfg_args
+```
+
+共同设置：
+
+```text
+use_part_moe=True
+use_tri=True
+part_label_schema=part_moe_leg
+num_parts=7
+
+part_moe_start_iter=10000
+part_moe_warmup=1000
+part_moe_global_keep=0.1
+
+iterations=25000
+densify_until_iter=1500
+final_eval_only=1
+test_iterations=25000
+save_iterations=25000
+
+seq_len=8
+seq_xyz_knn=8
+time_step_num=3
+max_time_step=3
+minimal_time_step=1
+
+non_rigid_mlp_depth=3
+non_rigid_mlp_width=512
+
+l1_loss_w=1.0
+ssim_loss_w=0.01
+lpips_loss_w=0.01
+```
+
+tri-plane 参数对比：
+
+| Setting | 第一次 tri | triC_d32_r64_e10 |
+|---|---:|---:|
+| tri_plane_dim | 32 | 32 |
+| tri_plane_res | 64 | 64 |
+| tri_plane_extent | 1.2 | 1.0 |
+
+结论：
+
+```text
+triC 没有改网络结构、Part-MoE 设置、MLP 宽深、训练轮数或 loss 权重。
+它相对第一次 tri 的核心修改只有:
+    TRI_PLANE_EXTENT: 1.2 -> 1.0
+
+含义是把 canonical Gaussian 坐标采样三平面时的归一化范围收紧，
+让人体附近的 Gaussian 在 tri-plane 上占据更大的有效坐标范围，
+减少 tri feature 被过大 extent 稀释。
+```
+
+## 2026-07-26 part_moe 全部相关实验日志最佳结果查询
+
+用户问题：
+
+```text
+在日志中查询关于 part_moe 的实验（不止 part_moe_leg）最好的一次结果是什么。
+```
+
+查询口径：
+
+```text
+优先使用最终 render.py 日志中的指标，而不是训练中间 evaluation。
+DNA-Rendering 按完整六序列 novelview 平均 PSNR 作为主排序。
+跳过 output 中 latest 重复目录。
+同时检查 logs/part 中的 part_moe / part_moe_leg / part_moe_foot /
+part_moe_arm / part_moe_pair / part_moe_leg_msti 等相关记录。
+```
+
+DNA-Rendering 完整六序列最佳：
+
+```text
+实验: part_moe_pair
+RUN_TIME: 20260702_004310
+日志:
+    logs/part/20260702_004310_DNA-Rendering_part_moe_pair.log
+
+Average:
+    PSNR        32.412569573190474
+    SSIM        0.974700798590978
+    LPIPS*1000  27.84530530787177
+```
+
+逐序列最终 render.py 指标：
+
+| Sequence | PSNR | SSIM | LPIPS*1000 |
+|---|---:|---:|---:|
+| 0007_04 | 29.603131167093913 | 0.9588047777613004 | 44.05874328998228 |
+| 0019_10 | 35.39810724258423 | 0.9813995202382405 | 20.683477298977472 |
+| 0044_11 | 32.994045162200926 | 0.9782125651836395 | 21.130275043348473 |
+| 0051_09 | 28.759435685475665 | 0.9719773272673289 | 30.416719110993046 |
+| 0206_04 | 31.52202189763387 | 0.9704670558373133 | 32.92893118535479 |
+| 0813_05 | 36.19867628415425 | 0.9873435452580451 | 17.85368591857453 |
+| Average | 32.412569573190474 | 0.974700798590978 | 27.84530530787177 |
+
+完整 DNA 六序列 top 对比：
+
+| Rank | Experiment | RUN_TIME | PSNR | SSIM | LPIPS*1000 |
+|---:|---|---|---:|---:|---:|
+| 1 | part_moe_pair | 20260702_004310 | 32.412569573190474 | 0.974700798590978 | 27.84530530787177 |
+| 2 | part_moe_arm | 20260624_174257 | 32.4106435696284 | 0.9747590608894825 | 27.902932606068337 |
+| 3 | part_moe_arm | 20260623_231810 | 32.40436245600383 | 0.9747458954652152 | 27.841817202149997 |
+| 4 | part_moe_leg | 20260623_180431 | 32.39075858328078 | 0.974622116320663 | 27.99395392260824 |
+
+补充：
+
+```text
+如果按单个序列最高 PSNR 排序，最佳单条记录是:
+    DNA-Rendering / 0813_05 / part_moe_arm / 20260624_174257
+    PSNR        36.204474385579424
+    SSIM        0.9873301754395167
+    LPIPS*1000  17.771333324102066
+
+但单序列结果不适合作为整体实验最佳结论。
+整体比较应看完整六序列平均，因此 part_moe_pair/20260702_004310
+是当前 part_moe 相关日志里的最佳完整 DNA 结果。
+```
+
+## 2026-07-26 ZJU / I3D part_moe 平均指标最佳查询
+
+用户问题：
+
+```text
+在 zju 数据集和 i3d 数据集上看序列平均值的话，最好的分别是哪次 part_moe 实验？
+```
+
+查询口径：
+
+```text
+解析 logs/part 下所有 part_moe* 总日志。
+每个模型路径取最后一次对应 split 的 evaluation 结果。
+按同一 dataset / exp / run / split 的序列平均 PSNR 排序。
+SSIM 和 LPIPS*1000 作为参考。
+```
+
+ZJU-MoCap：
+
+```text
+split: test
+最佳实验:
+    part_moe_leg
+    RUN_TIME: 20260622_185140
+    日志: logs/part/20260622_185140_ZJU-MoCap_part_moe_leg.log
+
+Average over 6 sequences:
+    PSNR        31.177024783422770
+    SSIM        0.962445808135400
+    LPIPS*1000  27.965317850610262
+```
+
+ZJU 前几名：
+
+| Rank | Experiment | RUN_TIME | N | PSNR | SSIM | LPIPS*1000 |
+|---:|---|---|---:|---:|---:|---:|
+| 1 | part_moe_leg | 20260622_185140 | 6 | 31.177024783422770 | 0.962445808135400 | 27.965317850610262 |
+| 2 | part_moe_arm | 20260626_145103 | 6 | 31.177020746985722 | 0.962446550360918 | 27.923035453375451 |
+| 3 | part_moe_arm | 20260626_155504 | 6 | 31.171169836057487 | 0.962490478109493 | 27.848476823872581 |
+| 4 | part_moe_leg | 20260626_164558 | 6 | 31.164491815006667 | 0.962489011329371 | 27.981840474027269 |
+
+I3D-Human：
+
+```text
+I3D 日志同时有 novelview 和 novelpose。
+如果按常用 novelview 序列平均 PSNR:
+    最佳实验: part_moe_leg
+    RUN_TIME: 20260622_145118
+    日志: logs/part/20260622_145118_I3D-Human_part_moe_leg_4000分层.log
+
+    Average over 6 sequences:
+        PSNR        32.508371999251715
+        SSIM        0.966997556634204
+        LPIPS*1000  30.091111575937912
+
+如果按 novelpose 序列平均 PSNR:
+    最佳实验: part_moe_foot
+    RUN_TIME: 20260623_113602
+    日志: logs/part/20260623_113602_I3D-Human_part_moe_foot.log
+
+    Average over 4 sequences:
+        PSNR        30.458750609623916
+        SSIM        0.958941118641874
+        LPIPS*1000  34.590949769831944
+```
+
+I3D novelview 前几名：
+
+| Rank | Experiment | RUN_TIME | N | PSNR | SSIM | LPIPS*1000 |
+|---:|---|---|---:|---:|---:|---:|
+| 1 | part_moe_leg | 20260622_145118 | 6 | 32.508371999251715 | 0.966997556634204 | 30.091111575937912 |
+| 2 | part_moe_foot | 20260623_113602 | 4 | 32.391854174779013 | 0.967448833249617 | 28.372095181586779 |
+| 3 | part_moe_pair | 20260702_004310 | 4 | 32.391090261741454 | 0.967414043202220 | 28.457868593944063 |
+| 4 | part_moe | 20260617_002911 | 4 | 32.387198894649032 | 0.967479348432340 | 28.414017634324598 |
+
+结论：
+
+```text
+按平均 PSNR:
+    ZJU-MoCap 最好: part_moe_leg / 20260622_185140
+    I3D-Human novelview 最好: part_moe_leg / 20260622_145118
+    I3D-Human novelpose 最好: part_moe_foot / 20260623_113602
+```
+
+## 2026-07-26 DNA part_moe_leg 完整结果统计
+
+用户问题：
+
+```text
+dna 上的 part_moe_leg 实验有几个完整结果，平均值分别多少。
+```
+
+查询口径：
+
+```text
+只统计 DNA-Rendering / part_moe_leg。
+使用 output/DNA-Rendering/*/part_moe_leg/*/logs/render_*_part_moe_leg.log
+中的最终 render.py novelview 指标。
+完整结果定义为六个 DNA 序列都存在:
+    0007_04, 0019_10, 0044_11, 0051_09, 0206_04, 0813_05
+```
+
+结论：
+
+```text
+DNA 上 part_moe_leg 只有 1 个完整六序列结果:
+    RUN_TIME: 20260623_180431
+
+Average:
+    PSNR        32.390758583280778
+    SSIM        0.974622116320663
+    LPIPS*1000  27.993953922608245
+```
+
+完整结果逐序列：
+
+| Sequence | PSNR | SSIM | LPIPS*1000 |
+|---|---:|---:|---:|
+| 0007_04 | 29.567117643356323 | 0.958891220390797 | 43.902407307177782 |
+| 0019_10 | 35.356522528330487 | 0.981278095146020 | 20.681170498331390 |
+| 0044_11 | 33.000570901234944 | 0.978210971752802 | 21.077770584573347 |
+| 0051_09 | 28.698904466629028 | 0.971685592333476 | 30.827233513506751 |
+| 0206_04 | 31.518965848286946 | 0.970327004790306 | 33.563221339136362 |
+| 0813_05 | 36.202470111846921 | 0.987339813510577 | 17.911920292923845 |
+| Average | 32.390758583280778 | 0.974622116320663 | 27.993953922608245 |
+
+未完整的 part_moe_leg run：
+
+| RUN_TIME | N | Covered Sequences | Avg PSNR | Avg SSIM | Avg LPIPS*1000 |
+|---|---:|---|---:|---:|---:|
+| 20260622_145118 | 2 | 0007_04,0019_10 | 32.460019898414615 | 0.970102373758952 | 32.212788487474128 |
+| 20260622_180520 | 2 | 0007_04,0019_10 | 32.559897081057230 | 0.970317085335652 | 32.068665492503598 |
+| 20260622_225328 | 5 | 0007_04,0019_10,0051_09,0206_04,0813_05 | 32.172671368916824 | 0.973597814242045 | 29.665096487539511 |
+| 20260630_170907 | 1 | 0206_04 | 31.541592105229697 | 0.970519575973352 | 32.756943736846246 |
+| 20260720_194556 | 1 | 0044_11 | 33.019845469792685 | 0.978283845384916 | 21.065409497047462 |
+
+## 2026-07-26 tri 调参命名规则统一
+
+用户要求：
+
+```text
+triC_d32_r64_e10 这种命名太复杂。
+调参过程不要取新的消融实验名称。
+把参数写进脚本，在运行脚本的命令行里改参数即可。
+```
+
+执行结果：
+
+```text
+三个脚本保持固定消融入口:
+    bash scripts/exps_dnarendering.sh tri
+    bash scripts/exps_i3dhuman.sh tri
+    bash scripts/exps_zjumocap.sh tri
+
+实验名固定为:
+    tri
+
+输出路径固定为:
+    output/<dataset>/<sequence>/tri/<RUN_TIME>/
+
+总日志固定写入:
+    logs/tri/<RUN_TIME>_<dataset>_tri.log
+
+不再新建 triA / triB / triC / triC_d32_r64_e10 这类消融名称。
+```
+
+脚本默认 tri 参数：
+
+```text
+TRI_PLANE_DIM    默认 32
+TRI_PLANE_RES    默认 64
+TRI_PLANE_EXTENT 默认 1.0
+
+其中 TRI_PLANE_EXTENT 从原始默认 1.2 改为 1.0，
+对应之前 triC_d32_r64_e10 中表现最好的核心设置。
+```
+
+以后调参命令示例：
+
+```bash
+TRI_PLANE_DIM=32 TRI_PLANE_RES=64 TRI_PLANE_EXTENT=1.0 \
+GPU_id=3 bash scripts/exps_dnarendering.sh tri
+
+TRI_PLANE_DIM=64 TRI_PLANE_RES=96 TRI_PLANE_EXTENT=1.0 \
+GPU_id=0 SEQUENCES_OVERRIDE="0044_11 0206_04" \
+bash scripts/exps_dnarendering.sh tri
+```
+
+验证：
+
+```text
+bash -n scripts/exps_dnarendering.sh
+bash -n scripts/exps_i3dhuman.sh
+bash -n scripts/exps_zjumocap.sh
+git diff --check -- scripts/exps_dnarendering.sh scripts/exps_i3dhuman.sh scripts/exps_zjumocap.sh note/motion.md
+```
+
+## 2026-07-26 tri 作为第二模块创新点的总结
+
+用户问题：
+
+```text
+总结现在的 tri 实验（tri_plane_extent: 1.2 -> 1.0 之后的）这个点
+作为第二个模块的创新点是什么，怎么起作用的。
+```
+
+当前定位：
+
+```text
+第一个模块:
+    part_moe_leg
+    作用是按 SMPL part label 给不同人体部件分配专属 non-rigid expert，
+    提升部件级形变建模能力。
+
+第二个模块:
+    tri
+    作用是在 part_moe_leg 的基础上，为 canonical Gaussian 坐标提供可学习的
+    tri-plane spatial feature，让每个部件 expert 不只依赖 Fourier 位置编码、
+    pose / seq pose / seq xyz 条件，还能读取一个持久的、空间结构化的
+    canonical geometry/motion memory。
+```
+
+核心公式：
+
+```text
+canonical Gaussian:
+    x_i
+
+tri-plane sampling:
+    f_tri_i = TriPlaneFeature(x_i)
+
+non-rigid expert input:
+    input_i = concat(
+        x_emb_i,
+        pose_feat,
+        seq_pose_feat,
+        seq_xyz_feat,
+        f_tri_i
+    )
+
+然后仍然走 part_moe_leg 的分部件专家:
+    d_i = Expert_part(input_i)
+```
+
+实现机制：
+
+```text
+nets/mlp_delta_non_rigid.py
+    TriPlaneFeature 维护三个 learnable planes:
+        planes: [3, tri_plane_dim, tri_plane_res, tri_plane_res]
+
+    对 canonical query_xyz 做归一化:
+        xyz_norm = clamp(query_xyz / tri_plane_extent, -1, 1)
+
+    分别采样:
+        XY plane
+        XZ plane
+        YZ plane
+
+    三个方向采样特征平均得到:
+        f_tri_i: [B, N, tri_plane_dim]
+
+    use_tri=True 时:
+        MLP 第一层输入维度加宽 tri_plane_dim。
+        forward 中把 f_tri_i concat 到 x_emb / pose / seq_pose / seq_xyz 后面。
+
+gaussian_renderer/__init__.py
+    调 non_rigid_deformer 时传入 query_xyz=means3D。
+    means3D 是进入非刚性分支前的 canonical Gaussian 坐标。
+
+scene/gaussian_model.py
+    tri 只能和 use_part_moe 一起用。
+    并强制:
+        part_label_schema = part_moe_leg
+        num_parts = 7
+```
+
+为什么不是小修小改：
+
+```text
+tri 不是加残差或改 loss。
+它给 non-rigid deformation 增加了一套新的 learnable spatial field：
+    canonical xyz -> tri-plane lookup -> part expert input
+
+这相当于把原本“点坐标位置编码 + 时序/姿态条件”的 MLP，
+扩展成“部件专家 + 显式可学习空间特征场”的网络结构。
+
+它补的是 part_moe_leg 的短板:
+    part_moe_leg 只知道每个 Gaussian 属于哪个部件，
+    但同一部件内部哪里是稳定主体、哪里是边界、哪里更容易形变，
+    主要还要靠 MLP 从 x_emb 中隐式拟合。
+
+tri-plane 给同一部件内部提供更细粒度的空间索引，使 expert 可以按 canonical
+位置学习不同区域的形变偏置。
+```
+
+tri_plane_extent 从 1.2 改到 1.0 的含义：
+
+```text
+归一化公式:
+    xyz_norm = query_xyz / tri_plane_extent
+
+extent 越大:
+    人体 canonical 坐标被压得更靠近 tri-plane 中心，
+    有效采样范围更小，空间分辨率更容易被稀释。
+
+extent 从 1.2 收紧到 1.0:
+    同样的 canonical Gaussian 分布在 tri-plane 上占据更大的有效区域，
+    每个 plane cell 对人体区域的表达更细，
+    f_tri_i 的空间区分度更强。
+
+直观理解:
+    不是增大网络容量，而是让已有 64x64 tri-plane 更集中服务人体附近区域，
+    减少空白空间浪费。
+```
+
+作为论文/创新点的表达：
+
+```text
+Part-aware Tri-plane Conditioned Non-rigid Deformation
+
+在 SMPL part-aware MoE deformation 的基础上，引入 canonical-space tri-plane
+feature field。每个 Gaussian 根据其 canonical 坐标从三平面中查询可学习
+空间特征，并将该特征注入对应部件 expert 的 non-rigid MLP 输入。
+这样模型同时具备:
+    1. part-level specialization
+    2. point/region-level spatial memory
+    3. pose/time conditioned deformation
+
+该模块用于增强人体动态区域和部件内部复杂区域的形变表达，
+尤其适合腿部、衣物边界、关节附近、手脚边界等同一 part 内部形变差异明显的位置。
+```
+
+当前默认脚本设置：
+
+```text
+TRI_PLANE_DIM    = 32
+TRI_PLANE_RES    = 64
+TRI_PLANE_EXTENT = 1.0
+```
+
+## 2026-07-26 tri 中“标准空间点确定，为什么还能采样”的解释
+
+用户问题：
+
+```text
+标准空间的点不是确定的吗，为啥还能继续采样？
+```
+
+解释：
+
+```text
+这里的“采样”不是重新采样 Gaussian 点，也不是随机采样新点。
+它指的是在确定的 canonical Gaussian 坐标 x_i 上，对一个可学习的 tri-plane
+feature field 做 lookup / interpolation。
+
+也就是:
+    x_i 是查询位置，确定。
+    tri-plane 是被查询的可学习特征场，不确定，会训练更新。
+```
+
+类比：
+
+```text
+固定 mesh 顶点有固定 UV 坐标，但仍然可以从 texture 上采样颜色。
+UV 不变，不代表采样没意义，因为 texture 本身是可学习/可优化的。
+
+tri 也是类似:
+    canonical xyz 固定地决定查哪里；
+    三平面参数决定查出来是什么 feature。
+```
+
+具体过程：
+
+```text
+给定 canonical Gaussian:
+    x_i = (x, y, z)
+
+归一化:
+    xyz_norm = clamp(x_i / tri_plane_extent, -1, 1)
+
+投影到三个 plane:
+    XY: (x, y)
+    XZ: (x, z)
+    YZ: (y, z)
+
+用 grid_sample 做 bilinear interpolation:
+    f_xy = sample(plane_xy, x, y)
+    f_xz = sample(plane_xz, x, z)
+    f_yz = sample(plane_yz, y, z)
+
+输出:
+    f_tri_i = mean(f_xy, f_xz, f_yz)
+```
+
+为什么它还能学习：
+
+```text
+即使 x_i 在某一次 forward 中是确定的，loss 的梯度仍然会传到:
+    rendered loss
+    -> d_xyz / d_rotation / d_scaling
+    -> part expert MLP
+    -> f_tri_i
+    -> grid_sample
+    -> tri-plane 参数
+
+所以训练过程中，x_i 查的位置可以固定，但这个位置上的 feature 会变。
+```
+
+补充：
+
+```text
+SeqAvatar / Gaussian Splatting 中 canonical Gaussian 坐标本身也不是绝对永久不变。
+训练过程中 Gaussian center 会被优化，并且 densify/prune 会改变点集。
+但 tri 的有效性不依赖点必须移动；即使固定点集，它仍然可以作为可学习空间表。
+```
+
+和 x_emb 的区别：
+
+```text
+x_emb 是 deterministic Fourier positional encoding:
+    给定 x_i，x_emb_i 永远由固定函数算出来。
+
+f_tri_i 是 learnable spatial feature:
+    给定 x_i，查的位置固定，但查出来的内容由可训练 plane 参数决定。
+
+因此 tri-plane 相当于给 part_moe_leg 增加一张 canonical-space memory table，
+让同一 part 内的不同区域可以有不同的可学习形变偏置。
+```
+
+## 2026-07-26 tri-plane lookup 是否是常见做法
+
+用户问题：
+
+```text
+利用三平面不是重新采样 Gaussian 点，而是在确定坐标处查询一个可学习特征场。
+这种做法是三平面的常见做法吗？
+```
+
+结论：
+
+```text
+是常见做法。
+三平面表示的标准用法就是:
+    给定一个确定的 3D query coordinate
+    -> 投影到三个 feature plane
+    -> 用 bilinear interpolation 查询 feature
+    -> 聚合 feature
+    -> 送入小 MLP / decoder
+
+也就是说，三平面里的 sample 通常指 feature lookup/interpolation，
+不是重新生成点。
+```
+
+参考依据：
+
+```text
+EG3D:
+    使用三张正交 feature planes + small implicit decoder。
+    标准流程是查询 3D position，投影到三张 plane，
+    bilinear interpolation 得到 feature，再聚合后解码。
+
+Instant-NGP / hash grid:
+    虽然不是 tri-plane，但属于同一类 coordinate -> trainable feature
+    lookup encoding。
+    给定输入坐标，查 trainable feature vectors，再插值并送入网络。
+```
+
+和当前 SeqAvatar tri 的关系：
+
+```text
+通用 tri-plane:
+    query coordinate -> f_tri -> decoder -> color / density / SDF 等
+
+当前 SeqAvatar tri:
+    canonical Gaussian coordinate -> f_tri -> part expert MLP
+        -> d_xyz / d_rotation / d_scaling
+
+因此:
+    “坐标处查询可学习特征场”是常规 tri-plane 操作。
+    “把查到的 f_tri 注入 part_moe_leg 的非刚性形变 expert”是本实验的迁移和创新点。
+```
+
+需要避免的表述：
+
+```text
+不要说 tri 对 Gaussian 点重新采样。
+更准确说法:
+    在 canonical Gaussian 坐标处查询 tri-plane feature。
+    或:
+    sample / interpolate tri-plane feature at each canonical Gaussian position。
+```
+
+## 2026-07-26 当前 tri 与 part_moe 的适配程度澄清
+
+用户判断：
+
+```text
+现在的做法并没有为 part_moe 做特别的适配，
+只是学习了更多的空间特征，从而起到了优化各部件学习到的内容的作用，对吗？
+```
+
+结论：
+
+```text
+基本正确，但需要更精确地表述。
+
+当前 tri 是 part_moe_leg 上的空间特征增强:
+    它依赖 part_moe_leg 的分部件 expert 路由；
+    但 tri-plane feature 本身是全局 canonical-space feature field，
+    不是每个 part 一套独立 tri-plane，
+    也没有 part-conditioned sampling / part gate / part-specific feature fusion。
+```
+
+当前代码里的 part_moe 适配点：
+
+```text
+1. tri 被强制运行在 part_moe_leg 上:
+    --use_tri 必须和 --use_part_moe 同时使用。
+    part_label_schema 必须是 part_moe_leg。
+    num_parts 必须是 7。
+
+2. f_tri_i 会 concat 到 features 中。
+   这些 features 随后被 part_moe_leg 的 global expert 和 routed part experts 使用。
+
+3. 因为每个 expert 都看到 f_tri_i，所以 tri-plane 可以帮助不同部件 expert
+   学到更细的 spatial bias。
+```
+
+当前没有做的 part-specific 设计：
+
+```text
+1. 没有每个 part 独立一套 tri-plane:
+    f_tri_i = TriPlane_p(x_i)
+
+2. 没有用 part label 调制 tri feature:
+    f_tri_i = FiLM(f_tri_i, part_id)
+
+3. 没有为不同 part 设置不同的 tri feature dim / resolution / extent。
+
+4. 没有 part-aware gate 控制某些 part 更依赖 tri，某些 part 更依赖原 MLP。
+```
+
+因此推荐表述：
+
+```text
+当前 tri 模块不是专门为每个 part 定制 tri-plane；
+它是在 part_moe_leg 的 expert 输入中加入 canonical-space learnable spatial feature。
+这个空间特征场为所有部件共享，但会被不同 part expert 分别解释和利用，
+从而增强各部件内部区域的非刚性形变表达。
+```
+
+如果后续想更“part-aware”，可以升级为：
+
+```text
+Part-conditioned tri-plane:
+    f_tri_i = TriPlane(x_i)
+    e_part_i = Embedding(part_id)
+    f_part_tri_i = MLP_fuse(f_tri_i, e_part_i)
+
+或者 Part-specific tri-plane:
+    f_tri_i = TriPlane_{part_i}(x_i)
+
+但当前版本保持简单，主要贡献是:
+    part_moe_leg + shared canonical tri-plane spatial memory。
+```
+
+## 2026-07-26 tri 效果有限后的增强方向
+
+用户问题：
+
+```text
+现在这个 tri 相比只加第一个点的优化很有限。
+已经调了参数，还想增加效果的话可以怎么改？
+```
+
+当前瓶颈判断：
+
+```text
+当前 tri 的结构是:
+    shared TriPlaneFeature(x_i) -> concat 到 features -> part_moe_leg experts
+
+它确实只增强了空间特征容量。
+tri-plane 本身没有按 part 分开，也没有 part-conditioned gate / FiLM / adapter。
+因此继续只调 tri_plane_dim / tri_plane_res / tri_plane_extent，收益会很快变小。
+下一步应该强化 tri 和 part_moe_leg 路由之间的耦合。
+```
+
+优先建议 1：Part-conditioned tri feature fusion，低风险，最推荐先做
+
+```text
+给每个 part 一个 embedding:
+    e_p = Embedding(part_label_i)
+
+用 part embedding 调制共享 tri feature:
+    gamma_i, beta_i = MLP_part_fuse(e_p)
+    f_part_tri_i = gamma_i * f_tri_i + beta_i
+
+expert 输入改为:
+    input_i = concat(x_emb_i, pose_feat, seq_pose_feat, seq_xyz_feat, f_part_tri_i)
+```
+
+优点：
+
+```text
+1. 不需要每个 part 单独一套大 tri-plane，参数量可控。
+2. tri-plane 仍共享空间记忆，但不同 part 对同一空间 feature 的解释不同。
+3. 比单纯 concat 更明确地服务 part_moe_leg。
+```
+
+优先建议 2：tri contribution gate，让模型学会哪里该用 tri
+
+```text
+g_i = sigmoid(MLP_gate(x_emb_i, f_tri_i, e_part_i))
+f_used_i = g_i * f_part_tri_i
+
+或者对输出 residual 做 gate:
+    d_i = d_base_i + g_i * d_tri_adapter_i
+```
+
+目标：
+
+```text
+让动态边界、膝盖、脚踝、衣物边缘等区域更依赖 tri；
+让稳定躯干/主体区域少依赖 tri，避免噪声。
+```
+
+优先建议 3：Part-specific delta tri-plane，参数更大但更强
+
+```text
+共享主 tri-plane:
+    f_shared = TriPlane_shared(x_i)
+
+每个 part 一个小的 delta plane:
+    f_delta = TriPlane_delta_part[p](x_i)
+
+融合:
+    f_part_tri = f_shared + lambda * f_delta
+```
+
+建议：
+
+```text
+不要一开始就每个 part 都用完整 32x64x64。
+可先用小 delta:
+    delta_dim = 8 或 16
+    delta_res = 32 或 64
+
+这样更像:
+    全局 canonical spatial memory + part-specific correction。
+```
+
+优先建议 4：把 tri 从“只进第一层 concat”改成 hidden-layer FiLM / adapter
+
+当前：
+
+```text
+features = concat(..., f_tri)
+h = MLP(features)
+```
+
+更强版本：
+
+```text
+h = MLP_layer_1(base_features)
+gamma, beta = TriAdapter(f_tri, e_part)
+h = gamma * h + beta
+h = MLP_layer_2(h)
+```
+
+原因：
+
+```text
+只在第一层 concat，网络可能弱化或忽略 f_tri。
+FiLM / adapter 会让 tri feature 直接调制 expert hidden state，
+使用强度更高。
+```
+
+优先建议 5：Motion-aware tri gate，而不是静态空间表
+
+```text
+motion_feat_i 可来自 seq_xyz_conds 或 part/point motion magnitude。
+
+g_i = sigmoid(MLP(x_emb_i, f_tri_i, motion_feat_i, e_part_i))
+f_used_i = g_i * f_tri_i
+```
+
+目标：
+
+```text
+让 tri 主要服务高运动/高非刚性区域。
+否则静态 tri-plane 只会学几何空间 bias，对动态形变帮助有限。
+```
+
+不建议继续优先做的事情：
+
+```text
+1. 继续单纯增大 tri_plane_dim / tri_plane_res。
+   这只是加容量，未解决和 part_moe 的弱耦合。
+
+2. 直接给每个 part 完整大 tri-plane。
+   参数多，容易过拟合，也容易让训练不稳定。
+
+3. 再做类似 pamo rigid residual。
+   用户已决定放弃 pamo residual 方向。
+```
+
+推荐下一步实验顺序：
+
+```text
+A. part-conditioned tri feature fusion:
+    shared tri + part embedding FiLM
+
+B. 在 A 基础上加 point-wise tri gate:
+    g_i 控制 f_tri 使用强度
+
+C. 如果 A/B 有提升，再试 part-specific delta tri-plane:
+    shared tri + small per-part delta
+
+D. 最后再考虑 motion-aware gate:
+    让 tri 更集中服务动态区域
+```
+
+## 2026-07-26 tri 增强方案中文简化解释
+
+用户要求：
+
+```text
+看不懂，用中文简单分析这几个改进方法。
+```
+
+总判断：
+
+```text
+现在 tri 的问题不是参数不够，而是它和 part_moe_leg 的关系太弱。
+它只是给所有点多加了一份共享空间特征。
+想继续提升，就要让这个空间特征更明确地按部件、按区域、按运动强弱发挥作用。
+```
+
+方案 1：给 tri 加“部件身份”
+
+```text
+现在:
+    所有部件都查同一张 tri-plane，查出来的特征直接给 expert。
+
+改法:
+    给每个部件一个身份编码，比如左腿、右腿、躯干、手、脸。
+    tri 特征先结合这个部件身份，再给对应 expert。
+
+直观理解:
+    同一个空间特征，左腿 expert 和躯干 expert 不应该完全一样地理解。
+    加部件身份后，tri 会更贴合 part_moe_leg。
+
+优点:
+    改动小，参数少，风险低。
+
+建议:
+    最先做。
+```
+
+方案 2：加一个“是否使用 tri”的开关
+
+```text
+现在:
+    每个 Gaussian 都固定拿 tri 特征。
+
+改法:
+    网络给每个 Gaussian 学一个 0 到 1 的权重。
+    权重大，就多用 tri。
+    权重小，就少用 tri。
+
+直观理解:
+    膝盖、脚踝、衣服边界可能需要 tri。
+    躯干主体比较稳定，可能不需要太强 tri。
+
+优点:
+    防止 tri 在稳定区域引入噪声。
+
+风险:
+    如果 gate 学成全 0，tri 又会没作用。
+```
+
+方案 3：给每个部件一个“小修正三平面”
+
+```text
+现在:
+    只有一套全局共享 tri-plane。
+
+改法:
+    保留共享 tri-plane。
+    再给每个部件一个很小的 delta tri-plane，只学这个部件自己的补充信息。
+
+直观理解:
+    全局 tri-plane 负责共性。
+    左腿/右腿/手/脸各自的小 tri-plane 负责部件特殊性。
+
+优点:
+    比方案 1 更强，更像真正的 part-aware tri。
+
+风险:
+    参数更多，可能过拟合。
+    不建议一上来做很大的每部件三平面。
+```
+
+方案 4：不要只把 tri 放进第一层，改成中间层调制
+
+```text
+现在:
+    tri 只是拼到 MLP 输入最前面。
+    网络可能学着学着就把它忽略了。
+
+改法:
+    在 MLP 中间层用 tri 去调制 hidden feature。
+
+直观理解:
+    不是只在开头告诉网络一次 tri 信息，
+    而是在网络计算过程中持续提醒它“这里的空间特征是什么”。
+
+优点:
+    tri 使用强度更高。
+
+风险:
+    改网络结构更多，训练稳定性要检查。
+```
+
+方案 5：让 tri 更关注运动强的区域
+
+```text
+现在:
+    tri 是静态空间特征，只知道 canonical 空间位置。
+
+改法:
+    加入运动强弱信息。
+    运动越强、非刚性越明显的位置，tri 权重越高。
+
+直观理解:
+    腿快速摆动、膝盖、脚踝、衣物边缘更需要额外表达。
+    稳定区域不需要太多额外自由度。
+
+优点:
+    和“动态区域需要更强形变能力”这个新思路最一致。
+
+风险:
+    需要定义可靠的运动强弱特征，改动比方案 1/2 大。
+```
+
+推荐顺序：
+
+```text
+第一步:
+    方案 1，给 tri 加部件身份。
+
+第二步:
+    方案 2，加每点 tri 使用权重。
+
+第三步:
+    如果前两步有效，再做方案 3，小的部件专属 delta tri-plane。
+
+不建议现在继续只调:
+    tri_plane_dim
+    tri_plane_res
+    tri_plane_extent
+
+因为这只是扩大容量，不能解决 tri 和 part_moe_leg 结合不够紧的问题。
+```
+
+## 2026-07-26 tri_part：part-aware tri-plane feature fusion
+
+用户要求：
+
+```text
+新增独立消融实验 tri_part。
+按照“给 tri 加部件身份”的方案实现。
+用 GPU 0 / 1 / 3 跑完 DNA-Rendering 六个序列并汇总评价指标。
+```
+
+实现口径：
+
+```text
+tri_part 是独立实验名，但网络基础仍然是 part_moe_leg。
+
+脚本模式:
+    bash scripts/exps_dnarendering.sh tri_part
+
+自动启用:
+    --use_part_moe
+    --use_tri
+    --use_tri_part
+    --part_label_schema part_moe_leg
+    --num_parts 7
+
+日志目录:
+    /media/image/mxz/human/SeqAvatar/logs/tri
+
+默认 original / part_moe_leg / tri 不启用 use_tri_part。
+```
+
+网络修改：
+
+```text
+nets/mlp_delta_non_rigid.py
+    新增 PartTriFeatureFiLM。
+
+流程:
+    canonical Gaussian 坐标 query_xyz
+        -> shared TriPlaneFeature 采样 f_tri_i
+        -> 按 part_label 取 part embedding
+        -> FiLM 生成 gamma_i / beta_i
+        -> f_part_tri_i = f_tri_i * (1 + gamma_i) + beta_i
+        -> concat 到 non-rigid / part expert 输入
+
+FiLM 最后一层 weight / bias 零初始化，所以训练开始时:
+    gamma_i = 0
+    beta_i = 0
+    f_part_tri_i = f_tri_i
+
+因此 tri_part 初始等价于普通 tri，不会一开始破坏已有 part_moe_leg + tri 行为。
+```
+
+脚本修改：
+
+```text
+scripts/exps_dnarendering.sh
+scripts/exps_i3dhuman.sh
+scripts/exps_zjumocap.sh
+
+均新增 tri_part 模式。
+DNA 默认 tri 参数沿用当前 tri 最优口径:
+    TRI_PLANE_DIM=32
+    TRI_PLANE_RES=64
+    TRI_PLANE_EXTENT=1.0
+```
+
+已验证：
+
+```text
+bash -n scripts/exps_dnarendering.sh
+bash -n scripts/exps_i3dhuman.sh
+bash -n scripts/exps_zjumocap.sh
+
+PYTHONDONTWRITEBYTECODE=1 python -m py_compile:
+    nets/mlp_delta_non_rigid.py
+    scene/gaussian_model.py
+    arguments/__init__.py
+    train.py
+    render.py
+    gaussian_renderer/__init__.py
+
+CPU 最小前向测试:
+    NonrigidDeformer(use_part_moe=True, use_tri=True, use_tri_part=True, num_parts=7)
+
+结果:
+    initial_identity_max = 0.0
+    shared 输出:
+        d_xyz      [1, 9, 3]
+        d_rotation [1, 9, 4]
+        d_scaling  [1, 9, 3]
+    init_part_moe_from_shared(num_parts=7) 成功。
+    part_enabled=True 输出维度保持一致。
+```
+
+本次 DNA 六序列运行计划：
+
+```text
+GPU0:
+    0044_11
+    0051_09
+
+GPU1:
+    0206_04
+    0813_05
+
+GPU3:
+    0007_04
+    0019_10
+
+使用独立 RUN_TIME 后缀避免并发总日志互相交叉。
+```
+
+运行结果：
+
+```text
+首次启动:
+    GPU0: RUN_TIME=20260726_215814_gpu0, sequences=0044_11 0051_09
+    GPU1: RUN_TIME=20260726_215814_gpu1, sequences=0206_04 0813_05
+    GPU3: RUN_TIME=20260726_215814_gpu3, sequences=0007_04 0019_10
+
+GPU1/GPU3 完整完成:
+    0206_04
+    0813_05
+    0007_04
+    0019_10
+
+GPU0 首次 0044_11 训练到 25000 后，在 train.py 最终 training_report
+novel-view evaluation 中 OOM:
+    torch.cuda.OutOfMemoryError in knn_cuda
+    Tried to allocate 2.46 GiB
+
+原因:
+    训练内最终评估会同时保留训练显存状态并加载 test cameras / KNN。
+    0044_11 点数较多，导致最终 evaluation OOM。
+    这不是 tri_part 网络逻辑错误。
+
+重跑 GPU0:
+    RUN_TIME=20260726_224700_gpu0_retry
+    sequences=0044_11 0051_09
+    SKIP_LOAD_TEST_CAMERAS=1
+
+处理口径:
+    训练阶段跳过 train.py 内部 test camera evaluation，避免 OOM。
+    最终 novel-view 指标仍使用 render.py 输出，不使用训练内中间指标。
+```
+
+最终 render.py novelview 指标：
+
+| Sequence | RUN_TIME | PSNR | SSIM | LPIPS*1000 |
+|---|---|---:|---:|---:|
+| 0044_11 | 20260726_224700_gpu0_retry | 33.01163388888041 | 0.9781492993235588 | 21.11751437963297 |
+| 0051_09 | 20260726_224700_gpu0_retry | 28.716113980611166 | 0.9718945637345314 | 30.539619713090357 |
+| 0206_04 | 20260726_215814_gpu1 | 31.522967306772866 | 0.9706513146559397 | 33.06893456416825 |
+| 0813_05 | 20260726_215814_gpu1 | 36.2184441725413 | 0.987352258960406 | 17.88608469845106 |
+| 0007_04 | 20260726_215814_gpu3 | 29.580058288574218 | 0.9589614530404409 | 43.73900143740077 |
+| 0019_10 | 20260726_215814_gpu3 | 35.33606557846069 | 0.9813554614782333 | 20.5824658429871 |
+| Average | - | 32.39754720264011 | 0.9747273918655184 | 27.822270105955084 |
+
+对照当前已有结果：
+
+```text
+part_moe_leg / 20260623_180431:
+    PSNR        32.390758583280778
+    SSIM        0.974622116320663
+    LPIPS*1000  27.993953922608245
+
+tri / 20260726_triC_d32_r64_e10:
+    PSNR        32.420168439547222
+    SSIM        0.9746725806759464
+    LPIPS*1000  27.96582942052434
+
+tri_part - part_moe_leg:
+    ΔPSNR        +0.006788619359333836
+    ΔSSIM        +0.0001052755448553988
+    ΔLPIPS*1000  -0.1716838166531609
+
+tri_part - tri:
+    ΔPSNR        -0.02262123690710638
+    ΔSSIM        +0.000054811189571957186
+    ΔLPIPS*1000  -0.14355931456925575
+```
+
+结论：
+
+```text
+tri_part 相比 part_moe_leg 略有提升，尤其 LPIPS 更好。
+但相比当前普通 tri 最优设置，PSNR 下降 0.0226，SSIM / LPIPS 略好。
+
+因此“part-conditioned tri FiLM”有一定作用，但不是明确压过普通 tri 的强提升版本。
+它更像是在视觉感知指标上略改善，而不是显著提升重建峰值质量。
+```
+
+验证状态：
+
+```text
+git diff --check 通过。
+六个 render.py novelview 指标均已生成。
+tmux tri_part 训练/渲染进程均已退出。
+GPU0/GPU3 已空闲；GPU1 当前还有非本次 tri_part tmux 的其他进程占用。
+```
+
+## 2026-07-27 I3D / ZJU 增加 tri 消融并运行
+
+用户要求：
+
+```text
+按照 DNA 数据集上一样的修改规则，给 I3D-Human 和 ZJU-MoCap 增加 tri 消融实验。
+保证三个数据集的 tri 创新一致且公平:
+    tri_plane_extent = 1.0
+
+用 GPU 0 / 1 / 3 在 I3D-Human 和 ZJU-MoCap 上跑完 tri，并汇总评价指标。
+之后长实验使用 tmux 启动。
+```
+
+实现检查：
+
+```text
+scripts/exps_dnarendering.sh
+scripts/exps_i3dhuman.sh
+scripts/exps_zjumocap.sh
+
+三个脚本的 tri 模式均一致:
+    experiment_name=tri
+    --use_part_moe
+    --use_tri
+    --part_label_schema part_moe_leg
+    --num_parts 7
+
+tri 参数默认一致:
+    TRI_PLANE_DIM=32
+    TRI_PLANE_RES=64
+    TRI_PLANE_EXTENT=1.0
+
+tri 仍然只在 part_moe_leg 基础上启用。
+original / part_moe_leg 不采样 tri-plane，不加宽输入。
+```
+
+验证：
+
+```text
+bash -n scripts/exps_dnarendering.sh
+bash -n scripts/exps_i3dhuman.sh
+bash -n scripts/exps_zjumocap.sh
+
+PYTHONDONTWRITEBYTECODE=1 python -m py_compile:
+    nets/mlp_delta_non_rigid.py
+    scene/gaussian_model.py
+    arguments/__init__.py
+    train.py
+    render.py
+    gaussian_renderer/__init__.py
+
+检查时 GPU 0 / 1 / 3 空闲。
+```
+
+运行计划：
+
+```text
+RUN 前缀:
+    20260727_*
+
+GPU0 tmux:
+    ZJU:
+        CoreView_377
+        CoreView_386
+    I3D:
+        ID1_1
+        ID1_2
+
+GPU1 tmux:
+    ZJU:
+        CoreView_387
+        CoreView_392
+    I3D:
+        ID2_1
+
+GPU3 tmux:
+    ZJU:
+        CoreView_393
+        CoreView_394
+    I3D:
+        ID3_1
+
+每张卡串行运行该卡的 ZJU 分片和 I3D 分片，避免同卡多个训练进程竞争显存。
+日志保存到:
+    /media/image/mxz/human/SeqAvatar/logs/tri
+```
+
+运行结果：
+
+```text
+tmux:
+    tri_i3d_zju_gpu0_122549
+    tri_i3d_zju_gpu1_122549
+    tri_i3d_zju_gpu3_122549
+
+状态:
+    三个 tmux 队列均已结束。
+    ZJU-MoCap 六个序列均生成 iteration 3000 final metrics。
+    I3D-Human 四个序列均生成 iteration 15000 final metrics。
+
+指标来源:
+    ZJU:
+        output/ZJU-MoCap/<seq>/tri/<run>/metrics/results_test_3000.json
+    I3D novelview:
+        output/I3D-Human/<seq>/tri/<run>/metrics/results_novelview_15000.json
+    I3D novelpose:
+        output/I3D-Human/<seq>/tri/<run>/metrics/results_novelpose_15000.json
+```
+
+ZJU-MoCap test：
+
+| Sequence | RUN_TIME | PSNR | SSIM | LPIPS*1000 |
+|---|---|---:|---:|---:|
+| CoreView_377 | 20260727_122549_zju_gpu0 | 31.493320743433028 | 0.9732929329837908 | 18.117606290059083 |
+| CoreView_386 | 20260727_122549_zju_gpu0 | 33.93984052388355 | 0.9693497542781059 | 24.947525858126504 |
+| CoreView_387 | 20260727_122549_zju_gpu1 | 28.839587052663166 | 0.955779008341558 | 32.05587284996955 |
+| CoreView_392 | 20260727_122549_zju_gpu1 | 32.11006375362999 | 0.9646155544730465 | 28.267431743532136 |
+| CoreView_393 | 20260727_122549_zju_gpu3 | 29.472734139970513 | 0.9544327485659891 | 33.92314534126358 |
+| CoreView_394 | 20260727_122549_zju_gpu3 | 31.160574717955157 | 0.9568838406015526 | 30.16416470795362 |
+| Average | - | 31.169353488589234 | 0.9623923065406738 | 27.912624465150746 |
+
+I3D-Human novelview：
+
+| Sequence | RUN_TIME | PSNR | SSIM | LPIPS*1000 |
+|---|---|---:|---:|---:|
+| ID1_1 | 20260727_122549_i3d_gpu0 | 32.11013536453247 | 0.9672574993222952 | 25.42038941755891 |
+| ID1_2 | 20260727_122549_i3d_gpu0 | 32.135791446316624 | 0.9668524749817387 | 26.97141002262792 |
+| ID2_1 | 20260727_122549_i3d_gpu1 | 31.634514747521816 | 0.9699061543513567 | 28.536427157142988 |
+| ID3_1 | 20260727_122549_i3d_gpu3 | 33.82125525474548 | 0.9663376413285732 | 32.545816618949175 |
+| Average | - | 32.42542420327909 | 0.967588442495991 | 28.36851080406975 |
+
+I3D-Human novelpose：
+
+| Sequence | RUN_TIME | PSNR | SSIM | LPIPS*1000 |
+|---|---|---:|---:|---:|
+| ID1_1 | 20260727_122549_i3d_gpu0 | 30.06187211672465 | 0.9597787355383237 | 31.6969720646739 |
+| ID1_2 | 20260727_122549_i3d_gpu0 | 30.473948860168456 | 0.9596934636433919 | 31.01011705584824 |
+| ID2_1 | 20260727_122549_i3d_gpu1 | 28.23384127700538 | 0.955693671839279 | 39.935521773275056 |
+| ID3_1 | 20260727_122549_i3d_gpu3 | 32.66334866217847 | 0.9599625850623509 | 36.752575094688616 |
+| Average | - | 30.35825272901924 | 0.9587821140208365 | 34.848796497121455 |
+
+收尾检查：
+
+```text
+git diff --check 通过。
+GPU 0 / 1 / 2 / 3 当前无本次实验残留训练进程。
+I3D / ZJU 的 tri 配置与 DNA 保持一致:
+    --use_part_moe
+    --use_tri
+    --part_label_schema part_moe_leg
+    --num_parts 7
+    tri_plane_dim=32
+    tri_plane_res=64
+    tri_plane_extent=1.0
+```
+
+## 2026-07-27 I3D / ZJU tri 对比单独 part_moe_leg
+
+用户要求：
+
+```text
+比较这两个数据集上 tri 和单独 part_moe_leg 的结果。
+```
+
+对比口径：
+
+```text
+tri:
+    ZJU:
+        output/ZJU-MoCap/<seq>/tri/20260727_122549_zju_gpu*/metrics/results_test_3000.json
+    I3D:
+        output/I3D-Human/<seq>/tri/20260727_122549_i3d_gpu*/metrics/results_novelview_15000.json
+        output/I3D-Human/<seq>/tri/20260727_122549_i3d_gpu*/metrics/results_novelpose_15000.json
+
+part_moe_leg:
+    ZJU 主对比使用历史最佳完整六序列:
+        output/ZJU-MoCap/<seq>/part_moe_leg/20260622_185140/metrics/results_test_3000.json
+    ZJU 同时检查另一套完整六序列:
+        output/ZJU-MoCap/<seq>/part_moe_leg/20260626_164558/metrics/results_test_3000.json
+    I3D 使用完整 part_moe_leg:
+        output/I3D-Human/<seq>/part_moe_leg/20260622_145118/metrics/results_*_15000.json
+
+注意:
+    本次 tri 的 I3D 只跑了当前脚本中的 4 个序列:
+        ID1_1, ID1_2, ID2_1, ID3_1
+    因此主对比使用同 4 序列均值，不直接拿历史 6 序列均值作主结论。
+```
+
+ZJU-MoCap test，tri 对比 part_moe_leg / 20260622_185140：
+
+| Method | PSNR | SSIM | LPIPS*1000 |
+|---|---:|---:|---:|
+| part_moe_leg | 31.17366016509712 | 0.9623772457124292 | 28.012560860967792 |
+| tri | 31.169353488589234 | 0.9623923065406738 | 27.912624465150746 |
+| tri - part_moe_leg | -0.00430667650788763 | +0.000015060828244539692 | -0.09993639581704628 |
+
+ZJU-MoCap test，tri 对比 part_moe_leg / 20260626_164558：
+
+| Method | PSNR | SSIM | LPIPS*1000 |
+|---|---:|---:|---:|
+| part_moe_leg | 31.161066850422543 | 0.962418893114703 | 28.03229686383637 |
+| tri | 31.169353488589234 | 0.9623923065406738 | 27.912624465150746 |
+| tri - part_moe_leg | +0.008286638166691063 | -0.000026586574029208165 | -0.11967239868562274 |
+
+I3D-Human novelview，同 4 序列：
+
+| Method | PSNR | SSIM | LPIPS*1000 |
+|---|---:|---:|---:|
+| part_moe_leg | 32.39407307725736 | 0.9674439822073264 | 28.4920528156119 |
+| tri | 32.42542420327909 | 0.967588442495991 | 28.36851080406975 |
+| tri - part_moe_leg | +0.03135112602173251 | +0.00014446028866454963 | -0.12354201154214906 |
+
+I3D-Human novelpose，同 4 序列：
+
+| Method | PSNR | SSIM | LPIPS*1000 |
+|---|---:|---:|---:|
+| part_moe_leg | 30.45449356313416 | 0.9589966609199754 | 34.63218343549833 |
+| tri | 30.35825272901924 | 0.9587821140208365 | 34.848796497121455 |
+| tri - part_moe_leg | -0.09624083411491924 | -0.00021454689913891212 | +0.21661306162312854 |
+
+结论：
+
+```text
+ZJU:
+    tri 和单独 part_moe_leg 基本持平。
+    相对历史最佳 part_moe_leg，PSNR 略低 0.0043，SSIM 略高 0.000015，LPIPS*1000 好 0.0999。
+    相对另一套 part_moe_leg，PSNR 略高 0.0083，SSIM 略低 0.000027，LPIPS*1000 好 0.1197。
+    因此 ZJU 上 tri 没有形成明显 PSNR 增益，但感知指标 LPIPS 稳定略好。
+
+I3D:
+    novelview 上 tri 有小幅稳定收益:
+        PSNR +0.0314
+        SSIM +0.000144
+        LPIPS*1000 -0.1235
+    novelpose 上 tri 明显回退:
+        PSNR -0.0962
+        SSIM -0.000215
+        LPIPS*1000 +0.2166
+
+总判断:
+    tri 作为 part_moe_leg 上的 canonical tri-plane spatial feature，
+    在 I3D novelview 和 ZJU LPIPS 上有轻微正向，
+    但对 I3D novelpose 泛化不利。
+    它目前更像增强训练姿态附近/同分布视角的空间记忆，
+    不是明确提升跨姿态泛化的第二创新点。
+```
+
+## 2026-07-27 tri_part 含义澄清
+
+用户问题：
+
+```text
+现在 tri_part 的优化是不是给不同 part 分别学习对应部分的三平面特征，
+但是效果下降了？
+```
+
+回答口径：
+
+```text
+不完全是。
+
+当前 tri_part 不是“每个 part 单独学习一套三平面”。
+它仍然使用 shared TriPlaneFeature:
+    query_xyz -> shared tri-plane -> f_tri_i
+
+然后根据 Gaussian 的 part_label 取 part embedding，
+用 PartTriFeatureFiLM 对 f_tri_i 做部件条件调制:
+    f_part_tri_i = f_tri_i * (1 + gamma_part_i) + beta_part_i
+
+所以它的实际含义是:
+    共享一个 canonical tri-plane 空间特征场，
+    不同 part 用不同 FiLM 方式解释 / 调制这份 tri feature。
+
+它比普通 tri 多的是 part-aware feature fusion，
+不是 part-specific tri-plane bank。
+```
+
+效果判断：
+
+```text
+相对 part_moe_leg:
+    tri_part 略好:
+        PSNR +0.006788619359333836
+        SSIM +0.0001052755448553988
+        LPIPS*1000 -0.1716838166531609
+
+相对当前普通 tri 最优:
+    tri_part 的 PSNR 下降:
+        PSNR -0.02262123690710638
+    但 SSIM / LPIPS 略好:
+        SSIM +0.000054811189571957186
+        LPIPS*1000 -0.14355931456925575
+
+因此如果以普通 tri 的 PSNR 为主指标，tri_part 确实下降了。
+如果以 part_moe_leg 为基线，它没有下降，而是很小幅提升。
+总体看 tri_part 没有证明比普通 tri 更强，只能说 part-aware FiLM 对感知指标有轻微帮助。
+```
+
+## 2026-07-27 tri 后续优化思路
+
+用户问题：
+
+```text
+tri 还有什么优化的思路吗？
+```
+
+当前判断：
+
+```text
+普通 tri:
+    在 part_moe_leg 的 expert 输入第一层 concat canonical tri-plane feature。
+    作用更像给 canonical 空间加一张 learnable memory table。
+
+tri_part:
+    不是每个 part 一套独立三平面。
+    是 shared tri-plane + part-conditioned FiLM 调制 tri feature。
+
+已有结果说明:
+    1. tri 相对 part_moe_leg 在 DNA / I3D novelview 有轻微提升。
+    2. ZJU 基本持平，LPIPS 略好。
+    3. I3D novelpose 回退，说明 tri 容易增强训练姿态附近的空间记忆，
+       但不一定改善跨姿态泛化。
+    4. tri_part 只在感知指标上略好，PSNR 不如普通 tri。
+
+因此不建议继续只调:
+    tri_plane_dim
+    tri_plane_res
+    tri_plane_extent
+```
+
+后续更有价值的结构方向：
+
+```text
+方案 1：学习 tri usage gate，优先级最高
+    f_tri_raw = TriPlaneFeature(x_i)
+    g_i = sigmoid(MLP_gate(x_emb_i, f_tri_raw, part_id, motion_strength_i))
+    f_tri_eff = g_i * f_tri_raw
+
+    再 concat:
+        input_i = concat(x_emb_i, pose_feat, seq_pose_feat, seq_xyz_feat, f_tri_eff)
+
+    目的:
+        让静态/刚性区域少用 tri，避免过拟合 canonical 记忆；
+        让边界、衣物、快速运动区域更多用 tri。
+
+    初始化建议:
+        gate bias 设成负值，让初始 g_i 很小，例如 0.05 或 0.1。
+        这样训练一开始接近 part_moe_leg，不会破坏稳定基线。
+
+方案 2：part-local tri-plane，而不是 global canonical tri-plane
+    对每个 Gaussian 用 part 中心和 part 尺度归一化:
+        x_local_i = (x_i - c_part) / s_part
+    在 part-local 坐标采样 tri-plane:
+        f_local_tri = TriPlaneFeatureLocal(x_local_i)
+
+    目的:
+        让三平面表达“部件内部位置”，例如大腿上/下、膝盖附近、脚踝附近，
+        而不是只记住全局 canonical 坐标。
+        这更贴合 part_moe_leg 的部件专家。
+
+方案 3：shared tri + small part-specific delta tri
+    不直接给每个 part 一套完整三平面，参数太多也容易过拟合。
+    用低强度 residual:
+        f_i = f_shared(x_i) + lambda * f_delta_part(x_i)
+
+    其中 f_delta_part 可以低维、低分辨率、或低秩分解。
+    lambda 初始化为 0 或很小。
+
+    目的:
+        比 tri_part 的 FiLM 更强，因为 part 确实有自己的局部空间记忆；
+        但又比完全独立 part tri-plane 更稳。
+
+方案 4：把 tri 从 input concat 改成 hidden adapter / FiLM
+    当前 tri 只进第一层，网络可能忽略它，也可能把它当噪声。
+    可以改成:
+        h_l = h_l + beta * Adapter_l(f_tri_i)
+    或:
+        h_l = h_l * (1 + gamma_l(f_tri_i)) + beta_l(f_tri_i)
+
+    identity 初始化:
+        Adapter / gamma / beta 初始为 0。
+
+    目的:
+        让 tri 直接调制 part expert 的中间特征，比只 concat 到输入更强。
+
+方案 5：给 tri 加 smooth / sparse 正则，保护 novelpose
+    regularize:
+        TV loss on tri planes
+        L2 loss on tri feature norm
+        gate sparsity loss
+
+    目的:
+        限制 tri 变成过强的 per-sequence memorization。
+        这对 I3D novelpose 回退尤其关键。
+```
+
+推荐实验顺序：
+
+```text
+第一优先级:
+    tri_gate
+    原因:
+        当前最大问题不是 tri 没容量，而是 tri 使用不受控。
+        gate 能直接验证“哪里该用 tri，哪里不该用 tri”这个核心假设。
+
+第二优先级:
+    part-local tri
+    原因:
+        它比 global tri 更贴合 part_moe_leg，
+        同时不会像完全独立 part tri-plane 那样大幅增加参数。
+
+第三优先级:
+    shared tri + small part-specific delta tri
+    原因:
+        这是更强版本，但需要正则和小初始化，否则可能继续伤 novelpose。
+
+不建议优先做:
+    更大 dim / 更高 resolution / 更复杂 tri_part FiLM。
+    这些更可能增加记忆能力，而不是解决泛化问题。
+```
+
+## 2026-07-27 tri_gate 如何决定形变能力分配
+
+用户问题：
+
+```text
+tri_gate 怎么根据运动强弱、部件属性和局部刚性程度，
+决定哪里需要更强形变能力？
+```
+
+核心解释：
+
+```text
+tri_gate 不是硬编码“某个 part 一定强形变”。
+它是给每个 Gaussian 学一个 soft gate:
+    g_i in [0, 1]
+
+当前 tri 是:
+    f_tri_i = TriPlaneFeature(x_i)
+    input_i = concat(x_emb_i, pose_feat, seq_pose_feat, seq_xyz_feat, f_tri_i)
+
+tri_gate 后变为:
+    f_tri_raw_i = TriPlaneFeature(x_i)
+    g_i = sigmoid(MLP_gate(gate_input_i))
+    f_tri_eff_i = g_i * f_tri_raw_i
+    input_i = concat(x_emb_i, pose_feat, seq_pose_feat, seq_xyz_feat, f_tri_eff_i)
+
+因此:
+    g_i 高:
+        这个 Gaussian 可以更多使用 tri-plane spatial memory，
+        等价于给它更强的局部空间形变表达能力。
+    g_i 低:
+        tri feature 被压小，
+        它更接近原来的 part_moe_leg，
+        表达更稳定，不容易记忆训练姿态。
+```
+
+gate_input 建议包含：
+
+```text
+1. 运动强弱 motion_strength
+    来自 SMPL part 的 pose velocity / acceleration，或 seq_xyz 预测的局部位移幅度。
+    例如:
+        m_part = norm(part_velocity) + k * norm(part_acc)
+
+    作用:
+        强运动 part 更可能需要额外形变能力。
+
+2. 部件属性 part attribute
+    使用 part embedding，或者固定属性 one-hot:
+        torso/head: 更稳定
+        upper/lower leg: 大运动
+        arm/hand/foot: 大运动 + 边界复杂
+
+    作用:
+        同样运动强度下，不同 part 的形变需求不同。
+
+3. 局部刚性 local rigidity
+    可以是手工几何先验，也可以是可学习标量:
+        r_i 高:
+            Gaussian 在部件主体、远离关节/边界，更刚性
+        r_i 低:
+            Gaussian 在衣物边界、关节附近、脚踝/膝盖附近，更非刚性
+
+    作用:
+        高刚性点少用 tri，低刚性点多用 tri。
+
+4. 点自身位置 / tri 原始特征
+    x_emb_i 和 f_tri_raw_i。
+    作用:
+        让 gate 细化到同一 part 内部的不同位置。
+```
+
+一个更明确的形式：
+
+```text
+gate_input_i = concat(
+    x_emb_i,
+    f_tri_raw_i,
+    part_embedding[label_i],
+    motion_strength[label_i],
+    local_rigidity_i
+)
+
+g_i = sigmoid(MLP_gate(gate_input_i))
+f_tri_eff_i = g_i * f_tri_raw_i
+```
+
+直觉上的决策规则：
+
+```text
+强运动 + 低刚性 + 关节/边界附近:
+    g_i 应该变高。
+    例如膝盖附近、脚踝附近、衣服边界、快速摆动的腿部边缘。
+
+弱运动 + 高刚性 + part 主体区域:
+    g_i 应该变低。
+    例如躯干主体、头部、腿部中间比较稳定的实体区域。
+
+强运动但高刚性:
+    g_i 不一定很高。
+    例如大腿主体整体跟随 LBS 已经较好，未必需要强 tri memory。
+
+弱运动但低刚性/边界复杂:
+    g_i 可以中等。
+    例如衣服轮廓处，即使 part 运动不大，也可能需要更细的局部修正。
+```
+
+训练和初始化建议：
+
+```text
+gate 初始 bias 设为负值:
+    g_i 初始约 0.05 或 0.1
+
+这样训练一开始接近 part_moe_leg，避免 tri 一开始过强。
+
+可以打印:
+    g_mean / g_std / g_min / g_max
+    per_part g_mean
+    high-motion vs low-motion g_mean
+    rigid-core vs boundary g_mean
+
+合理现象:
+    high-motion / boundary 区域 gate 更高；
+    torso/head/core 区域 gate 更低；
+    gate 不是长期全 0，也不是全 1。
+```
+
+重要限制：
+
+```text
+如果只做 f_tri_eff = g_i * f_tri_i，
+tri_gate 决定的是“是否使用额外 tri feature”，不是动态改变 MLP 层数或参数量。
+它属于 soft capacity allocation。
+
+如果要更强地体现“更强形变能力 / 更稳定约束”，可以进一步让 gate 同时控制:
+    1. tri feature 强度
+    2. 非刚性 delta 的幅度
+    3. smooth / regularization loss 权重
+
+例如:
+    high gate:
+        更强 tri feature，较弱 smooth 约束
+    low gate:
+        较弱 tri feature，较强稳定约束
+```
+
+## 2026-07-27 tri_gate 的 g_i 调节方式
+
+用户问题：
+
+```text
+怎么调节 g_i？
+```
+
+建议不要只用裸公式：
+
+```text
+g_i = sigmoid(MLP_gate(...))
+```
+
+更稳的形式：
+
+```text
+g_raw_i = sigmoid((logit_i + b_part + b_prior_i) / tau)
+g_i = alpha_tri(iter) * g_cap * g_raw_i
+f_tri_eff_i = g_i * f_tri_raw_i
+```
+
+各项含义：
+
+```text
+1. gate bias 控制初始打开程度
+    如果希望初始 g_i 约为 p:
+        bias = log(p / (1 - p))
+
+    常用:
+        p=0.05 -> bias=-2.944
+        p=0.10 -> bias=-2.197
+        p=0.20 -> bias=-1.386
+        p=0.50 -> bias=0
+
+    推荐先用 p=0.05 或 0.10。
+    这样初始接近 part_moe_leg。
+
+2. alpha_tri(iter) 控制什么时候启用 tri_gate
+    建议和 part_moe_start_iter 对齐，甚至稍晚一点:
+        before start: alpha_tri = 0
+        warmup:       alpha_tri 从 0 线性涨到 1
+
+    目的:
+        先让 part_moe_leg 学稳，再让 tri_gate 学哪里需要额外空间特征。
+
+3. g_cap 控制最大强度
+    早期可以设:
+        g_cap = 0.3 或 0.5
+    如果不够再放到:
+        g_cap = 1.0
+
+    目的:
+        防止 tri 一开始压过 part_moe_leg。
+
+4. tau 控制 sigmoid 尖锐程度
+    g_raw = sigmoid(logit / tau)
+
+    tau 大:
+        gate 更平滑，不容易饱和。
+    tau 小:
+        gate 更接近 0/1，选择更硬。
+
+    推荐:
+        tau=2.0 起步，后面可退火到 1.0。
+
+5. b_part 控制不同部件先验
+    可以给每个 part 一个 learnable bias。
+    初始化上:
+        torso/head/core 偏低
+        arm/leg/foot/boundary-prone part 略高
+
+    但不要写死最终结果，只作为初始化先验。
+
+6. b_prior_i 注入运动/刚性先验
+    例如:
+        b_prior_i = a * motion_strength_part - c * local_rigidity_i
+
+    强运动会提高 gate；
+    高刚性会降低 gate。
+
+7. 正则控制 gate 不要失控
+    sparse loss:
+        L_gate_sparse = lambda_g * mean(g_i)
+
+    target loss:
+        L_gate_target = lambda_t * (mean(g_i) - target)^2
+
+    建议 target 先试:
+        0.10 ~ 0.25
+
+    目的:
+        避免所有点都开 gate，导致 tri 退化成强 canonical memory。
+```
+
+推荐第一版默认参数：
+
+```text
+gate_init = 0.10
+gate_bias = -2.197
+gate_cap = 0.5
+gate_tau = 2.0
+gate_warmup_start = part_moe_start_iter
+gate_warmup_iters = 2000 for DNA/I3D, 500 for ZJU
+gate_target = 0.15
+gate_sparse_lambda = small, e.g. 1e-4 or 5e-5
+```
+
+判断调节是否合理：
+
+```text
+每隔固定 iter 打印:
+    g_mean
+    g_std
+    g_min
+    g_max
+    per_part g_mean
+    high-motion part g_mean
+    low-motion part g_mean
+
+合理现象:
+    g_mean 不长期等于初始值 0.1
+    g_std 不能接近 0
+    high-motion / boundary part 的 g_mean 更高
+    torso/head/core 的 g_mean 更低
+
+异常:
+    g_mean 接近 0:
+        tri_gate 没打开，增大 gate_cap 或降低 sparse lambda。
+    g_mean 接近 g_cap 且 g_std 很低:
+        所有点都在用 tri，增加 sparse loss 或降低 gate_cap。
+    novelview 提升但 novelpose 下降:
+        gate 太像 canonical memory，降低 gate_cap / 增强正则 / 加 part-local 约束。
+```
+
+## 2026-07-27 当前 tri 代码实现总结
+
+用户问题：
+
+```text
+结合代码详细总结现在 tri 是怎么做的。
+```
+
+脚本入口：
+
+```text
+scripts/exps_dnarendering.sh
+scripts/exps_i3dhuman.sh
+scripts/exps_zjumocap.sh
+
+tri 模式都会设置:
+    experiment_name=tri
+    part_moe_enabled=1
+    tri_enabled=1
+    part_label_schema=part_moe_leg
+    num_parts=7
+
+因此当前 tri 不是 original 上加三平面，
+而是强制建立在 part_moe_leg 上。
+
+默认参数:
+    tri_plane_dim=32
+    tri_plane_res=64
+    tri_plane_extent=1.0
+
+其中 arguments/__init__.py 里的默认 extent 仍是 1.2，
+但三个实验脚本运行 tri 时都会传入 1.0。
+```
+
+开关隔离：
+
+```text
+scene/gaussian_model.py:
+    use_tri=True 时会检查:
+        必须 use_part_moe=True
+        part_label_schema 必须是 part_moe_leg
+        num_parts 必须是 7
+
+否则直接 raise ValueError。
+
+所以 original / part_moe_leg 默认不会创建 tri-plane。
+只有脚本传入 --use_tri 时才启用。
+```
+
+TriPlaneFeature 结构：
+
+```text
+nets/mlp_delta_non_rigid.py:
+    TriPlaneFeature 内部参数:
+        planes: [3, tri_plane_dim, tri_plane_res, tri_plane_res]
+
+当前默认:
+        [3, 32, 64, 64]
+
+三张 plane 分别对应:
+    xy plane
+    xz plane
+    yz plane
+
+forward(query_xyz):
+    1. query_xyz 如果是 [N, 3]，先扩成 [1, N, 3]
+    2. coords = clamp(query_xyz / tri_plane_extent, -1, 1)
+    3. 用 grid_sample 分别采样:
+        xy_feat = plane_xy(coords[..., x,y])
+        xz_feat = plane_xz(coords[..., x,z])
+        yz_feat = plane_yz(coords[..., y,z])
+    4. 输出:
+        f_tri = (xy_feat + xz_feat + yz_feat) / 3
+
+输出 shape:
+    [B, N, tri_plane_dim]
+```
+
+采样坐标：
+
+```text
+gaussian_renderer/__init__.py:
+    调 non_rigid_deformer 时传入:
+        query_xyz=means3D
+
+这里的 means3D 是进入非刚性分支前的 canonical Gaussian 坐标。
+
+因此 tri 不是重新采样 Gaussian 点，
+而是在已有 canonical Gaussian 坐标处查询一个可学习三平面特征场。
+```
+
+接入 NonrigidDeformer：
+
+```text
+nets/mlp_delta_non_rigid.py:
+    use_tri=True 时:
+        self.TriPlaneFeature = TriPlaneFeature(...)
+
+    然后把 shared non-rigid MLP 第一层输入维度加宽:
+        old_input_dim -> old_input_dim + tri_plane_dim
+
+    _append_mlp_input_dim 会复制原第一层权重到前 old_input_dim 列。
+    新增 tri 列保持 nn.Linear 默认初始化。
+
+    但 TriPlaneFeature.planes 初始为全 0，
+    因此初始 f_tri=0，第一次前向基本等价于不加 tri 的输入。
+```
+
+forward 数据流：
+
+```text
+feats 初始包含:
+    x_emb
+
+如果启用已有条件，还会 concat:
+    pose_feats
+    seq_pose_feats
+    seq_xyz_feats
+
+use_tri=True 后额外:
+    tri_features = sample_tri_features(query_xyz)
+    feats.append(tri_features)
+
+最终:
+    features = concat(x_emb, pose_feat, seq_pose_feat, seq_xyz_feat, f_tri)
+```
+
+和 Part-MoE 的关系：
+
+```text
+当前 tri 从训练一开始就进入 shared non-rigid MLP。
+它不是等 part_moe_start_iter 之后才生效。
+
+part_moe_start_iter 到达时:
+    train.py 调 gaussians.init_part_moe_from_shared()
+
+这会:
+    1. 按当前 shared MLP 和输出头复制出 num_parts 个 PartNonrigidExpert
+    2. 冻结原 shared MLP / gaussian_warp / gaussian_rotation / gaussian_scaling
+    3. 把每个 expert 加入 optimizer
+
+注意:
+    expert 复制的是 MLP 和输出头。
+    TriPlaneFeature 本身不复制到每个 expert。
+    所有 expert 共享同一个 TriPlaneFeature 查询结果。
+```
+
+Part-MoE 路由：
+
+```text
+forward_tri 当前只是:
+    return forward_part_moe(...)
+
+也就是说 tri 没有单独路由逻辑。
+它只是先把 f_tri concat 到 features，
+然后继续走 part_moe_leg 的 expert 路由。
+
+forward_part_moe:
+    expert_0 是 global/unknown expert
+    expert_1..num_parts-1 是 routed part experts
+
+输出按 part_moe_alpha / part_moe_global_keep 混合:
+    global_weight = 1 - part_weight
+    part_weight = clamp(part_moe_alpha, 0, 1 - global_keep)
+
+label==pid 的 Gaussian 使用:
+    global_weight * global_output + part_weight * expert_pid_output
+```
+
+训练时 alpha：
+
+```text
+train.py:
+    part_moe_alpha 在 part_moe_start_iter 前是 0
+    之后按 part_moe_warmup 线性增加到 1 - part_moe_global_keep
+
+脚本默认:
+    DNA:
+        part_moe_start_iter=10000
+        part_moe_warmup=1000
+        part_moe_global_keep=0.1
+    I3D:
+        part_moe_start_iter=4000
+        part_moe_warmup=1000
+        part_moe_global_keep=0.1
+    ZJU:
+        part_moe_start_iter=1000
+        part_moe_warmup=500
+        part_moe_global_keep=0.1
+```
+
+渲染 / evaluation：
+
+```text
+render.py:
+    use_part_moe=True 时把 part_moe_alpha 设为:
+        1 - part_moe_global_keep
+
+    并从:
+        model_path/part_labels/iteration_<part_moe_start_iter>/gaussian_part_label.npy
+    加载 part label。
+
+因此最终 render 使用完整 Part-MoE 混合状态。
+```
+
+tri_part 补充：
+
+```text
+tri_part = shared TriPlaneFeature + PartTriFeatureFiLM
+
+流程:
+    f_tri = shared TriPlaneFeature(query_xyz)
+    part_emb = embedding(part_label)
+    gamma, beta = Linear(part_emb)
+    f_part_tri = f_tri * (1 + gamma) + beta
+
+FiLM 最后一层零初始化:
+    初始 gamma=0, beta=0
+    所以 tri_part 初始等价普通 tri。
+
+注意:
+    tri_part 不是每个 part 单独一套 tri-plane。
+```
+
+当前 tri 的实质：
+
+```text
+它是在 part_moe_leg 的非刚性 MLP 输入中加入一个 canonical-space learnable spatial feature:
+
+    x_i canonical coordinate
+        -> query shared tri-plane
+        -> f_tri_i
+        -> concat 到 non-rigid features
+        -> part_moe_leg expert routing
+        -> d_xyz, d_rotation, d_scaling
+
+它提供的是空间记忆 / 空间位置条件增强，
+不是新的骨骼运动、不是重新采样 Gaussian，也不是每个 part 独立三平面。
+```
+
+当前局限：
+
+```text
+1. f_tri 只 concat 到第一层输入，没有 gate，也没有 hidden-layer adapter。
+2. tri 从训练一开始就生效，不是等 part_moe_leg 稳定后再打开。
+3. 所有 part 共享同一个 TriPlaneFeature。
+4. 当前 tri 不显式使用运动强弱、局部刚性、边界属性。
+5. 因此它容易变成 canonical spatial memory:
+    novelview / LPIPS 可能略好，
+    但 I3D novelpose 上会有泛化回退。
+```
+
+## 2026-07-27 tri_part 是否修改 shared tri-plane
+
+用户问题：
+
+```text
+所有 part expert 共享同一个三平面特征。那 tri_part 是修改了这一点吗？
+```
+
+结论：
+
+```text
+没有完全修改这一点。
+
+当前 tri_part 仍然共享同一个 TriPlaneFeature:
+    self.TriPlaneFeature = TriPlaneFeature(...)
+
+forward 里仍然先统一采样:
+    tri_features = self.sample_tri_features(query_xyz, ...)
+
+sample_tri_features 内部直接调用:
+    self.TriPlaneFeature(query_xyz)
+
+所以底层三平面参数 planes 仍然只有一套，
+不是每个 part expert 一套，也不是每个 part 一个独立 tri-plane bank。
+```
+
+tri_part 改的是什么：
+
+```text
+tri_part 在 shared tri_features 后面增加了 PartTriFeatureFiLM:
+    part_emb = part_embedding(part_label)
+    gamma, beta = Linear(part_emb)
+    f_part_tri = tri_features * (1 + gamma) + beta
+
+也就是说:
+    普通 tri:
+        所有 part 直接使用同一份 f_tri
+
+    tri_part:
+        所有 part 先共享同一份 f_tri，
+        再根据 part_label 对 f_tri 做不同的 gamma/beta 调制。
+
+它改变的是“不同 part 如何解释 / 调制共享 tri feature”，
+不是“不同 part 分别学习自己的 tri-plane”。
+```
+
+如果要真正修改 shared tri-plane：
+
+```text
+需要做新的结构，例如:
+    1. 每个 part 一套独立 TriPlaneFeature
+    2. shared tri + part-specific delta tri
+    3. part-local coordinate tri-plane
+
+其中最稳的是:
+    shared tri + small part-specific delta tri
+
+形式:
+    f_i = f_shared(x_i) + lambda * f_delta_part(x_i)
+
+lambda 初始设 0 或很小，避免一开始破坏普通 tri / part_moe_leg。
+```
+
+## 2026-07-27 新增 tri_gate 消融实验
+
+用户要求：
+
+```text
+做消融实验 tri_gate。
+给 tri 加 gate / adapter，避免它变成强 canonical 记忆。
+
+不要把 f_tri 直接 concat 到第一层输入。
+更稳形式:
+    features = features_base + alpha * gate_i * Adapter(f_tri_i)
+
+要求:
+    Adapter 最后一层 zero init
+    alpha 从 0 warm-up 到 0.2 / 0.4
+    tri-plane 作为受控补充，而不是直接改写 non-rigid MLP 输入分布
+
+改完跑 DNA-Rendering 六个序列并汇总评价指标。
+```
+
+实现口径：
+
+```text
+新增独立开关:
+    --use_tri_gate
+    --tri_gate_alpha，默认 0.2
+    --tri_gate_init，默认 0.5
+    --tri_gate_hidden_dim，默认 128
+
+脚本新增模式:
+    bash scripts/exps_dnarendering.sh tri_gate
+    bash scripts/exps_i3dhuman.sh tri_gate
+    bash scripts/exps_zjumocap.sh tri_gate
+
+tri_gate 模式自动启用:
+    --use_part_moe
+    --use_tri
+    --use_tri_gate
+    --part_label_schema part_moe_leg
+    --num_parts 7
+
+日志仍保存到:
+    /media/image/mxz/human/SeqAvatar/logs/tri
+
+默认 original / part_moe_leg / tri / tri_part 不启用 use_tri_gate。
+```
+
+网络修改：
+
+```text
+nets/mlp_delta_non_rigid.py
+    新增 TriGateAdapter:
+        adapter:
+            f_tri -> hidden -> base_feature_dim
+        gate:
+            concat(features_base, f_tri) -> hidden -> scalar gate_i
+
+    adapter 最后一层 weight / bias 零初始化。
+    gate 最后一层 weight 零初始化，bias 根据 tri_gate_init 初始化。
+
+    use_tri_gate=True 时:
+        仍创建 shared TriPlaneFeature。
+        不调用 _append_mlp_input_dim。
+        因此 shared MLP 第一层输入维度保持 part_moe_leg 原维度。
+
+    forward:
+        features_base = concat(x_emb, pose_feat, seq_pose_feat, seq_xyz_feat)
+        f_tri = TriPlaneFeature(query_xyz)
+        tri_res = gate_i * Adapter(f_tri)
+        features = features_base + alpha * tri_res
+
+    alpha:
+        根据 part_moe_alpha / (1 - part_moe_global_keep) 归一化 warmup。
+        最大值为 tri_gate_alpha，当前默认 0.2。
+        part_moe_start_iter 前 alpha=0。
+```
+
+和普通 tri / tri_part 的区别：
+
+```text
+普通 tri:
+    features = concat(features_base, f_tri)
+    MLP 第一层输入维度加宽。
+
+tri_part:
+    features = concat(features_base, FiLM_part(f_tri))
+    MLP 第一层输入维度加宽。
+
+tri_gate:
+    features = features_base + alpha * gate_i * Adapter(f_tri)
+    MLP 第一层输入维度不变。
+    tri 只能作为 residual 补充进入 base feature 空间。
+```
+
+已验证：
+
+```text
+bash -n:
+    scripts/exps_dnarendering.sh
+    scripts/exps_i3dhuman.sh
+    scripts/exps_zjumocap.sh
+
+PYTHONDONTWRITEBYTECODE=1 python -m py_compile:
+    nets/mlp_delta_non_rigid.py
+    scene/gaussian_model.py
+    arguments/__init__.py
+    train.py
+    render.py
+    gaussian_renderer/__init__.py
+
+CPU 最小前向:
+    plain part_moe_leg vs tri_gate
+
+结果:
+    shared first linear in dim plain:    6
+    shared first linear in dim tri_gate: 6
+    pre_part_alpha0 max diff: 0.0
+    pre_part_alpha1 max diff: 0.0
+    tri_gate_adapter_last_abs: 0.0, 0.0
+    part_enabled max diff: 0.0
+    output shapes:
+        d_xyz      [1, 8, 3]
+        d_rotation [1, 8, 4]
+        d_scaling  [1, 8, 3]
+
+git diff --check 通过。
+```
+
+DNA 六序列运行计划：
+
+```text
+GPU0:
+    0044_11
+    0051_09
+
+GPU1:
+    0206_04
+    0813_05
+
+GPU3:
+    0007_04
+    0019_10
+
+默认参数:
+    TRI_PLANE_DIM=32
+    TRI_PLANE_RES=64
+    TRI_PLANE_EXTENT=1.0
+    TRI_GATE_ALPHA=0.2
+    TRI_GATE_INIT=0.5
+    TRI_GATE_HIDDEN_DIM=128
+```
+
+启动状态：
+
+```text
+使用 tmux 启动。
+为避免 DNA train.py 内部最终 test-camera evaluation OOM，统一设置:
+    SKIP_LOAD_TEST_CAMERAS=1
+
+最终评价仍由脚本后续 render.py 生成 results_novelview_25000.json。
+
+RUN_TIME:
+    GPU0: 20260727_171828_tri_gate_gpu0
+    GPU1: 20260727_171828_tri_gate_gpu1
+    GPU3: 20260727_171828_tri_gate_gpu3
+
+tmux:
+    tri_gate_dna_gpu0_20260727_171828
+        0044_11
+        0051_09
+    tri_gate_dna_gpu1_20260727_171828
+        0206_04
+        0813_05
+    tri_gate_dna_gpu3_20260727_171828
+        0007_04
+        0019_10
+```
+
+运行结果：
+
+```text
+DNA-Rendering tri_gate 六序列已跑完。
+
+参数:
+    TRI_PLANE_DIM=32
+    TRI_PLANE_RES=64
+    TRI_PLANE_EXTENT=1.0
+    TRI_GATE_ALPHA=0.2
+    TRI_GATE_INIT=0.5
+    TRI_GATE_HIDDEN_DIM=128
+
+指标来自 render.py novelview evaluation:
+    [ITER 25000] Evaluating novelview #120
+
+0007_04:
+    PSNR       29.596143039067584
+    SSIM       0.9586856300632158
+    LPIPS*1000 44.537590257823466000
+
+0019_10:
+    PSNR       35.393041642506915
+    SSIM       0.9814122041066488
+    LPIPS*1000 20.737392936522762000
+
+0044_11:
+    PSNR       32.999435583750405
+    SSIM       0.9781217371424039
+    LPIPS*1000 21.279939799569547000
+
+0051_09:
+    PSNR       28.69997552235921
+    SSIM       0.9717189763983091
+    LPIPS*1000 30.450001576294503000
+
+0206_04:
+    PSNR       31.47780532836914
+    SSIM       0.9701835026343664
+    LPIPS*1000 33.83658217887084000
+
+0813_05:
+    PSNR       36.187635850906375
+    SSIM       0.987221019466718
+    LPIPS*1000 18.041820048044124000
+
+六序列平均:
+    PSNR       32.3923394944932715
+    SSIM       0.9745571783019436666666666666666666666667
+    LPIPS*1000 28.147221132854207000
+```
+
+对比已有 DNA 平均结果：
+
+```text
+part_moe_leg / 20260623_180431:
+    PSNR       32.390758583280778
+    SSIM       0.974622116320663
+    LPIPS*1000 27.993953922608245
+
+tri / 20260726_triC_d32_r64_e10:
+    PSNR       32.420168439547222
+    SSIM       0.9746725806759464
+    LPIPS*1000 27.96582942052434
+
+tri_part:
+    PSNR       32.39754720264011
+    SSIM       0.9747273918655184
+    LPIPS*1000 27.822270105955084
+
+tri_gate - part_moe_leg:
+    PSNR       +0.0015809112124935
+    SSIM       -0.0000649380187193333333333333333333333333
+    LPIPS*1000 +0.153267210245962000
+
+tri_gate - tri:
+    PSNR       -0.0278289450539505
+    SSIM       -0.0001154023740027333333333333333333333333
+    LPIPS*1000 +0.181391712329867000
+
+tri_gate - tri_part:
+    PSNR       -0.0052077081468385
+    SSIM       -0.0001702135635747333333333333333333333333
+    LPIPS*1000 +0.324951026899123000
+```
+
+结论：
+
+```text
+tri_gate 可以正常训练和评估，开关/日志/渲染链路接通。
+但当前默认设置 alpha=0.2、gate_init=0.5 下，DNA 平均结果没有超过已有 tri / tri_part。
+相对 part_moe_leg 只有 PSNR 极小提升，SSIM 和 LPIPS*1000 变差。
+
+因此 tri_gate 当前版本更像是稳定控制 tri-plane 影响的结构验证，
+还不能作为比 tri / tri_part 更强的最终方案。
+```
+
+验证：
+
+```text
+git diff --check 通过。
+tmux 训练会话已全部结束。
+```
+
+## 2026-07-27 tri_gate 未超过 tri 的原因分析
+
+用户问题：
+
+```text
+为什么 tri_gate 没有超过 tri？
+```
+
+结论：
+
+```text
+当前 tri_gate 没超过 tri，主要不是因为实现没接通，而是因为这个版本把 tri-plane
+的作用压得太弱、太晚，并且 residual 加法位置不够理想。
+
+tri 的方式:
+    features = concat(features_base, f_tri)
+    MLP 第一层输入维度加宽。
+    tri-plane 从训练一开始就直接参与 shared MLP 学习。
+    Part-MoE 在 10000 iter 激活时，expert 是从已经学过 tri 的 shared MLP 拷贝来的。
+
+tri_gate 的方式:
+    tri_res = gate * Adapter(f_tri)
+    features = features_base + alpha * tri_res
+    MLP 第一层输入维度不变。
+    alpha 依赖 part_moe_alpha，part_moe_start_iter 前基本为 0。
+    默认 alpha 最大只有 0.2。
+    Adapter 最后一层 zero init，所以初始 tri_res=0。
+
+因此 tri_gate 的实际效果是:
+    1. 前 10000 iter 几乎不使用 tri-plane。
+    2. 10000 iter 后才开始把 tri-plane 作为很小 residual 加进去。
+    3. zero-init adapter 让学习更稳，但也让早期梯度路径更弱。
+    4. ordinary tri 已经通过直接 concat 获得了更强、更早的空间特征表达。
+```
+
+代码依据：
+
+```text
+nets/mlp_delta_non_rigid.py
+    line 226-228:
+        普通 tri 会 _append_mlp_input_dim，把 tri_plane_dim 直接拼进 MLP 输入。
+
+    line 362-370:
+        tri_gate 的 alpha = tri_gate_alpha * normalized(part_moe_alpha)
+        默认 tri_gate_alpha=0.2。
+
+    line 397-410:
+        tri_gate 走 features = apply_tri_gate_adapter(...)
+        普通 tri 走 features = torch.cat([features, tri_features], dim=-1)
+
+scripts/exps_dnarendering.sh
+    line 116-123:
+        part_moe_start_iter=10000
+        part_moe_warmup=1000
+        TRI_GATE_ALPHA 默认 0.2
+```
+
+指标现象：
+
+```text
+tri_gate - tri:
+    平均 PSNR       -0.0278289450539505
+    平均 SSIM       -0.0001154023740027333333333333333333333333
+    平均 LPIPS*1000 +0.181391712329867000
+
+逐序列看:
+    0007_04:
+        PSNR 略升，但 SSIM / LPIPS 变差。
+    0206_04:
+        PSNR 略升，但 SSIM / LPIPS 变差。
+    0813_05:
+        LPIPS 略好，但 PSNR / SSIM 变差。
+    0019_10 / 0044_11 / 0051_09:
+        整体不如 tri。
+
+说明 tri_gate 不是完全没用，但它的平均收益被弱化，且没有形成稳定提升。
+```
+
+进一步判断：
+
+```text
+tri_gate 的目标是避免 tri-plane 强记忆，所以刻意做了:
+    zero init
+    warmup
+    small alpha
+    residual adapter
+    gate 控制
+
+这些都增强了稳定性，但也削弱了容量。
+当前 DNA 上 ordinary tri 的直接 concat 并没有出现明显过拟合到劣化的情况，
+所以更强表达的 tri 反而更好。
+```
+
+如果继续优化 tri_gate，更合理方向：
+
+```text
+1. 不要让 tri_gate 等到 part_moe_start_iter 后才生效。
+   让 alpha 从训练早期 warmup 到一个小值，例如 3000-6000 iter 到 0.2。
+
+2. 把 residual 加法位置从原始 input feature 改到 MLP hidden feature。
+   当前 features_base 是 x_emb / pose_feat / seq_feat 的拼接，不是一个干净的可加隐空间。
+   更合理:
+       h0 = first_layer(features_base)
+       h0 = h0 + alpha * gate * Adapter(f_tri)
+
+3. 提高 alpha 上限做小网格:
+       0.2 / 0.4 / 0.6
+   当前 0.2 可能太保守。
+
+4. 给 adapter 加很小非零初始化或只 zero-init 输出 bias。
+   否则初期 tri-plane 和 adapter 前层梯度进入较慢。
+
+5. gate 不要一开始就完全自由学习，可以按 part 或运动强度给先验。
+   例如腿脚/手部更大 gate，躯干/脸部更小 gate。
+```
+
+## 2026-07-27 tri_gate 是否能靠调参超过 tri
+
+用户问题：
+
+```text
+是不是可以通过调参让 tri_gate 更稳直到超过 tri？
+```
+
+判断：
+
+```text
+有机会，但不能理解成“继续让 tri_gate 更稳就能超过 tri”。
+
+当前 tri_gate 的问题不是不稳，而是过于保守：
+    alpha 最大只有 0.2
+    alpha 还绑定 part_moe_alpha，10000 iter 之前基本不生效
+    Adapter 最后一层 zero init
+    tri-plane 只作为 additive residual，而不是直接进入 MLP
+
+所以继续降低 gate / 降低 alpha / 更强 zero-init，只会更稳但更没用。
+如果目标是超过 tri，调参方向应该是“受控地增强 tri_gate 的使用强度”，不是继续压低它。
+```
+
+优先尝试：
+
+```text
+不改代码的参数实验:
+    TRI_GATE_ALPHA=0.4, TRI_GATE_INIT=0.5, TRI_GATE_HIDDEN_DIM=128
+    TRI_GATE_ALPHA=0.6, TRI_GATE_INIT=0.5, TRI_GATE_HIDDEN_DIM=128
+    TRI_GATE_ALPHA=0.4, TRI_GATE_INIT=0.7, TRI_GATE_HIDDEN_DIM=128
+    TRI_GATE_ALPHA=0.4, TRI_GATE_INIT=0.5, TRI_GATE_HIDDEN_DIM=256
+
+预期:
+    alpha=0.4 可能是最值得先试的。
+    alpha=0.6 如果 PSNR 上升但 LPIPS/SSIM 变差，说明 tri 贡献过强。
+    gate_init=0.7 可以让 gate 初始更开放，但也可能更像普通 tri。
+    hidden=256 增加 adapter 容量，可能提升但也更容易记忆。
+```
+
+更可能有效的代码级优化：
+
+```text
+1. tri_gate 不要绑定 part_moe_alpha。
+   新增独立:
+       tri_gate_start_iter
+       tri_gate_warmup
+   例如:
+       start=3000
+       warmup=3000
+       alpha_max=0.2 或 0.4
+
+   这样 shared MLP 在 Part-MoE 激活前已经见过 tri_gate 特征。
+
+2. 把 adapter residual 加到 hidden feature，而不是 input feature。
+   当前加法发生在:
+       features_base = concat(x_emb, pose_feat, seq_feat)
+   这个空间不是统一语义隐空间。
+
+   更合理:
+       h = first_layer(features_base)
+       h = h + alpha * gate * Adapter(f_tri)
+
+3. gate 做 part / motion prior，而不是完全自由 gate。
+   对运动强的部件给更高上限，对稳定部件给更低上限。
+```
+
+推荐实验策略：
+
+```text
+第一阶段只用 0044_11 和 0206_04 快速筛参数:
+    先跑 alpha=0.4
+    再跑 alpha=0.6
+    如果 alpha=0.4 两个序列都优于当前 tri_gate，再扩到六序列。
+
+判断标准:
+    如果 PSNR 上升但 LPIPS*1000 明显变差，不算成功。
+    至少要平均 PSNR 接近或超过 tri，同时 SSIM / LPIPS 不退。
+
+当前 tri_gate 距 tri 很近:
+    PSNR 只差 0.0278289450539505
+但 LPIPS*1000 差 0.181391712329867，
+所以单纯提高 alpha 可能补 PSNR，但要小心 LPIPS 继续变差。
+```
+
+## 2026-07-28 tri_gate 调参和独立 warmup
+
+用户要求：
+
+```text
+不改变和基线实验对比公平性的基础上调整 tri_gate。
+可以调参和添加 warmup。
+只需要在 DNA 数据集上做实验。
+目标是最后结果都超过 tri 实验。
+用 GPU 0,1,2，开 tmux 窗口跑。
+```
+
+实现修改：
+
+```text
+新增 tri_gate 独立 warmup 参数:
+    --tri_gate_start_iter
+    --tri_gate_warmup
+
+默认:
+    tri_gate_start_iter = 3000
+    tri_gate_warmup = 3000
+
+训练时:
+    train.py 每轮计算:
+        tri_gate_alpha_scale = warmup(iteration, tri_gate_start_iter, tri_gate_warmup)
+
+渲染时:
+    render.py 设置:
+        tri_gate_alpha_scale = 1.0
+
+gaussian_renderer/__init__.py:
+    把 pc.tri_gate_alpha_scale 传给 NonrigidDeformer。
+
+nets/mlp_delta_non_rigid.py:
+    tri_gate alpha 从:
+        tri_gate_alpha * normalized(part_moe_alpha)
+    改为:
+        tri_gate_alpha * tri_gate_alpha_scale
+
+因此 tri_gate 不再等 part_moe_start_iter=10000 后才生效，
+shared MLP 在 Part-MoE 拷贝 expert 前已经能学习 gated tri feature。
+```
+
+公平性口径：
+
+```text
+不改:
+    DNA 数据集
+    六个序列
+    25000 iterations
+    part_moe_leg 基础
+    part_label_schema=part_moe_leg
+    num_parts=7
+    tri_plane_extent=1.0
+    tri_plane_dim/res 的默认候选仍从 tri 已有最佳设置开始
+
+只改 tri_gate 自身参数:
+    TRI_GATE_ALPHA
+    TRI_GATE_INIT
+    TRI_GATE_HIDDEN_DIM
+    TRI_GATE_START_ITER
+    TRI_GATE_WARMUP
+```
+
+已验证：
+
+```text
+bash -n scripts/exps_dnarendering.sh
+
+PYTHONDONTWRITEBYTECODE=1 python -m py_compile:
+    nets/mlp_delta_non_rigid.py
+    scene/gaussian_model.py
+    gaussian_renderer/__init__.py
+    train.py
+    render.py
+    arguments/__init__.py
+
+CPU 小张量测试:
+    plain MLP input dim: 6
+    ordinary tri MLP input dim: 38
+    tri_gate MLP input dim: 6
+    tri_gate forward 输出:
+        d_xyz/d_rotation/d_scaling shape 正常
+
+train.py warmup 函数测试:
+    start=3000, warmup=3000
+    iter 3000 -> 0.0
+    iter 4500 -> 0.5
+    iter 6000 -> 1.0
+    iter 9000 -> 1.0
+```
+
+注意：
+
+```text
+当前 shell 的 PATH 没有 conda env bin，直接导入 train.py 时 knn_cuda 会找不到 ninja。
+tmux 启动命令需要显式:
+    PATH=/media/image/mxz/.conda/envs/seqavatar/bin:$PATH
+```
+
+第一轮完整六序列：
+
+```text
+实验标识:
+    tri_gate_a04_s3w3
+
+参数:
+    TRI_PLANE_DIM=32
+    TRI_PLANE_RES=64
+    TRI_PLANE_EXTENT=1.0
+    TRI_GATE_ALPHA=0.4
+    TRI_GATE_INIT=0.5
+    TRI_GATE_HIDDEN_DIM=128
+    TRI_GATE_START_ITER=3000
+    TRI_GATE_WARMUP=3000
+    SKIP_LOAD_TEST_CAMERAS=1
+
+tmux:
+    tri_gate_a04_s3w3_gpu0
+        GPU0: 0044_11, 0051_09
+    tri_gate_a04_s3w3_gpu1
+        GPU1: 0206_04, 0813_05
+    tri_gate_a04_s3w3_gpu2
+        GPU2: 0007_04, 0019_10
+
+启动状态:
+    参数已写入 logs/tri/20260728_tri_gate_a04_s3w3_gpu*_DNA-Rendering_tri_gate.log
+    tmux 会话正常启动。
+```
+
+第一轮运行中状态：
+
+```text
+tri_gate_a04_s3w3:
+    GPU0 0044_11 正常训练。
+    GPU2 0007_04 正常训练。
+    GPU1 0206_04 在 14040 iter 左右失败:
+        RuntimeError: CUDA error: an illegal memory access was encountered
+
+失败位置:
+    train.py loss.backward()
+
+判断:
+    这不是 render 阶段失败。
+    alpha=0.4 可能对 0206_04 偏激进，也可能触发了 CUDA rasterizer / backward 的不稳定。
+    因此 tri_gate_a04_s3w3 不能作为最终完整方案。
+
+保持 GPU0/GPU2 继续跑完，用于参考逐序列趋势。
+```
+
+GPU1 retry：
+
+```text
+实验标识:
+    tri_gate_a03_s3w4
+
+参数:
+    TRI_GATE_ALPHA=0.3
+    TRI_GATE_INIT=0.5
+    TRI_GATE_HIDDEN_DIM=128
+    TRI_GATE_START_ITER=3000
+    TRI_GATE_WARMUP=4000
+    TRI_PLANE_DIM=32
+    TRI_PLANE_RES=64
+    TRI_PLANE_EXTENT=1.0
+    SKIP_LOAD_TEST_CAMERAS=1
+
+tmux:
+    tri_gate_a03_s3w4_gpu1
+        GPU1: 0206_04, 0813_05
+
+说明:
+    这组先在 GPU1 上补测 0206/0813。
+    最终只有同一组参数完整跑完六序列才算有效最终结果。
+```
+
+alpha=0.4 第一轮淘汰：
+
+```text
+tri_gate_a04_s3w3 已停止继续占卡。
+
+原因:
+    1. 0206_04 在 14040 iter 左右 CUDA illegal memory access。
+    2. 0044_11 已出指标，但低于 tri:
+        tri:
+            PSNR       33.01947204271952
+            SSIM       0.9781568845113119
+            LPIPS*1000 21.017010944585007
+        tri_gate_a04_s3w3:
+            PSNR       32.983991940816246
+            SSIM       0.9780832613507906
+            LPIPS*1000 21.273130232778686
+
+参考:
+    0007_04 的 alpha=0.4 指标略超过 tri:
+        PSNR       29.571448135375977
+        SSIM       0.9587977970639865
+        LPIPS*1000 44.22216749129196
+
+结论:
+    alpha=0.4 对部分序列有收益，但稳定性和 0044_11 表现不满足“超过 tri”目标。
+```
+
+完整候选组：
+
+```text
+实验标识:
+    tri_gate_a03_s3w4
+
+参数:
+    TRI_GATE_ALPHA=0.3
+    TRI_GATE_INIT=0.5
+    TRI_GATE_HIDDEN_DIM=128
+    TRI_GATE_START_ITER=3000
+    TRI_GATE_WARMUP=4000
+    TRI_PLANE_DIM=32
+    TRI_PLANE_RES=64
+    TRI_PLANE_EXTENT=1.0
+    SKIP_LOAD_TEST_CAMERAS=1
+
+tmux:
+    tri_gate_a03_s3w4_gpu0
+        GPU0: 0044_11, 0051_09
+    tri_gate_a03_s3w4_gpu1
+        GPU1: 0206_04, 0813_05
+    tri_gate_a03_s3w4_gpu2
+        GPU2: 0007_04, 0019_10
+
+状态:
+    三张卡已启动同一组参数，作为下一组完整六序列候选。
+```
+
+运行中淘汰记录：
+
+```text
+tri_gate_a03_s3w4 已停止继续占卡。
+
+原因:
+    该组已经有两个关键序列低于 tri，不能作为最终“超过 tri”的方案。
+
+已完成指标:
+    0044_11:
+        tri:
+            PSNR       33.01947204271952
+            SSIM       0.9781568845113119
+            LPIPS*1000 21.017010944585007
+        tri_gate_a03_s3w4:
+            PSNR       32.99650395711263
+            SSIM       0.9781053364276886
+            LPIPS*1000 21.21883356012404
+
+    0206_04:
+        tri:
+            PSNR       31.623818985621135
+            SSIM       0.9710065623124441
+            LPIPS*1000 32.972589057559766
+        tri_gate_a03_s3w4:
+            PSNR       31.545159530639648
+            SSIM       0.9709060991803805
+            LPIPS*1000 33.106669411063194
+
+    0007_04:
+        tri:
+            PSNR       29.57000511487325
+            SSIM       0.9587606683373451
+            LPIPS*1000 44.59049558887879
+        tri_gate_a03_s3w4:
+            PSNR       29.58457115491231
+            SSIM       0.9587902670105298
+            LPIPS*1000 44.31699852769574
+
+判断:
+    alpha=0.3, start=3000, warmup=4000 对 0007_04 有收益，
+    但对 0044_11 / 0206_04 仍偏负。
+    下一轮需要更保守地降低最终 alpha 或延后/拉长 warmup，减少 gate 对 tri 特征的早期扰动。
+```
+
+下一轮修改方向：
+
+```text
+当前 additive tri_gate 的问题:
+    f_tri -> adapter 后直接加到 base features 上。
+    这会改变原始 x/pose/seq feature 的输入语义，
+    且 adapter 最后一层 zero init 会让 tri-plane 早期梯度链路偏弱。
+
+新增只属于 tri_gate 的可选模式:
+    --tri_gate_mode additive   # 保留现有形式
+    --tri_gate_mode concat     # 新形式
+
+concat 形式:
+    gate_i = sigmoid(MLP_gate(features_base, f_tri_i))
+    features = concat(features_base, alpha * warmup * gate_i * f_tri_i)
+
+公平性:
+    不改 original / part_moe_leg / tri / tri_part。
+    tri_gate 仍基于 part_moe_leg。
+    tri_plane_dim/res/extent 仍从当前 tri 最佳公平设置 dim=32,res=64,extent=1.0 开始。
+
+目的:
+    保留 direct tri 的 MLP 输入容量，
+    但用 gate + warmup 控制 tri 特征强度，避免直接 concat 的强记忆问题。
+```
+
+代码与最小验证：
+
+```text
+新增参数:
+    --tri_gate_mode
+
+取值:
+    additive:
+        保留原 tri_gate:
+            features = features_base + alpha * warmup * gate_i * Adapter(f_tri_i)
+
+    concat:
+        新增 gated concat:
+            features = concat(features_base, alpha * warmup * gate_i * f_tri_i)
+
+接线文件:
+    arguments/__init__.py
+    scene/gaussian_model.py
+    nets/mlp_delta_non_rigid.py
+    scripts/exps_dnarendering.sh
+
+脚本环境变量:
+    TRI_GATE_MODE=additive|concat
+
+验证:
+    bash -n scripts/exps_dnarendering.sh
+
+    PYTHONDONTWRITEBYTECODE=1 python -m py_compile:
+        nets/mlp_delta_non_rigid.py
+        scene/gaussian_model.py
+        gaussian_renderer/__init__.py
+        train.py
+        render.py
+        arguments/__init__.py
+
+    CPU 小张量 forward:
+        plain first_in            6
+        tri first_in              38
+        tri_gate_additive first_in 6
+        tri_gate_concat first_in   38
+
+说明:
+    tri_gate_concat 保留 direct tri 的输入容量。
+    additive 旧路径保留。
+    original / part_moe_leg / tri / tri_part 不受该模式影响。
+```
+
+screening 组 1：
+
+```text
+目的:
+    用三个敏感序列先判断 gated concat 是否有希望超过 tri。
+
+参数:
+    TRI_GATE_MODE=concat
+    TRI_GATE_ALPHA=1.0
+    TRI_GATE_INIT=0.9
+    TRI_GATE_HIDDEN_DIM=128
+    TRI_GATE_START_ITER=0
+    TRI_GATE_WARMUP=3000
+    TRI_PLANE_DIM=32
+    TRI_PLANE_RES=64
+    TRI_PLANE_EXTENT=1.0
+    SKIP_LOAD_TEST_CAMERAS=1
+
+tmux:
+    tri_gate_screen1_gpu0
+        GPU0: 0044_11
+    tri_gate_screen1_gpu1
+        GPU1: 0206_04
+    tri_gate_screen1_gpu2
+        GPU2: 0007_04
+
+说明:
+    RUN_TIME 只作为运行标识，实验模式仍是 tri_gate。
+    参数写在命令行环境变量和日志开头，不新建 triC 之类消融名称。
+```
+
+screening 组 1 结果：
+
+```text
+参数:
+    TRI_GATE_MODE=concat
+    TRI_GATE_ALPHA=1.0
+    TRI_GATE_INIT=0.9
+    TRI_GATE_START_ITER=0
+    TRI_GATE_WARMUP=3000
+
+0044_11:
+    tri:
+        PSNR       33.01947204271952
+        SSIM       0.9781568845113119
+        LPIPS*1000 21.017010944585007
+    tri_gate:
+        PSNR       32.96001152992248
+        SSIM       0.9781957934300105
+        LPIPS*1000 21.057943495300908
+
+0206_04:
+    tri:
+        PSNR       31.623818985621135
+        SSIM       0.9710065623124441
+        LPIPS*1000 32.972589057559766
+    tri_gate:
+        PSNR       31.534537426630656
+        SSIM       0.9705853089690208
+        LPIPS*1000 33.093597662324704
+
+0007_04:
+    tri:
+        PSNR       29.57000511487325
+        SSIM       0.9587606683373451
+        LPIPS*1000 44.59049558887879
+    tri_gate:
+        PSNR       29.578313477834065
+        SSIM       0.9588532492518425
+        LPIPS*1000 44.22089303843677
+
+结论:
+    gated concat 保留容量后，0007_04 三项超过 tri。
+    但 0044_11 / 0206_04 仍不满足要求。
+    这组不会进入完整六序列。
+
+下一组:
+    增强 tri_gate_concat 的有效强度:
+        TRI_GATE_ALPHA=1.1
+        TRI_GATE_INIT=0.95
+        TRI_GATE_WARMUP=1000
+    目标是更接近 direct tri 的输入强度，同时保留可学习 gate。
+```
+
+screening 组 2：
+
+```text
+参数:
+    TRI_GATE_MODE=concat
+    TRI_GATE_ALPHA=1.1
+    TRI_GATE_INIT=0.95
+    TRI_GATE_HIDDEN_DIM=128
+    TRI_GATE_START_ITER=0
+    TRI_GATE_WARMUP=1000
+    TRI_PLANE_DIM=32
+    TRI_PLANE_RES=64
+    TRI_PLANE_EXTENT=1.0
+    SKIP_LOAD_TEST_CAMERAS=1
+
+tmux:
+    tri_gate_screen2_gpu0
+        GPU0: 0044_11
+    tri_gate_screen2_gpu1
+        GPU1: 0206_04
+    tri_gate_screen2_gpu2
+        GPU2: 0007_04
+```
+
+screening 组 2 结果：
+
+```text
+参数:
+    TRI_GATE_MODE=concat
+    TRI_GATE_ALPHA=1.1
+    TRI_GATE_INIT=0.95
+    TRI_GATE_START_ITER=0
+    TRI_GATE_WARMUP=1000
+
+0044_11:
+    tri:
+        PSNR       33.01947204271952
+        SSIM       0.9781568845113119
+        LPIPS*1000 21.017010944585007
+    tri_gate:
+        PSNR       32.97856990496317
+        SSIM       0.9781970143318176
+        LPIPS*1000 21.016903702790536
+
+0206_04:
+    tri:
+        PSNR       31.623818985621135
+        SSIM       0.9710065623124441
+        LPIPS*1000 32.972589057559766
+    tri_gate:
+        PSNR       31.59208936691284
+        SSIM       0.971009287238121
+        LPIPS*1000 32.53928067473074
+
+0007_04:
+    tri:
+        PSNR       29.57000511487325
+        SSIM       0.9587606683373451
+        LPIPS*1000 44.59049558887879
+    tri_gate:
+        PSNR       29.568023363749187
+        SSIM       0.958826502164205
+        LPIPS*1000 44.10010984477898
+
+结论:
+    相比 screen1，0206_04 明显改善，0044_11 LPIPS 基本追平 tri，
+    但 PSNR 仍低于 tri。
+    0007_04 在更强初始 gate 下 PSNR 反而略低。
+
+下一组:
+    不继续单纯提高 gate_init。
+    改为:
+        TRI_GATE_ALPHA=1.5
+        TRI_GATE_INIT=0.6
+        TRI_GATE_WARMUP=1000
+    让有效强度初始接近 screen1，但给 gate 留出更大的可学习上限。
+```
+
+screening 组 3：
+
+```text
+参数:
+    TRI_GATE_MODE=concat
+    TRI_GATE_ALPHA=1.5
+    TRI_GATE_INIT=0.6
+    TRI_GATE_HIDDEN_DIM=128
+    TRI_GATE_START_ITER=0
+    TRI_GATE_WARMUP=1000
+    TRI_PLANE_DIM=32
+    TRI_PLANE_RES=64
+    TRI_PLANE_EXTENT=1.0
+    SKIP_LOAD_TEST_CAMERAS=1
+
+tmux:
+    tri_gate_screen3_gpu0
+        GPU0: 0044_11
+    tri_gate_screen3_gpu1
+        GPU1: 0206_04
+    tri_gate_screen3_gpu2
+        GPU2: 0007_04
+```
+
+screening 组 3 结果：
+
+```text
+参数:
+    TRI_GATE_MODE=concat
+    TRI_GATE_ALPHA=1.5
+    TRI_GATE_INIT=0.6
+    TRI_GATE_START_ITER=0
+    TRI_GATE_WARMUP=1000
+
+0044_11:
+    tri:
+        PSNR       33.01947204271952
+        SSIM       0.9781568845113119
+        LPIPS*1000 21.017010944585007
+    tri_gate:
+        PSNR       32.98333891232809
+        SSIM       0.9781879449884097
+        LPIPS*1000 21.006147206450503
+
+0206_04:
+    tri:
+        PSNR       31.623818985621135
+        SSIM       0.9710065623124441
+        LPIPS*1000 32.972589057559766
+    tri_gate:
+        PSNR       31.53624178568522
+        SSIM       0.9707346618175506
+        LPIPS*1000 33.04816630358497
+
+0007_04:
+    tri:
+        PSNR       29.57000511487325
+        SSIM       0.9587606683373451
+        LPIPS*1000 44.59049558887879
+    tri_gate:
+        PSNR       29.623930740356446
+        SSIM       0.9589480131864547
+        LPIPS*1000 44.43178423680365
+
+结论:
+    高 alpha 上限 + 低 gate init 对 0007_04 有明显收益，
+    但 0206_04 退化，0044_11 仍未超过 tri。
+    concat gate 作为 tri 的唯一入口不够稳。
+
+下一步代码方向:
+    新增 tri_gate_mode=scale。
+    形式:
+        gate_i = sigmoid(MLP_gate(features_base, f_tri_i))
+        f_tri'_i = (1 + alpha * warmup * (gate_i - gate_init)) * f_tri_i
+        features = concat(features_base, f_tri'_i)
+
+    初始 gate_i = gate_init，所以初始严格等价 direct tri。
+    这样公平性更好:
+        不改变 direct tri 的初始训练路径，
+        只让 gate 学 per-point 的小幅增强/抑制。
+```
+
+tri_gate_mode=scale 实现与验证：
+
+```text
+新增可选模式:
+    --tri_gate_mode scale
+
+实现:
+    gate_i = sigmoid(MLP_gate(features_base, f_tri_i))
+    f_tri'_i = (1 + alpha * warmup * (gate_i - gate_init)) * f_tri_i
+    features = concat(features_base, f_tri'_i)
+
+性质:
+    gate 最后一层 weight=0，bias=logit(gate_init)。
+    初始 gate_i=gate_init，因此 f_tri'_i=f_tri_i。
+    也就是说 scale 模式初始严格等价 direct tri，
+    后续只学习点级 tri 特征缩放。
+
+验证:
+    bash -n scripts/exps_dnarendering.sh
+
+    PYTHONDONTWRITEBYTECODE=1 python -m py_compile:
+        nets/mlp_delta_non_rigid.py
+        scene/gaussian_model.py
+        gaussian_renderer/__init__.py
+        train.py
+        render.py
+        arguments/__init__.py
+
+    CPU 小张量 forward:
+        tri_gate_scale first_in = 38
+        输出:
+            d_xyz      [1, 5, 3]
+            d_rotation [1, 5, 4]
+            d_scaling  [1, 5, 3]
+```
+
+screening 组 4：
+
+```text
+参数:
+    TRI_GATE_MODE=scale
+    TRI_GATE_ALPHA=0.5
+    TRI_GATE_INIT=0.5
+    TRI_GATE_HIDDEN_DIM=128
+    TRI_GATE_START_ITER=3000
+    TRI_GATE_WARMUP=5000
+    TRI_PLANE_DIM=32
+    TRI_PLANE_RES=64
+    TRI_PLANE_EXTENT=1.0
+    SKIP_LOAD_TEST_CAMERAS=1
+
+目的:
+    保留 direct tri 的完整路径；
+    3000 iter 后再逐步学习点级缩放，避免早期训练被 gate 扰动。
+
+tmux:
+    tri_gate_screen4_gpu0
+        GPU0: 0044_11
+    tri_gate_screen4_gpu1
+        GPU1: 0206_04
+    tri_gate_screen4_gpu2
+        GPU2: 0007_04
+```
+
+screening 组 4 中止说明：
+
+```text
+运行中发现公平性问题:
+    tri_gate 的 gate 模块在 MLP/head 初始化前创建，
+    会额外消耗随机数。
+    因此即使 scale 模式公式初始等价 direct tri，
+    实际 MLP/head 初始权重也不一定与 tri 对齐。
+
+修复:
+    gate 模块延后到 MLP/head 初始化之后创建。
+
+验证:
+    同一 random seed 下，对比 tri 与 tri_gate_mode=scale:
+        mlp               max diff 0.0
+        gaussian_warp     max diff 0.0
+        gaussian_rotation max diff 0.0
+        gaussian_scaling  max diff 0.0
+
+screen4 是修复前启动的，且 0206_04 已低于 tri:
+    0206_04:
+        PSNR       31.502585474650065
+        SSIM       0.9704470753669738
+        LPIPS*1000 33.3999853891631
+
+因此停止 screen4 剩余 0044_11，重新启动修复后的公平版 screen5。
+```
+
+screening 组 5：
+
+```text
+参数:
+    TRI_GATE_MODE=scale
+    TRI_GATE_ALPHA=0.5
+    TRI_GATE_INIT=0.5
+    TRI_GATE_HIDDEN_DIM=128
+    TRI_GATE_START_ITER=3000
+    TRI_GATE_WARMUP=5000
+    TRI_PLANE_DIM=32
+    TRI_PLANE_RES=64
+    TRI_PLANE_EXTENT=1.0
+    SKIP_LOAD_TEST_CAMERAS=1
+
+与 screen4 的区别:
+    使用修复后的 gate 初始化顺序。
+    tri_gate_scale 的 MLP/head 初始权重与 direct tri 对齐。
+
+tmux:
+    tri_gate_screen5_gpu0
+        GPU0: 0044_11
+    tri_gate_screen5_gpu1
+        GPU1: 0206_04
+    tri_gate_screen5_gpu2
+        GPU2: 0007_04
+```
+
+screening 组 5 结果：
+
+```text
+参数:
+    TRI_GATE_MODE=scale
+    TRI_GATE_ALPHA=0.5
+    TRI_GATE_INIT=0.5
+    TRI_GATE_START_ITER=3000
+    TRI_GATE_WARMUP=5000
+
+0044_11:
+    tri:
+        PSNR       33.01947204271952
+        SSIM       0.9781568845113119
+        LPIPS*1000 21.017010944585007
+    tri_gate:
+        PSNR       33.056373023986815
+        SSIM       0.9782408942778905
+        LPIPS*1000 21.020517467210688
+
+0206_04:
+    tri:
+        PSNR       31.623818985621135
+        SSIM       0.9710065623124441
+        LPIPS*1000 32.972589057559766
+    tri_gate:
+        PSNR       31.566159280141193
+        SSIM       0.9707474038004875
+        LPIPS*1000 33.18445282056928
+
+0007_04:
+    tri:
+        PSNR       29.57000511487325
+        SSIM       0.9587606683373451
+        LPIPS*1000 44.59049558887879
+    tri_gate:
+        PSNR       29.56226814587911
+        SSIM       0.9588541895151138
+        LPIPS*1000 44.36838128603995
+
+结论:
+    初始化公平后，0044_11 有收益。
+    0007_04 的感知指标有收益但 PSNR 低一点。
+    0206_04 仍明显低于 tri。
+
+下一组:
+    将 gate 缩放推迟到 Part-MoE 启动后:
+        TRI_GATE_START_ITER=10000
+        TRI_GATE_WARMUP=5000
+        TRI_GATE_ALPHA=0.3
+    前 10000 iter 完全等价 tri，避免早期共享 MLP 被 gate 调制影响。
+```
+
+screening 组 6：
+
+```text
+参数:
+    TRI_GATE_MODE=scale
+    TRI_GATE_ALPHA=0.3
+    TRI_GATE_INIT=0.5
+    TRI_GATE_HIDDEN_DIM=128
+    TRI_GATE_START_ITER=10000
+    TRI_GATE_WARMUP=5000
+    TRI_PLANE_DIM=32
+    TRI_PLANE_RES=64
+    TRI_PLANE_EXTENT=1.0
+    SKIP_LOAD_TEST_CAMERAS=1
+
+tmux:
+    tri_gate_screen6_gpu0
+        GPU0: 0044_11
+    tri_gate_screen6_gpu1
+        GPU1: 0206_04
+    tri_gate_screen6_gpu2
+        GPU2: 0007_04
+```
+
+screening 组 6 结果：
+
+```text
+参数:
+    TRI_GATE_MODE=scale
+    TRI_GATE_ALPHA=0.3
+    TRI_GATE_INIT=0.5
+    TRI_GATE_START_ITER=10000
+    TRI_GATE_WARMUP=5000
+
+0044_11:
+    tri:
+        PSNR       33.01947204271952
+        SSIM       0.9781568845113119
+        LPIPS*1000 21.017010944585007
+    tri_gate:
+        PSNR       33.03347080548604
+        SSIM       0.9782720178365707
+        LPIPS*1000 20.98686106813451
+
+0206_04:
+    tri:
+        PSNR       31.623818985621135
+        SSIM       0.9710065623124441
+        LPIPS*1000 32.972589057559766
+    tri_gate:
+        PSNR       31.523118098576862
+        SSIM       0.9707509453097979
+        LPIPS*1000 32.657264002288386
+
+0007_04:
+    tri:
+        PSNR       29.57000511487325
+        SSIM       0.9587606683373451
+        LPIPS*1000 44.59049558887879
+    tri_gate:
+        PSNR       29.59822532335917
+        SSIM       0.9590465133388837
+        LPIPS*1000 43.87906308596333
+
+结论:
+    0044_11 和 0007_04 三项均超过 tri。
+    0206_04 的 LPIPS 超过 tri，但 PSNR/SSIM 仍低。
+后续先集中筛 0206_04。
+```
+
+screening 组 7：0206_04 专项 concat 强度扫描
+
+```text
+共同参数:
+    TRI_GATE_MODE=concat
+    TRI_GATE_INIT=0.95
+    TRI_GATE_HIDDEN_DIM=128
+    TRI_GATE_START_ITER=0
+    TRI_GATE_WARMUP=1000
+    TRI_PLANE_DIM=32
+    TRI_PLANE_RES=64
+    TRI_PLANE_EXTENT=1.0
+    SKIP_LOAD_TEST_CAMERAS=1
+
+tmux:
+    tri_gate_screen7a_gpu0
+        GPU0: 0206_04
+        TRI_GATE_ALPHA=1.2
+
+    tri_gate_screen7b_gpu1
+        GPU1: 0206_04
+        TRI_GATE_ALPHA=1.3
+
+    tri_gate_screen7c_gpu2
+        GPU2: 0206_04
+        TRI_GATE_ALPHA=1.4
+```
+
+screening 组 7 结果：
+
+```text
+0206_04 tri:
+    PSNR       31.623818985621135
+    SSIM       0.9710065623124441
+    LPIPS*1000 32.972589057559766
+
+TRI_GATE_ALPHA=1.2:
+    PSNR       31.47824543317159
+    SSIM       0.9702153558532397
+    LPIPS*1000 33.80788190600772
+
+TRI_GATE_ALPHA=1.3:
+    19080 iter 左右失败:
+        RuntimeError: CUDA error: an illegal memory access was encountered
+
+TRI_GATE_ALPHA=1.4:
+    PSNR       31.52886069615682
+    SSIM       0.9709127172827721
+    LPIPS*1000 32.82117587514222
+
+结论:
+    concat 强度扫描没有让 0206_04 超过 tri。
+    alpha=1.4 的 LPIPS 超过 tri，但 PSNR/SSIM 仍低。
+
+下一步:
+    使用目前最稳的 screen6 参数补跑剩余 0051_09 / 0813_05 / 0019_10。
+    结合 screen6 已有 0044_11 / 0206_04 / 0007_04 计算六序列平均。
+```
+
+screen6 参数补跑剩余三序列：
+
+```text
+参数:
+    TRI_GATE_MODE=scale
+    TRI_GATE_ALPHA=0.3
+    TRI_GATE_INIT=0.5
+    TRI_GATE_HIDDEN_DIM=128
+    TRI_GATE_START_ITER=10000
+    TRI_GATE_WARMUP=5000
+    TRI_PLANE_DIM=32
+    TRI_PLANE_RES=64
+    TRI_PLANE_EXTENT=1.0
+    SKIP_LOAD_TEST_CAMERAS=1
+
+tmux:
+    tri_gate_screen6_rest_gpu0
+        GPU0: 0051_09
+    tri_gate_screen6_rest_gpu1
+        GPU1: 0813_05
+    tri_gate_screen6_rest_gpu2
+        GPU2: 0019_10
+```
+
+screen6 六序列汇总：
+
+```text
+参数:
+    TRI_GATE_MODE=scale
+    TRI_GATE_ALPHA=0.3
+    TRI_GATE_INIT=0.5
+    TRI_GATE_START_ITER=10000
+    TRI_GATE_WARMUP=5000
+
+逐序列:
+    0007_04:
+        PSNR       29.59822532335917
+        SSIM       0.9590465133388837
+        LPIPS*1000 43.87906308596333
+
+    0019_10:
+        PSNR       35.43037147521973
+        SSIM       0.9815082629521688
+        LPIPS*1000 20.48678658902645
+
+    0044_11:
+        PSNR       33.03347080548604
+        SSIM       0.9782720178365707
+        LPIPS*1000 20.98686106813451
+
+    0051_09:
+        PSNR       28.75835018157959
+        SSIM       0.9720531940460205
+        LPIPS*1000 30.28237490604321
+
+    0206_04:
+        PSNR       31.523118098576862
+        SSIM       0.9707509453097979
+        LPIPS*1000 32.657264002288386
+
+    0813_05:
+        PSNR       36.232907358805335
+        SSIM       0.9873329182465871
+        LPIPS*1000 17.892275812725227
+
+六序列平均:
+    screen6:
+        PSNR       32.429407207171124
+        SSIM       0.9748273086216713
+        LPIPS*1000 27.697437577363516
+
+    tri:
+        PSNR       32.43667180538178
+        SSIM       0.9748073815471597
+        LPIPS*1000 27.8485285402793
+
+    diff(screen6 - tri):
+        PSNR       -0.007264598210654209
+        SSIM        0.0000199270745118163
+        LPIPS*1000 -0.15109096291578203
+
+结论:
+    screen6 的 SSIM / LPIPS 平均超过 tri。
+    PSNR 平均仍低 0.007264598210654209。
+
+下一步:
+    补跑 screen5 参数在 0051_09 / 0813_05 / 0019_10 上的结果。
+    screen5 在 0044_11 上 PSNR 增益更大，有机会把平均 PSNR 补过 tri。
+```
+
+screen5 参数补跑剩余三序列：
+
+```text
+参数:
+    TRI_GATE_MODE=scale
+    TRI_GATE_ALPHA=0.5
+    TRI_GATE_INIT=0.5
+    TRI_GATE_HIDDEN_DIM=128
+    TRI_GATE_START_ITER=3000
+    TRI_GATE_WARMUP=5000
+    TRI_PLANE_DIM=32
+    TRI_PLANE_RES=64
+    TRI_PLANE_EXTENT=1.0
+    SKIP_LOAD_TEST_CAMERAS=1
+
+tmux:
+    tri_gate_screen5_rest_gpu0
+        GPU0: 0051_09
+    tri_gate_screen5_rest_gpu1
+        GPU1: 0813_05
+    tri_gate_screen5_rest_gpu2
+        GPU2: 0019_10
+```
+
+screen5 六序列汇总：
+
+```text
+参数:
+    TRI_GATE_MODE=scale
+    TRI_GATE_ALPHA=0.5
+    TRI_GATE_INIT=0.5
+    TRI_GATE_START_ITER=3000
+    TRI_GATE_WARMUP=5000
+
+逐序列:
+    0007_04:
+        PSNR       29.56226814587911
+        SSIM       0.9588541895151138
+        LPIPS*1000 44.36838128603995
+
+    0019_10:
+        PSNR       35.49039780298869
+        SSIM       0.9817660937706629
+        LPIPS*1000 20.440836576744914
+
+    0044_11:
+        PSNR       33.056373023986815
+        SSIM       0.9782408942778905
+        LPIPS*1000 21.020517467210688
+
+    0051_09:
+        PSNR       28.692925961812335
+        SSIM       0.9719656507174174
+        LPIPS*1000 30.153782626924414
+
+    0206_04:
+        PSNR       31.566159280141193
+        SSIM       0.9707474038004875
+        LPIPS*1000 33.18445282056928
+
+    0813_05:
+        PSNR       36.21320161819458
+        SSIM       0.9872532958785692
+        LPIPS*1000 17.97534309638043
+
+六序列平均:
+    screen5:
+        PSNR       32.43022097216712
+        SSIM       0.9748045879933569
+        LPIPS*1000 27.85721897897828
+
+    tri:
+        PSNR       32.43667180538178
+        SSIM       0.9748073815471597
+        LPIPS*1000 27.8485285402793
+
+    diff(screen5 - tri):
+        PSNR       -0.006450833214654968
+        SSIM       -0.0000027935538027268336
+        LPIPS*1000  0.008690438698977824
+
+最终阶段结论:
+    本轮没有找到“PSNR / SSIM / LPIPS*1000 全部超过 tri”的 tri_gate 参数。
+
+    最接近的是 screen6:
+        PSNR       32.429407207171124
+        SSIM       0.9748273086216713
+        LPIPS*1000 27.697437577363516
+
+    screen6 相比 tri:
+        PSNR       -0.007264598210654209
+        SSIM        0.0000199270745118163
+        LPIPS*1000 -0.15109096291578203
+
+    也就是说:
+        screen6 的 SSIM 和 LPIPS 超过 tri，
+        但 PSNR 仍略低。
+
+主要瓶颈:
+    0206_04 在所有公平 tri_gate 调参里都没有稳定超过 tri。
+    0206_04 最接近的一次是 screen2:
+        TRI_GATE_MODE=concat
+        TRI_GATE_ALPHA=1.1
+        TRI_GATE_INIT=0.95
+        TRI_GATE_START_ITER=0
+        TRI_GATE_WARMUP=1000
+
+        PSNR       31.59208936691284
+        SSIM       0.971009287238121
+        LPIPS*1000 32.53928067473074
+
+    但 PSNR 仍低于 tri 的 31.623818985621135。
+
+判断:
+    在不改变数据、训练轮数、评价方式、不针对具体序列手工设置参数的公平前提下，
+    当前 tri_gate 方向继续调 alpha / gate_init / start / warmup 的边际收益很小。
+```
+
+## 2026-07-28 tri 当前优化机制与不足总结
+
+用户判断：
+
+```text
+目前 tri_gate 可以放弃。
+需要重新总结当前 tri 是怎么优化原网络的，以及还有什么不足。
+```
+
+当前 tri 的实现机制：
+
+```text
+tri 不是重新采样 Gaussian 点，也不是替代 SMPL/LBS。
+它是在每个 canonical Gaussian 坐标 query_xyz=means3D 处查询一个可学习三平面特征场:
+    x_i -> sample tri-plane -> f_tri(x_i)
+
+三平面由三个可学习参数平面组成:
+    XY / XZ / YZ
+
+采样方式:
+    query_xyz / tri_plane_extent 后 clamp 到 [-1, 1]
+    分别对三个平面 grid_sample
+    最后取三平面特征平均
+
+当前最佳公平设置:
+    TRI_PLANE_DIM=32
+    TRI_PLANE_RES=64
+    TRI_PLANE_EXTENT=1.0
+```
+
+tri 与 part_moe_leg 的关系：
+
+```text
+tri 明确建立在 part_moe_leg 上。
+代码中要求:
+    --use_part_moe
+    --part_label_schema part_moe_leg
+    --num_parts 7
+
+因此 tri 的优化对象不是 original，而是在 part_moe_leg 已经按部件分 expert 的基础上，
+给每个 Gaussian 额外提供一个 canonical 空间可学习局部特征。
+```
+
+tri 优化原网络的方式：
+
+```text
+part_moe_leg 的 expert 输入原本主要来自:
+    x_emb_i
+    pose_feat
+    seq_pose_feat
+    seq_xyz_feat
+
+tri 后变成:
+    concat(x_emb_i, pose_feat, seq_pose_feat, seq_xyz_feat, f_tri_i)
+
+也就是说，tri 给每个 Gaussian 增加了一个“标准空间位置相关的可学习局部记忆”。
+Part-MoE expert 再根据各自 part label 使用这个增强后的输入预测:
+    d_xyz
+    d_rotation
+    d_scaling
+```
+
+为什么 tri 能带来提升：
+
+```text
+1. 原来的 positional embedding 是固定编码，只提供坐标频率信息；
+   tri-plane 是可学习特征场，可以记住标准空间中哪些区域更容易出现细节误差。
+
+2. part_moe_leg 已经把不同身体部件分给不同 expert；
+   tri 进一步给这些 expert 提供更细的局部空间条件，使 expert 不只知道“属于哪个 part”，
+   还知道“在这个 part 的哪个 canonical 区域”。
+
+3. 对 DNA 这类局部外观和衣物细节明显的数据，canonical 空间上的局部特征可以补足
+   shared MLP / part expert 对空间细节表达不足的问题。
+```
+
+当前 tri 的主要不足：
+
+```text
+1. tri 只是空间特征增强，不是真正的运动自适应模块。
+   它不显式使用运动强弱、速度、加速度、局部刚性或时序变化。
+   因此它更像是增强 canonical 空间表达能力，而不是根据动态难度分配形变能力。
+
+2. 所有 part expert 默认共享同一组三平面特征。
+   虽然不同 part 的 expert 会学习不同映射，但 f_tri 本身没有天然的部件语义。
+   tri_part 尝试过 part-conditioned FiLM，但实验结果下降，说明简单地给 tri 加 part 条件不一定更稳。
+
+3. tri 直接 concat 到第一层，容易改变 non-rigid MLP / expert 的输入分布。
+   这种方式表达力强，但控制性弱，可能让网络偏向记住 canonical 空间细节，
+   对跨动作动态规律的建模有限。
+
+4. tri_plane 是静态 canonical 特征场。
+   同一个 Gaussian 坐标在不同帧查到的 f_tri 基本相同，动态差异仍主要依赖 pose / seq 条件和 expert。
+   如果某个序列误差来自快速运动、遮挡边界或局部非刚性变化，tri 只能间接帮助。
+
+5. 增益已经接近饱和。
+   DNA 上调过 dim / res / extent 后，extent=1.0 的 tri 是当前较稳结果；
+   后续 tri_gate 大量调参没有稳定超过 tri，说明简单 gate/adapter 的边际收益很小。
+
+6. 指标收益不均衡。
+   tri_gate 最好一次只做到 SSIM / LPIPS 略优于 tri，但 PSNR 仍低；
+   0206_04 是主要瓶颈序列，说明当前 tri 类方法对某些复杂动态场景的提升不足。
+```
+
+对 tri_gate 的结论：
+
+```text
+tri_gate 的出发点是避免 tri 直接 concat 后变成强记忆，通过 gate/adapter 控制 tri 特征强度。
+但 DNA 六序列公平调参后，没有找到 PSNR / SSIM / LPIPS*1000 全部超过 tri 的设置。
+
+当前最接近的 screen6:
+    PSNR       32.429407207171124
+    SSIM       0.9748273086216713
+    LPIPS*1000 27.697437577363516
+
+tri:
+    PSNR       32.43667180538178
+    SSIM       0.9748073815471597
+    LPIPS*1000 27.8485285402793
+
+screen6 相比 tri:
+    PSNR       -0.007264598210654209
+    SSIM        0.0000199270745118163
+    LPIPS*1000 -0.15109096291578203
+
+判断:
+    tri_gate 可以暂时放弃。
+    后续如果继续做第二创新点，不应继续围绕 gate_init / alpha / warmup 小范围调参，
+    而应该转向更明确的 motion-aware / part-aware / rigidity-aware 形变能力分配。
+```
+
+阶段性判断：
+
+```text
+tri 可以作为第二模块的基础版本:
+    在 part_moe_leg 基础上引入 canonical 空间可学习三平面特征，
+    提升各部件 expert 对局部空间细节的表达能力。
+
+但它的创新强度主要体现在“空间特征场增强”，不是“动态区域自适应”。
+如果论文中要把第二点讲得更强，需要进一步设计:
+    根据运动强弱、部件属性、局部刚性程度，动态决定哪里增强形变能力、哪里保持稳定约束。
+
+当前可保留结论:
+    tri 有稳定价值；
+    tri_gate 暂不值得继续优化；
+    下一阶段应避免只做 gate 调参。
+```
+
+## 2026-07-28 tri_part 失败后 part-aware 方向判断
+
+用户问题：
+
+```text
+之前尝试 tri_part 不成功，part-aware 还有改进价值吗？
+```
+
+判断：
+
+```text
+part-aware 方向仍然有改进价值，但 tri_part 当前这种做法不值得继续沿用。
+
+原因是:
+    part_moe_leg 已经把人体按 part 分 expert。
+    如果 tri_part 只是再对同一个 tri feature 做 part-conditioned FiLM，
+    很容易和 part_moe_leg 的 expert 分工重复。
+
+也就是说，tri_part 失败不能说明 part-aware 没价值；
+它更说明“简单把 part embedding/FiLM 加到 tri feature 上”不是有效形式。
+```
+
+tri_part 不成功的可能原因：
+
+```text
+1. 与 part_moe_leg 功能重复。
+   part_moe_leg 已经让不同 part 用不同 expert 学非刚性形变。
+   tri_part 再给 tri 特征加 part FiLM，新增信息有限，反而增加优化难度。
+
+2. part label 是粗粒度的。
+   当前 7 个 part 适合做 expert 路由，但不一定适合直接调制每个点的空间特征。
+   同一个 part 内还有主体、边界、关节附近、衣物区域等差异，单一 part 条件太粗。
+
+3. tri feature 本身是 canonical 空间静态记忆。
+   加 part FiLM 后仍然没有显式引入运动强弱、局部刚性或时序变化。
+   因此它没有解决 tri 的核心不足，只是换了一种融合方式。
+
+4. FiLM 会直接改变 tri feature 分布。
+   对已经调稳的 tri 来说，额外调制可能破坏原本有效的空间特征，而不一定提供可靠收益。
+```
+
+更有价值的 part-aware 改进方向：
+
+```text
+1. part-aware capacity allocation
+   不再只是给 feature 加 part 条件，而是让不同 part 拥有不同形变容量。
+   例如腿/手臂/脚等高动态 part 使用更大的隐层、更多 tri 通道或更强非刚性分支；
+   躯干等稳定 part 使用较小容量和更强正则。
+
+2. part-aware regularization
+   不同 part 使用不同约束强度。
+   高刚性区域加强平滑/稳定约束；
+   关节、衣物边界、高运动区域放松约束。
+   这比单纯增加网络容量更符合“哪里该动、哪里该稳”的目标。
+
+3. part + motion aware gating
+   gate 不只依赖 f_tri 或 base feature，而要显式依赖 part 的运动强弱:
+       velocity / acceleration / joint angular change / seq_xyz motion magnitude
+   让高动态 part 或高动态帧自动获得更强 tri/nonrigid 能力。
+
+4. intra-part aware design
+   只用 part label 不够，应继续区分同一 part 内部区域。
+   例如根据到关节边界的距离、局部 LBS weight entropy、局部 motion magnitude，
+   判断 Gaussian 是刚性主体、关节过渡区，还是衣物/边界区域。
+```
+
+阶段建议：
+
+```text
+如果继续优化第二创新点，不建议继续做 tri_part 这种“part-conditioned tri feature”。
+
+更值得尝试的是:
+    在 tri 的基础上加入 part-aware 的容量/正则分配，
+    并让这个分配依赖运动强弱和局部刚性，而不是只依赖 part label。
+
+    一句话:
+    part-aware 还有价值；
+    但价值不在“给 tri 加 part FiLM”，而在“按部件和局部动态属性分配形变能力与稳定约束”。
+```
+
+## 2026-08-08 tri_part 为什么会失败
+
+```text
+如果你说的是早先那个 tri_part = shared tri + part-conditioned FiLM 版本，
+它失败的核心不是“part-aware 完全没用”，而是“这个改法给 tri 增加的有效信息太少”。
+
+主要原因：
+    1. 它没有给每个 part 单独一套 tri-plane。
+       底层仍然是 shared TriPlaneFeature，
+       所以 part 之间共享同一张 canonical 空间记忆表。
+
+    2. PartFiLM 只是在 shared tri 上做缩放/平移，
+       改的是“怎么解释 tri feature”，
+       不是“tri feature 本身学什么”。
+       这很容易和 part_moe_leg 已有的 expert 分工重复。
+
+    3. part label 太粗。
+       7 个 part 够做路由，但不够表达同一 part 内部的主体/边界/关节/衣物差异。
+
+    4. tri 本身还是静态 canonical feature，
+       不看速度、加速度、局部刚性。
+       所以 tri_part 只是给静态记忆再做一次部件调制，
+       没有补上真正的动态难点。
+
+    5. 这个结构里 residual 和 gate 是乘在一起的，
+       早期 tri_part 还是接近普通 tri，
+       part-specific 信号进入得慢，优化会更难。
+
+所以它不是“把部件信息加上去就一定更强”；
+更准确地说，是“共享空间表 + 粗部件 FiLM”这个形式不够锋利，
+容易把问题变复杂，但没有带来足够新的表达能力。
+```
+
+## 2026-07-28 tri_part 改造：part/motion-aware residual tri feature
+
+用户要求：
+
+```text
+继续修改 tri_part。
+在 DNA 六个序列上开 tmux 跑实验。
+尝试“按部件和局部动态属性分配形变能力与稳定约束”的思路，
+目标是直到超过 tri 指标。
+GPU0 有三百多 MB 显存占用，OOM 时优先换卡。
+```
+
+本次实现：
+
+```text
+废弃旧 tri_part 的简单 part-conditioned FiLM。
+
+新的 tri_part 仍建立在 tri + part_moe_leg 上，普通 tri / part_moe_leg 不走该分支。
+
+保留 shared TriPlaneFeature:
+    f_tri_shared(x_i)
+
+新增 part-specific residual tri planes:
+    f_part_delta_p(x_i)
+
+用 part label、seq_xyz motion strength、part confidence 预测逐点 gate:
+    gate_i = sigmoid(part_prior_p
+                     + motion_gain * motion_norm_i
+                     + boundary_gain * (1 - part_conf_i)
+                     + MLP(f_tri_i, part_emb_p, motion_norm_i, boundary_i))
+
+输出给 expert 的 tri 特征:
+    f_tri_part_i = f_tri_shared_i + alpha * gate_i * f_part_delta_p(x_i)
+
+其中:
+    高动态点 motion_norm 高 -> gate 更大 -> 更强形变特征容量
+    低 part_conf / 边界点 -> gate 更大 -> 边界/不确定区域更自由
+    高置信稳定点 -> gate 较小，并通过 reg 更稳定
+```
+
+初始化与隔离：
+
+```text
+part_delta_planes 全零初始化。
+因此训练开始时:
+    f_tri_part_i == f_tri_shared_i
+    tri_part 与 tri 完全等价
+
+最小 CPU forward 验证:
+    普通 tri 和新 tri_part 输出 max diff = 0.0
+
+新增参数只在 --use_tri_part 下创建/调用。
+--use_tri 仍保持原来的 shared tri 直接 concat。
+```
+
+新增参数：
+
+```text
+--tri_part_alpha
+--tri_part_motion_gain
+--tri_part_boundary_gain
+--tri_part_hidden_dim
+--tri_part_reg_w
+
+DNA 脚本默认:
+    TRI_PART_ALPHA=1.0
+    TRI_PART_MOTION_GAIN=0.5
+    TRI_PART_BOUNDARY_GAIN=0.5
+    TRI_PART_HIDDEN_DIM=64
+    TRI_PART_REG_W=0.0001
+```
+
+训练正则：
+
+```text
+只在 use_tri_part=True 时启用。
+
+对新增 residual tri feature 加轻量稳定约束:
+    reg_weight = (1 - sigmoid(motion_norm_i)) * part_conf_i
+    reg = mean(reg_weight * ||alpha * gate_i * f_part_delta_p(x_i)||^2)
+
+含义:
+    稳定且高置信的 Gaussian 不鼓励过多新增特征扰动；
+    高动态或边界/低置信 Gaussian 允许更强局部表达。
+```
+
+已验证：
+
+```text
+bash -n scripts/exps_dnarendering.sh
+bash -n scripts/exps_zjumocap.sh
+bash -n scripts/exps_i3dhuman.sh
+
+PYTHONDONTWRITEBYTECODE=1 py_compile:
+    nets/mlp_delta_non_rigid.py
+    scene/gaussian_model.py
+    gaussian_renderer/__init__.py
+    render.py
+    train.py
+    arguments/__init__.py
+
+最小 forward:
+    NonrigidDeformer(use_tri=True, use_tri_part=True, use_part_moe=True, num_parts=7)
+    输出 shape:
+        d_xyz      [1, 12, 3]
+        d_rotation [1, 12, 4]
+        d_scaling  [1, 12, 3]
+    与普通 tri 输出 max diff:
+        0.0
+```
+
+## 2026-08-06 tri_part_pa_v1 六序列完成确认
+
+状态：
+
+```text
+已经跑完。
+tmux 进程已退出。
+六个序列的 train.log 都有 Training complete。
+六个序列的 render.log 都有 25000 iter 的 novelview evaluation。
+```
+
+本轮六序列结果：
+
+```text
+0007_04:
+    PSNR  29.654573583602904
+    SSIM  0.9590438589453697
+    LPIPS 0.044234784319996834
+
+0019_10:
+    PSNR  35.433257484436034
+    SSIM  0.9814779336253802
+    LPIPS 0.02056680005043745
+
+0044_11:
+    PSNR  32.98671916325887
+    SSIM  0.9782769590616226
+    LPIPS 0.020906405655356744
+
+0051_09:
+    PSNR  28.72750129699707
+    SSIM  0.9719237764676412
+    LPIPS 0.030388579556408026
+
+0206_04:
+    PSNR  31.6219766775767
+    SSIM  0.9712262744704883
+    LPIPS 0.032623827721302706
+
+0813_05:
+    PSNR  36.14729544321696
+    SSIM  0.9871677324175835
+    LPIPS 0.018049360268438855
+```
+
+六序列平均：
+
+```text
+PSNR       32.42855394151476
+SSIM       0.9748527558313476
+LPIPS*1000 27.794959595323437
+```
+
+和 tri 对比：
+
+```text
+PSNR       -0.008117863867020406
+SSIM        0.0000453742841878912
+LPIPS*1000 -0.053568944955862574
+```
+
+结论：
+
+```text
+这轮 tri_part 跑完了。
+平均上还没有超过 tri 的 PSNR，
+但 SSIM / LPIPS*1000 有小幅改善。
+```
+
+## 2026-08-06 tri 消融实验代码总结
+
+只讨论 tri 本身，不包含后续 tri_part / tri_gate 优化。
+
+```text
+tri 的改动很单纯:
+    在 part_moe_leg 的 non-rigid MLP 输入里，
+    额外拼接一个 canonical 空间的可学习三平面特征 f_tri。
+
+它没有改 SMPL/LBS，没有改损失函数，没有改 part expert 路由，
+只是在部件专家前面加了一个可学习空间特征场。
+```
+
+代码层改动：
+
+```text
+1. nets/mlp_delta_non_rigid.py
+    新增 TriPlaneFeature:
+        3 个可学习平面参数:
+            XY / XZ / YZ
+        参数初始化为 0。
+        对 query_xyz / tri_plane_extent 做归一化后，
+        用 grid_sample 分别采样三个平面并平均，得到 f_tri。
+
+    在 NonrigidDeformer.forward 中:
+        features = concat(x_emb, pose_feat, seq_pose_feat, seq_xyz_feat)
+        if use_tri:
+            tri_features = sample_tri_features(query_xyz=means3D)
+            features = concat(features, tri_features)
+
+    也就是:
+        tri 不是单独输出一个分支，
+        而是直接作为非刚性 MLP / Part-MoE expert 的额外输入。
+
+2. scene/gaussian_model.py
+    tri 只允许建立在 part_moe_leg 上:
+        --use_part_moe
+        --part_label_schema part_moe_leg
+        --num_parts 7
+    并把 tri_plane_dim / tri_plane_res / tri_plane_extent 传给 NonrigidDeformer。
+
+3. gaussian_renderer/__init__.py
+    tri 的查询坐标来自 means3D，也就是进入非刚性分支前的 canonical Gaussian 坐标。
+    之后仍然会继续走 coarse_deform_c2source，
+    所以 tri 只是 residual feature augmentation，不替代 SMPL/LBS。
+
+4. scripts/exps_dnarendering.sh
+    tri 模式 = part_moe_leg + use_tri
+    日志写到 logs/tri
+    DNA 上固定 final_eval_only=1
+    tri_plane 用的公平配置是:
+        TRI_PLANE_DIM=32
+        TRI_PLANE_RES=64
+        TRI_PLANE_EXTENT=1.0
+```
+
+tri 的优化逻辑：
+
+```text
+原来的 part_moe_leg 主要依赖:
+    x_emb_i + pose / seq 条件
+
+tri 之后多了:
+    f_tri_i = canonical 空间局部特征
+
+这等于给每个 Gaussian 加了一个“标准空间记忆”。
+同一个位置在不同帧上查到的 tri 特征基本一致，
+所以 expert 可以更容易记住:
+    哪些 canonical 区域更容易出现细节误差、边界误差或局部非刚性。
+
+tri 的作用是增强部件专家对局部空间细节的表达，
+不是增加运动建模分支。
+```
+
+当前 tri 的边界：
+
+```text
+它本质上还是静态空间特征场。
+所以 tri 更像“空间记忆增强”，
+而不是“根据运动强弱决定哪里更该动”的模块。
+```
+
+## 2026-08-06 tri 如何学到更强的运动表达
+
+```text
+tri 本身不直接建模“运动”，
+它是把 canonical 空间的可学习局部特征 f_tri 注入到非刚性 MLP / Part-MoE expert 里，
+让网络更容易学到更复杂的位移、旋转、缩放残差。
+
+关键链路:
+    query_xyz=means3D
+    -> TriPlaneFeature.sample
+    -> f_tri
+    -> concat 到 x_emb / pose_feat / seq_pose_feat / seq_xyz_feat
+    -> 非刚性 MLP / Part expert
+    -> d_xyz / d_rotation / d_scaling
+```
+
+代码里的核心点：
+
+```text
+1) TriPlaneFeature.forward
+    对同一个 canonical 坐标 query_xyz，
+    分别在 XY / XZ / YZ 三个平面采样，再平均得到 f_tri。
+    这让 tri 变成一个连续的 3D 空间特征场，而不是离散表格。
+
+2) NonrigidDeformer.__init__
+    use_tri=True 时创建 TriPlaneFeature，
+    并把 shared MLP 第一层输入维度加宽 tri_plane_dim。
+    这表示 tri 不是旁路分支，
+    而是直接参与运动残差的特征建模。
+
+3) NonrigidDeformer.forward
+    先组装基础条件:
+        x_emb + pose_feat + seq_pose_feat + seq_xyz_feat
+    再采样 tri_features，
+    最后 concat 进 features。
+    之后输出的 d_xyz / d_rotation / d_scaling 都建立在这个更强的条件上。
+
+4) Part-MoE 路径
+    当 part_moe_active 后，forward_tri 会把带 tri 的 features 送进每个 part expert。
+    也就是说:
+        同一份 tri 特征会被不同 part expert 按各自职责重新解释，
+        从而学到 part-specific 的运动残差。
+
+5) renderer 里用的是 canonical 的 means3D
+    所以 tri 查到的是“标准空间位置”的特征，
+    同一个位置跨帧一致，梯度会在这个 canonical 空间里累积。
+    这就是它能变成“空间记忆”，进而帮助运动表达的原因。
+```
+
+一句话：
+
+```text
+tri 通过给非刚性网络增加 canonical 空间的局部记忆，
+让 part expert 在同样的 pose / seq 条件下，
+更容易区分边界、局部非刚性、细小位移和部件内部差异，
+因此表现成“更强的运动表达”。
+```
+
+## 2026-08-06 canonical 局部特征场是什么
+
+```text
+canonical 局部特征场就是一个函数:
+    f_tri = F(query_xyz)
+
+这里的 query_xyz 不是当前帧变形后的点，
+而是 canonical 空间里的坐标，也就是标准姿态下的坐标。
+
+在代码里它对应:
+    TriPlaneFeature.forward(query_xyz)
+    -> 在 XY / XZ / YZ 三个平面采样
+    -> 得到一个 feature 向量 f_tri
+
+所以它不是“每个点一个固定编号”，
+而是“空间中任意位置都能查询到一个特征”。
+这个特征在同一个 canonical 位置上，跨帧基本一致，
+因此像一个可学习的空间记忆。
+```
+
+## 2026-08-06 它是不是最开始的标准空间特征
+
+```text
+不是“最开始那一版固定特征”。
+
+更准确地说：
+    1. 坐标系是 canonical 的，固定不变。
+    2. 特征值 f_tri 是训练中学出来的，会不断更新。
+    3. 训练初期 tri plane 参数是 0 初始化，
+       所以一开始几乎不提供额外信息。
+
+所以它学到的不是“某个初始时刻的标准空间特征”，
+而是“在 canonical 空间这个坐标系下，哪些位置应该对应什么特征”。
+```
+
+## 2026-08-07 相关论文
+
+```text
+这种“在坐标处查询可学习特征场，再送入小 decoder / MLP”的做法是常见路线。
+
+接近的代表：
+    EG3D: 三平面特征 + 小型隐式 decoder
+    K-Planes: 将三平面推广到空间/时间等高维场
+    TriHuman: 面向人体的 motion-conditioned tri-plane
+    TE-NeRF: 把 triplane 特征和 SMPL 关联起来做人像渲染
+
+所以 SeqAvatar 里的 tri 不是孤立设计，
+而是把通用 tri-plane feature field 迁移到人体 part expert 上。
+```
+
+## 2026-08-07 当前 tri 和相关论文的异同
+
+```text
+当前 tri 的定位:
+    不是完整三平面 NeRF / GAN / 人体生成表示。
+    而是在 SeqAvatar + part_moe_leg 的 non-rigid residual 分支里，
+    给每个 canonical Gaussian 坐标查询一个可学习三平面特征 f_tri，
+    再 concat 到 MLP / part expert 输入。
+
+共同点:
+    都使用 XY / XZ / YZ 平面来编码 3D 空间。
+    都是在 3D 坐标处采样 feature，而不是重新采样点。
+    都把采到的 feature 送给后续网络解码。
+
+和 EG3D:
+    相同:
+        三个正交平面 + 小 decoder/MLP。
+    不同:
+        EG3D 的 tri-plane 是生成器 backbone 从 latent 生成的场，
+        主要解码 density/color 做 3D-aware image synthesis。
+        当前 tri 是单序列优化得到的可学习参数，
+        输出不是 density/color，而是帮助预测 Gaussian 的 d_xyz/d_rotation/d_scaling。
+
+和 K-Planes:
+    相同:
+        都是显式平面特征场，坐标查询后再解码。
+    不同:
+        K-Planes 推广到 d 维，动态场会有空间/时间等多组平面，
+        目标是 radiance field 重建。
+        当前 tri 只有 3D canonical 空间三平面，
+        没有时间平面，时间/运动仍靠 SeqAvatar 原来的 pose/seq 条件。
+
+和 TriHuman:
+    相同:
+        都是人体场景里的 tri-plane，
+        都利用 canonical / undeformed 空间查询特征。
+    不同:
+        TriHuman 会根据 skeletal motion 生成 motion-conditioned tri-plane，
+        并用于 density/color 的人体 NeRF 渲染。
+        当前 tri 是静态 canonical tri-plane，
+        不随 pose 生成，只作为 non-rigid deformation expert 的输入增强。
+
+和 TE-NeRF:
+    相同:
+        都把 triplane 和人体/SMPL 先验结合。
+    不同:
+        TE-NeRF 更偏 SMPL 对齐的 NeRF density/artifact reduction。
+        当前 tri 不把特征绑定到 SMPL 顶点，也不预测密度，
+        而是在 Gaussian 坐标上采样，服务于 SeqAvatar 的残差形变预测。
+
+一句话:
+    这些论文把 tri-plane 当作主要的 3D/4D 表示或渲染表示；
+    当前 tri 把 tri-plane 当作 part_moe_leg 的局部空间条件增强。
+```
+
+## 2026-08-07 tri 到底学的是哪个空间的特征
+
+```text
+当前 tri 学的是:
+    Gaussian 当前 canonical 坐标空间里的可学习特征。
+
+不是:
+    当前相机空间 / posed frame 空间 / SMPL source frame 空间。
+
+代码顺序:
+    gaussian_renderer/__init__.py
+        means3D = pc.get_xyz[None]
+        query_xyz=means3D 传给 non_rigid_deformer
+
+    nets/mlp_delta_non_rigid.py
+        TriPlaneFeature(query_xyz)
+        在 query_xyz 的 XY / XZ / YZ 三个投影位置采样 f_tri
+
+    之后:
+        features = concat(..., f_tri)
+        non-rigid MLP 输出 d_xyz / d_rotation / d_scaling
+        means3D = means3D + d_xyz
+        再 coarse_deform_c2source 到当前帧 posed space
+
+所以 tri 的坐标发生在 SMPL/LBS 之前。
+它描述的是 canonical Gaussian 空间中不同位置的局部特征，
+用于帮助预测从 canonical 到当前帧前的非刚性 residual。
+
+注意:
+    pc.get_xyz 是可训练的 canonical Gaussian 坐标，
+    densify / optimize 后会更新。
+    因此 tri 不是初始点云空间的固定特征，
+    而是当前优化中的 canonical Gaussian 空间特征。
+```
+
+## 2026-08-07 canonical Gaussian 空间是不是第 0 步初始化点
+
+```text
+不是完全等同于第 0 步初始化高斯点。
+
+第 0 步初始化点云只是 canonical Gaussian 空间的起点:
+    create_from_pcd(...)
+        self._xyz = nn.Parameter(fused_point_cloud)
+
+训练中 self._xyz 会继续变化:
+    training_setup(...)
+        optimizer 里有 xyz 参数组
+    optimizer.step()
+        会更新 self._xyz
+    densify / clone / split / prune
+        会新增、复制、拆分、删除 Gaussian
+
+所以 tri 查询的 query_xyz=pc.get_xyz[None] 是“当前迭代的 canonical Gaussian 坐标”，
+不是固定的 iteration 0 坐标。
+
+可以这样理解:
+    坐标系: canonical 空间，始终不变。
+    点的位置: 从初始化点云开始，但训练中会被优化和 densify 改变。
+    tri 特征: 在当前这些 canonical 坐标处查询并学习。
+```
+
+## 2026-08-08 canonical 位置是不是当前帧已经形变后的位置
+
+```text
+不是。
+
+这里的 canonical 位置指的是:
+    形变前的模板/标准姿态空间里的 Gaussian 坐标。
+
+当前帧已经形变后的坐标要在后面经过:
+    non-rigid residual d_xyz
+    -> coarse_deform_c2source / SMPL-LBS
+
+之后才得到。
+
+所以 tri 查询时用的 query_xyz=pc.get_xyz，
+对应的是“形变前的 canonical Gaussian 位置”，
+不是“当前帧已经形变完成的位置”。
+```
+
+## 2026-08-08 canonical 坐标值会不会随着迭代变化
+
+```text
+会变化。
+
+要区分两件事：
+    1. 坐标系不变:
+        还是 canonical / 形变前的空间。
+    2. 坐标值会变:
+        self._xyz 是可训练参数，
+        optimizer.step() 会更新它，
+        densify / clone / split / prune 也会改变点的位置和数量。
+
+所以 tri 每次查到的不是固定的第 0 步坐标，
+而是“当前迭代里，canonical 空间下这些 Gaussian 的位置”。
+```
+
+## 2026-08-08 为什么 tri 带来的提升偏小
+
+```text
+当前 tri 的提升偏小，主要因为它是“补充空间记忆”，不是“改主运动机制”。
+
+几个直接原因：
+    1. part_moe_leg + pose / seq 条件本来就已经能解释大部分运动，
+       tri 只是在局部空间细节上补一点信息。
+
+    2. tri 是静态 canonical 空间特征场，
+       不显式看速度、加速度、刚性强弱，
+       所以对真正的动态难点帮助有限。
+
+    3. tri 只在 non-rigid MLP 第一层 concat 一次，
+       很容易被后面的隐藏层“消化”掉，
+       没有形成强制使用的路径。
+
+    4. tri 是所有 part 共享的一张空间表，
+       没有天然的部件语义，
+       对某些 part 只能带来很弱的偏置。
+
+    5. Gaussian 本身已经有 per-point learnable xyz / scaling / rotation / opacity，
+       tri 再加一张共享空间记忆，增量自然有限。
+
+    6. 后面还有 SMPL/LBS coarse deformation，
+       tri 的改进是加在 residual 上，最终效果会被后续变形链路部分稀释。
+```
+
+## 2026-08-08 如果想减弱 LBS/SMPL 对 tri 的稀释
+
+```text
+当前 tri 只在 coarse_deform_c2source 之前提供 canonical residual。
+如果想让 tri 更不容易被后续骨骼链路稀释，优先做两种改法：
+
+1. 在 SMPL/LBS 之后再加一个 posed-space tri residual
+    x_can -> tri + non-rigid -> LBS -> x_posed
+    然后再用 tri / part / motion 预测一个很小的 d_post。
+
+    final = x_posed + alpha_post * d_post
+
+    这样 tri 的信息直接作用在最终输出上，不会再被后续骨骼变换吸收。
+
+2. 用 tri 去调 LBS 本身，而不是只修 residual
+    让 tri 预测 delta skinning weights / delta pose correction / delta joint transform。
+
+    这样 tri 参与的是“怎么做骨骼变形”，不是“骨骼变完以后再补一点”。
+
+实践上更稳的顺序：
+    先做 post-LBS residual branch，零初始化，保持初始与原模型一致。
+    如果它有效，再考虑 tri-conditioned delta LBS weights。
+```
+
+## 2026-08-08 tri 和部件结合时哪个更好实现
+
+```text
+更好实现的是:
+    post-LBS residual + part-aware tri fusion
+
+原因很直接：
+    1. 现有代码已经把 part_label / part_conf 传进 non_rigid_deformer。
+    2. tri 也已经在 non-rigid 分支里可用。
+    3. 只要在 coarse_deform_c2source 之后再加一个小 residual 分支，
+       就能让 tri 和 part 一起作用，不需要重写 LBS 链路。
+
+不建议先做的：
+    tri-conditioned delta LBS weights
+
+因为这要动到:
+    coarse_deform_c2source
+    skinning weights 归一化
+    pose transform 组合逻辑
+    与原 SMPL/LBS 的兼容性
+
+实现难度和调试风险都高很多。
+
+所以如果目标是“tri + 部件 + 更少被 LBS 稀释”，
+最稳的是：
+tri + part_moe_leg + post-LBS part residual
+```
+
+## 2026-08-08 新方案：part-aware deformation budget router
+
+```text
+完全抛弃旧 tri_part:
+    shared tri + part-conditioned FiLM
+这个分支不再继续。
+
+新思路不是调 tri feature，
+而是让部件信息直接决定“哪里该给更多形变预算、哪里该更稳”。
+
+核心模块：
+    1. PartStatsEncoder
+        对每个 part 聚合当前 Gaussian 的 motion / boundary / confidence 统计，
+        得到 part token z_part。
+
+    2. PartBudgetHead
+        输入:
+            x_emb_i
+            z_part_i
+            motion_i
+            boundary_i
+        输出:
+            b_i in [0,1]
+        b_i 表示这个点应该更偏向稳定约束还是更偏向强形变能力。
+
+    3. PartAdapter
+        在 non-rigid MLP 的 hidden state 上加一个瓶颈 residual adapter。
+        不是只改输入，而是改中间表征。
+
+    4. Budget-mixing
+        h_i = h_shared_i + b_i * Adapter(h_shared_i, z_part_i)
+        d_i = Head(h_i)
+
+    5. Light regularization
+        让高 motion / 边界点更容易拿到大 budget，
+        稳定主体区域更容易拿到小 budget。
+
+为什么比 tri_part 更值得做：
+    它不要求 shared tri-plane 去承载 part 语义，
+    也不只是给 tri feature 做 FiLM。
+    它直接把 part info 变成“形变能力分配器”，
+    更贴近你要的:
+        哪些地方需要更强形变能力
+        哪些地方需要更稳定约束
+
+每步可验：
+    1. PartStatsEncoder 只做聚合，不改输出，先查 masked mean 对不对。
+    2. PartBudgetHead 只打印 b_i，不接入主干，先看分布是否合理。
+    3. PartAdapter 零初始化，先验证 b_i=0 时输出和 part_moe_leg 一致。
+    4. 打开 budget-mixing 后，看高 motion / 边界点是否真的拿到更大 b_i。
+```
+
+## 2026-08-08 这版 budget router 会不会太弱
+
+```text
+如果 PartBudgetHead 最后只输出一个标量 b_i，
+那它是能用部件信息的，但强度仍然偏弱。
+
+原因：
+    1. 标量 budget 只能控制“多一点/少一点”，
+       不能表达“这个 part 该偏刚性、那个 part 该偏非刚性、边界该怎么过渡”。
+
+    2. 如果 part 信息只进一次 PartStatsEncoder，
+       网络很容易把它当成软条件，而不是必须使用的结构约束。
+
+    3. part_moe_leg 本身已经有 part routing，
+       所以单纯再加一个标量 gate，新增语义仍然有限。
+
+更强的做法是：
+    1. budget 不是 1 个标量，而是 2-3 维向量:
+        rigid_budget / nonrigid_budget / boundary_budget
+
+    2. part info 不只调一个 Adapter，
+       而是同时调 hidden state、输出 head、以及 rigid/nonrigid 混合系数。
+
+    3. 每个 part 共享主干，但有小型 part-specific low-rank adapter，
+       这样部件信息会真正改动表征，而不是只改一个缩放系数。
+
+结论：
+    这版思路比 tri_part 强很多，
+    但如果只停在“标量 budget”，仍然偏软；
+    要真正利用部件信息，至少要把 part 信息用于
+    “容量分配 + 刚柔混合 + 小型 part-specific adapter” 三处。
+```
+
+## 2026-08-08 分阶段可验证版本：part-aware deformation router v2
+
+```text
+目标:
+    不再做 tri_part 的 part-conditioned FiLM。
+    改成把部件信息用于“刚性 / 非刚性 / 边界”三路形变预算分配，
+    并且每一步都能单独验对错。
+
+Stage 0: PartStats only
+    对每个 part 聚合当前 Gaussian 的统计量:
+        motion_mean / motion_std
+        boundary_mean / boundary_std
+        conf_mean
+        count
+    输出 part token z_part。
+    这一阶段不改变任何网络输出，只做日志和单元测试。
+
+Stage 1: PartRouter only
+    输入:
+        x_emb_i
+        z_part_i
+        motion_i
+        boundary_i
+    输出三维 budget:
+        g_i = [g_rigid, g_nonrigid, g_boundary]
+    先只打印 g_i，不接入主干。
+    验证:
+        高 motion / 边界点的 g_nonrigid 应更高；
+        稳定主体的 g_rigid 应更高；
+        空 part 不出 NaN。
+
+Stage 2: Hidden adapter, zero-init
+    h_shared_i = BaseMLP(features_i)
+    h_i = h_shared_i + g_nonrigid * Adapter(h_shared_i, z_part_i)
+    Adapter 最后一层零初始化。
+    当 g_nonrigid=0 或 Adapter 输出为 0 时，
+    输出必须和 part_moe_leg 完全一致。
+
+Stage 3: Branch split
+    用 g_i 控制三路输出混合:
+        d_i = d_base_i
+            + g_nonrigid * d_extra_nonrigid_i
+            + g_rigid    * d_extra_rigid_i
+    这里的 extra 分支都由同一 shared backbone 派生，
+    但使用不同小 head。
+    验证:
+        手动固定某个 part 的 g 值，
+        对应 part 的 rigid / nonrigid 分支响应要按预期变化。
+
+Stage 4: Post-LBS residual
+    在 coarse_deform_c2source 之后再加一个很小的 part residual:
+        x_final = x_lbs + g_boundary * d_post_i
+    这样部件信息不会完全被 LBS 吞掉。
+    验证:
+        d_post 零初始化时和原模型一致；
+        只打开某个 part 的 d_post 时，只有该 part 的最终位置变化。
+
+为什么这版比旧 tri_part 更强:
+    1. 部件信息不再只调 tri feature，而是直接分配形变预算。
+    2. 不是一个标量 gate，而是 rigid / nonrigid / boundary 三维信号。
+    3. 既改中间表征，也改最终输出，还能在 LBS 后补一刀。
+    4. 每个阶段都能独立验证，不容易一上来就把链路写坏。
+
+建议实现顺序:
+    1. Stage 0 + Stage 1 只做观测。
+    2. Stage 2 保持零初始化，先过数值等价测试。
+    3. Stage 3 再打开 branch split。
+    4. Stage 4 最后补，专门对抗 LBS 稀释。
+```
+
+## 2026-08-08 part_budget Step 0：开关和日志层接通
+
+本步只做接线，不改变任何网络输出。
+
+已完成：
+
+```text
+1. 新增独立开关:
+    --use_part_budget
+    --part_budget_alpha
+    --part_budget_start_iter
+    --part_budget_warmup
+    --part_budget_hidden_dim
+    --part_budget_token_dim
+
+2. 三个脚本都加入 part_budget 模式:
+    scripts/exps_dnarendering.sh
+    scripts/exps_zjumocap.sh
+    scripts/exps_i3dhuman.sh
+
+3. part_budget 独立日志目录:
+    /media/image/mxz/human/SeqAvatar/logs/budget
+
+4. part_label/common.py 已把 use_part_budget 映射成独立日志模式 budget，
+   不再混进 part / tri 日志命名。
+```
+
+验证：
+
+```text
+bash -n scripts/exps_dnarendering.sh
+bash -n scripts/exps_zjumocap.sh
+bash -n scripts/exps_i3dhuman.sh
+
+PYTHONDONTWRITEBYTECODE=1 python -m py_compile
+    arguments/__init__.py
+    part_label/common.py
+```
+
+## 2026-08-08 part_budget Step 1：网络层接通并验证 no-op
+
+已完成：
+
+```text
+1. NonrigidDeformer 增加了 part_budget 三个子模块:
+    PartStatsEncoder
+    PartBudgetRouter
+    PartBudgetAdapter
+
+2. part_budget 只挂在 part_moe_leg 路径上:
+    默认不影响 original / tri / tri_part / tri_gate
+
+3. 训练与评估都接入了 part_budget_alpha_scale:
+    train.py 每步按 start_iter / warmup 计算
+    render.py 固定为 1.0
+
+4. gaussian_renderer 会把 part_budget_alpha_scale 传入 non-rigid 分支。
+```
+
+验证结果：
+
+```text
+1. bash -n scripts/exps_dnarendering.sh
+   bash -n scripts/exps_zjumocap.sh
+   bash -n scripts/exps_i3dhuman.sh
+   通过。
+
+2. py_compile 通过:
+    nets/mlp_delta_non_rigid.py
+    scene/gaussian_model.py
+    gaussian_renderer/__init__.py
+    train.py
+    render.py
+    part_label/common.py
+    arguments/__init__.py
+
+3. CPU 小张量对照测试:
+    part_budget=False vs part_budget=True + alpha_scale=0
+    输出完全一致，max diff = 0.0
+
+4. part_budget=True + alpha_scale=1 时:
+    budget_mean = [0.33333334, 0.33333334, 0.33333334]
+    budget_std = [0.0, 0.0, 0.0]
+    feature_delta_norm = 0.0
+    说明当前初始化确实是干净的 no-op。
+```
+
+## 2026-08-08 part_budget DNA 运行记录 0：第一次启动 OOM
+
+第一次在 DNA 上跑 `part_budget` 时，训练阶段在加载训练相机时触发 CUDA OOM。
+
+现象：
+
+```text
+torch.cuda.OutOfMemoryError
+发生在 scene/cameras.py 里把 original_image 放到 cuda 时
+```
+
+原因判断：
+
+```text
+DNA 的训练相机加载在 cuda 上太吃显存，
+即使跳过测试相机，训练阶段仍然会把训练相机 image 放到 GPU。
+```
+
+处理：
+
+```text
+part_budget 的 DNA 启动脚本改成默认:
+    IMAGE_DATA_DEVICE=cpu
+    SKIP_LOAD_TEST_CAMERAS=1
+这样训练和最终 render 分开走，先把主训练跑起来。
+```
+
+## 2026-08-08 part_budget DNA 运行中状态
+
+当前运行：
+
+```text
+PID: 1674574
+序列: 0044_11
+模式: part_budget
+GPU: 3
+启动时间: 2026-08-08 19:09:03 CST
+```
+
+实时状态：
+
+```text
+训练已正常启动并持续推进，没有再次触发 OOM。
+当前进度大约在 20980 / 25000 iter，约 84%。
+日志中 loss / ssim / lpips 都在正常波动，没有异常中断。
+```
+
+## 2026-08-08 part_budget 序列完成情况
+
+```text
+已完成序列:
+    0044_11
+
+当前进行中:
+    0051_09
+
+0044_11 最终结果:
+    PSNR 33.001909764607746
+    SSIM 0.9782760689655939
+    LPIPS 0.021070281501548986
+```
+
+## 2026-08-09 part_budget DNA 全部完成
+
+```text
+已完成序列:
+    0044_11
+    0051_09
+    0206_04
+    0813_05
+    0007_04
+    0019_10
+
+各序列最终指标:
+    0044_11: PSNR 33.001909764607746  SSIM 0.9782760689655939  LPIPS 0.021070281501548986
+    0051_09: PSNR 28.76159183184306   SSIM 0.9719492380817731  LPIPS 0.030244823452085255
+    0206_04: PSNR 31.56024735768636   SSIM 0.9704658562938372  LPIPS 0.033273935597389934
+    0813_05: PSNR 36.2131846110026    SSIM 0.9873562256495158  LPIPS 0.017797200203252334
+    0007_04: PSNR 29.614092858632404  SSIM 0.9587977856397628  LPIPS 0.044322934669132036
+    0019_10: PSNR 35.4025904973348    SSIM 0.9814229314525922  LPIPS 0.020552238690045972
+
+序列平均值:
+    PSNR 32.4256028201845
+    SSIM 0.974711351013846
+    LPIPS 0.02787690235224242
+
+全局日志:
+    /media/image/mxz/human/SeqAvatar/logs/budget/20260808_190903_DNA-Rendering_part_budget.log
+```
+
+## 2026-08-09 part_budget 与 part_moe_leg 对比
+
+对照基线：
+
+```text
+part_moe_leg 完整 DNA 六序列日志:
+    /media/image/mxz/human/SeqAvatar/logs/part/20260623_180431_DNA-Rendering_part_moe_leg.log
+```
+
+平均指标对比：
+
+```text
+part_moe_leg:
+    PSNR       32.39075858328077
+    SSIM       0.974622116320663
+    LPIPS*1000 27.993953922608245
+
+part_budget:
+    PSNR       32.4256028201845
+    SSIM       0.974711351013846
+    LPIPS*1000 27.87690235224242
+
+part_budget - part_moe_leg:
+    PSNR       +0.034844236903730064
+    SSIM       +0.00008923469318300459
+    LPIPS*1000 -0.11705157036582398
+```
+
+逐序列变化：
+
+```text
+0044_11: PSNR +0.0013388633728013133  SSIM +0.00006509721279146508  LPIPS*1000 -0.007489083024361104
+0051_09: PSNR +0.06268736521403184    SSIM +0.00026364574829740306  LPIPS*1000 -0.5824100614214949
+0206_04: PSNR +0.04128150939941477    SSIM +0.0001388515035311011   LPIPS*1000 -0.2892857417464284
+0813_05: PSNR +0.010714499155682233   SSIM +0.000016412138938881604 LPIPS*1000 -0.11472008967151198
+0007_04: PSNR +0.04697521527608117    SSIM -0.00009343475103384957  LPIPS*1000 +0.42052736195425516
+0019_10: PSNR +0.046067969004312204   SSIM +0.00014483630657191604  LPIPS*1000 -0.12893180828541656
+```
+
+判断：
+
+```text
+part_budget 相比 part_moe_leg 有一致方向的小幅正收益，
+但平均 PSNR 只提升 0.0348 dB，SSIM 只提升 0.000089，LPIPS*1000 只降低 0.117。
+这不能算明显提高，更像轻微增益或随机波动边界内的收益。
+
+0007_04 虽然 PSNR 上升，但 SSIM 和 LPIPS 变差，说明提升不完全稳。
+```
+
+## 2026-08-09 part_budget 有效性复查
+
+复查原因：
+
+```text
+用户追问收益弱是因为没有发挥作用，还是参数设置保守。
+```
+
+关键发现：
+
+```text
+这轮 20260808_190903 的 DNA 六序列结果不能作为有效 part_budget 结果。
+
+原因:
+    六个输出目录的 cfg_args 都显示:
+        use_part_budget=False
+
+    训练日志中也没有:
+        [PART_BUDGET]
+        [PartBudget Status]
+        [PartBudget Stats]
+
+    之前运行时 ps 看到的真实 train.py 命令也没有:
+        --use_part_budget
+        --part_budget_alpha
+        --part_budget_start_iter
+        --part_budget_warmup
+        --part_budget_hidden_dim
+        --part_budget_token_dim
+
+因此本轮虽然日志总标题写的是 part_budget，
+但实际训练路径是 part_moe_leg，而不是 part_budget。
+```
+
+修正判断：
+
+```text
+当前这组 +0.0348 dB / +0.000089 SSIM / -0.117 LPIPS*1000
+不能解释为 part_budget 的真实收益。
+
+它更可能只是 part_moe_leg 重新跑一次造成的随机波动。
+
+所以现在不能判断 part_budget 是“没发挥作用”还是“参数太保守”；
+因为这轮有效分支根本没有打开。
+```
+
+## 2026-08-09 part_budget 重新启动
+
+修复内容：
+
+```text
+已把 --use_part_budget 的注入位置从 tri_enabled 分支中移出，
+现在 part_budget 单独启动时也会真正传入训练命令。
+```
+
+当前重跑：
+
+```text
+GPU: 3
+启动方式: tmux part_budget_dna_fix_20260809
+模式: bash scripts/exps_dnarendering.sh part_budget
+额外环境:
+    IMAGE_DATA_DEVICE=cpu
+    SKIP_LOAD_TEST_CAMERAS=1
+    KEEP_SPLIT_PART_LOGS=1
+```
+
+## 2026-08-09 part_budget 有效重跑前修复
+
+用户要求：
+
+```text
+打开 part_budget 重新跑并给最后评价指标，用卡 3。
+```
+
+接续状态：
+
+```text
+上一轮有效重跑已经真正传入 --use_part_budget，
+日志中出现:
+    [PART_BUDGET] enabled=True
+
+但在 0044_11 约 10000/25000 iter，即 Part-MoE/part_budget 激活后崩溃。
+```
+
+崩溃原因：
+
+```text
+nets/mlp_delta_non_rigid.py:
+    PartStatsEncoder._normalize_inputs
+
+训练中 pc.get_part_conf 返回的是一维 [N]。
+原代码只处理了 [B, N] / [B, N, 1]，
+没有把 [N] 扩成 [B, N, 1]。
+
+因此 boundary_score 仍是一维，执行:
+    boundary_score.mean(dim=1, keepdim=True)
+触发:
+    IndexError: Dimension out of range
+```
+
+修复内容：
+
+```text
+nets/mlp_delta_non_rigid.py
+    PartStatsEncoder._normalize_inputs:
+        motion_strength / part_conf 均支持 [N] 输入，
+        统一扩成 [B, N, 1]。
+
+    NonrigidDeformer._normalize_budget_motion
+    NonrigidDeformer._normalize_budget_conf:
+        同样补齐 [N] 输入处理，避免后续 router/gate 处再遇到同类问题。
+```
+
+已验证：
+
+```text
+bash -n scripts/exps_dnarendering.sh
+bash -n scripts/exps_i3dhuman.sh
+bash -n scripts/exps_zjumocap.sh
+
+PYTHONDONTWRITEBYTECODE=1 python -m py_compile:
+    nets/mlp_delta_non_rigid.py
+    train.py
+    gaussian_renderer/__init__.py
+    scene/gaussian_model.py
+    arguments/__init__.py
+
+CPU 小张量测试:
+    part_label: [N]
+    part_conf:  [N]
+    motion:     [N]
+
+    PartStatsEncoder 输出:
+        part_token [1, 7, 32]
+        part_stats [1, 7, 7]
+
+    NonrigidDeformer(use_part_budget=True).apply_part_budget 输出:
+        features [1, 12, 63]
+
+结论:
+    一维 part_conf / motion_strength 已能正确进入 part_budget 分支。
+```
+
+## 2026-08-09 part_budget 弱收益原因分析
+
+代码状态：
+
+```text
+part_budget 运行是健康的。
+    1. 已跑完 DNA 六序列。
+    2. 没有新报错，也没有 OOM。
+    3. Budget 分布从均匀变成了轻微偏置，但 entropy 仍然接近 1.09。
+```
+
+关键日志：
+
+```text
+11000:
+    mean = [0.3333333432674408, 0.3333333432674408, 0.3333333432674408]
+    entropy = 1.098612
+
+12000:
+    mean = [0.3379809856414795, 0.3076769709587097, 0.3543420732021332]
+    feature_delta_norm = 0.108138
+
+25000:
+    mean = [0.3271176218986511, 0.283312052488327, 0.3895703852176666]
+    std = [0.0010996104683727026, 0.005012987181544304, 0.00608061021193862]
+    entropy = 1.090006
+    feature_delta_norm = 0.435912
+```
+
+为什么提升小：
+
+```text
+1. 这是 feature reweighting，不是结构性改网络。
+   它只改 non-rigid 输入，不改 part expert 结构、densify、LBS 或 part 分配。
+
+2. router 还偏保守。
+   entropy 一直很高，说明三路预算没有明显分工。
+
+3. motion signal 被 batch 内标准化压平了。
+   `_normalize_budget_motion()` 做了 log1p + z-score。
+   日志里 motion_mean 长期接近 0，这是这个设计的直接结果。
+
+4. part_conf 是静态先验。
+   它来自一次性 Gaussian-part confidence，不是随帧变化的动态信号。
+
+5. 后续 part experts 仍可吸收预算变化。
+   所以 budget 的净贡献会被稀释。
+```
+
+可调空间：
+
+```text
+优先参数:
+    part_budget_start_iter 更早
+    part_budget_warmup 更短
+    part_budget_alpha 更大
+    part_budget_hidden_dim / token_dim 更大
+
+更关键的改法:
+    1. 保留原始 motion 通道，不只喂 z-score 后的 motion。
+    2. 给 part_conf 加动态分量。
+    3. 让 budget 更直接影响 part experts，而不是只改输入特征。
+```
+
+## 2026-08-09 代码迁移建议
+
+用户问题：
+
+```text
+想把当前项目迁移到另一台服务器。
+另一台服务器已有数据集，也有添加 part_budget 之前的代码。
+询问是否适合用 git。
+```
+
+当前仓库状态：
+
+```text
+当前分支:
+    motion
+
+远程:
+    origin  https://github.com/merlin-0728/seqavatar.git
+    3dhgsseq https://github.com/merlin-0728/3dhgsseq.git
+
+当前改动:
+    17 个 tracked 文件修改。
+    没有未跟踪文件。
+
+判断:
+    适合用 git 迁移。
+    优先推荐 commit + push/pull。
+    如果不想推远程，使用 git bundle 或 git diff patch。
+```
+
+推荐迁移方式：
+
+```text
+方案 A:
+    在当前服务器 commit 到独立分支并 push origin。
+    新服务器 fetch/pull 该分支。
+
+方案 B:
+    如果不方便推 GitHub，用 git bundle。
+    bundle 可以保留 commit 和分支信息，比裸 patch 稳。
+
+方案 C:
+    只做一次性迁移可用 git diff --binary 生成 patch。
+    但 patch 不保留 commit 历史，且目标代码版本差异大时更容易冲突。
 ```

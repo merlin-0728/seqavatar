@@ -2,14 +2,15 @@ import copy
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
-def _clone_mlp_with_extra_input(mlp, extra_input_dim):
-    cloned = copy.deepcopy(mlp)
+def _append_mlp_input_dim(mlp, extra_input_dim):
+    extra_input_dim = int(extra_input_dim)
     if extra_input_dim <= 0:
-        return cloned
+        return mlp
 
-    for idx, layer in enumerate(cloned):
+    for idx, layer in enumerate(mlp):
         if isinstance(layer, nn.Linear):
             old_layer = layer
             new_layer = nn.Linear(
@@ -19,120 +20,483 @@ def _clone_mlp_with_extra_input(mlp, extra_input_dim):
             )
             with torch.no_grad():
                 new_layer.weight[:, :old_layer.in_features].copy_(old_layer.weight)
-                new_layer.weight[:, old_layer.in_features:].zero_()
                 if old_layer.bias is not None:
                     new_layer.bias.copy_(old_layer.bias)
-            cloned[idx] = new_layer
-            return cloned
+            mlp[idx] = new_layer
+            return mlp
 
-    raise RuntimeError("[PartPAMO] Cannot widen MLP: no Linear layer found.")
+    raise RuntimeError("[TRI] Cannot append tri-plane features: no Linear layer found.")
+
+
+class TriPlaneFeature(nn.Module):
+    def __init__(self, feature_dim=32, resolution=64, extent=1.2):
+        super().__init__()
+        self.feature_dim = int(feature_dim)
+        self.resolution = int(resolution)
+        self.extent = float(extent)
+        if self.feature_dim <= 0:
+            raise ValueError("[TRI] tri_plane_dim must be positive.")
+        if self.resolution <= 1:
+            raise ValueError("[TRI] tri_plane_res must be greater than 1.")
+        if self.extent <= 0:
+            raise ValueError("[TRI] tri_plane_extent must be positive.")
+        self.planes = nn.Parameter(torch.zeros(3, self.feature_dim, self.resolution, self.resolution))
+
+    def _normalize_xyz(self, query_xyz):
+        return (query_xyz / self.extent).clamp(-1.0, 1.0)
+
+    def _sample_plane(self, plane, grid):
+        batch_size = grid.shape[0]
+        plane = plane.unsqueeze(0).expand(batch_size, -1, -1, -1)
+        sampled = F.grid_sample(
+            plane,
+            grid,
+            mode="bilinear",
+            padding_mode="border",
+            align_corners=True,
+        )
+        return sampled.squeeze(-1).transpose(1, 2).contiguous()
+
+    def forward(self, query_xyz):
+        if query_xyz.dim() == 2:
+            query_xyz = query_xyz.unsqueeze(0)
+        coords = self._normalize_xyz(query_xyz)
+
+        xy_grid = coords[..., [0, 1]].unsqueeze(2)
+        xz_grid = coords[..., [0, 2]].unsqueeze(2)
+        yz_grid = coords[..., [1, 2]].unsqueeze(2)
+
+        xy_feat = self._sample_plane(self.planes[0], xy_grid)
+        xz_feat = self._sample_plane(self.planes[1], xz_grid)
+        yz_feat = self._sample_plane(self.planes[2], yz_grid)
+        return (xy_feat + xz_feat + yz_feat) / 3.0
+
+
+class PartTriFeatureFiLM(nn.Module):
+    def __init__(self, num_parts, feature_dim, resolution=64, extent=1.0,
+                 alpha=1.0, motion_gain=0.5, boundary_gain=0.5, hidden_dim=64):
+        super().__init__()
+        self.num_parts = int(num_parts)
+        self.feature_dim = int(feature_dim)
+        self.resolution = int(resolution)
+        self.extent = float(extent)
+        self.alpha = float(alpha)
+        self.motion_gain = float(motion_gain)
+        self.boundary_gain = float(boundary_gain)
+        self.hidden_dim = int(hidden_dim)
+        if self.num_parts <= 0:
+            raise ValueError("[TRI_PART] num_parts must be positive.")
+        if self.feature_dim <= 0:
+            raise ValueError("[TRI_PART] feature_dim must be positive.")
+        if self.resolution <= 1:
+            raise ValueError("[TRI_PART] resolution must be greater than 1.")
+        if self.extent <= 0:
+            raise ValueError("[TRI_PART] extent must be positive.")
+        if self.hidden_dim <= 0:
+            raise ValueError("[TRI_PART] hidden_dim must be positive.")
+
+        self.part_delta_planes = nn.Parameter(
+            torch.zeros(self.num_parts, 3, self.feature_dim, self.resolution, self.resolution)
+        )
+        self.part_embedding = nn.Embedding(self.num_parts, self.hidden_dim)
+        self.gate_delta = nn.Sequential(
+            nn.Linear(self.feature_dim + self.hidden_dim + 2, self.hidden_dim),
+            nn.ReLU(),
+            nn.Linear(self.hidden_dim, 1),
+        )
+        self.part_gate_logit = nn.Embedding(self.num_parts, 1)
+        nn.init.normal_(self.part_embedding.weight, mean=0.0, std=0.02)
+        nn.init.zeros_(self.gate_delta[-1].weight)
+        nn.init.zeros_(self.gate_delta[-1].bias)
+        self._init_part_gate_logits()
+
+    def _init_part_gate_logits(self):
+        # part_moe_leg schema: 0 unknown, 1 body, 2/3 hands, 4 face, 5/6 legs.
+        priors = [0.35, 0.25, 0.60, 0.60, 0.25, 0.80, 0.80]
+        if self.num_parts != len(priors):
+            priors = [0.5 for _ in range(self.num_parts)]
+        prior_tensor = torch.tensor(priors, dtype=torch.float32).clamp(1e-4, 1.0 - 1e-4)
+        with torch.no_grad():
+            self.part_gate_logit.weight.copy_(torch.logit(prior_tensor).view(self.num_parts, 1))
+
+    def _normalize_labels(self, part_label, batch_size, num_points, device):
+        part_label = part_label.long().to(device)
+        part_label = torch.clamp(part_label, min=0, max=self.num_parts - 1)
+        if part_label.dim() == 1:
+            part_label = part_label.unsqueeze(0).expand(batch_size, -1)
+        elif part_label.shape[0] == 1 and batch_size > 1:
+            part_label = part_label.expand(batch_size, -1)
+        if part_label.shape[1] != num_points:
+            raise RuntimeError(
+                f"[TRI_PART] part_label points {part_label.shape[1]} != tri feature points {num_points}."
+            )
+        return part_label
+
+    def _normalize_conf(self, part_conf, part_label, dtype):
+        if part_conf is None:
+            return torch.ones(*part_label.shape, 1, device=part_label.device, dtype=dtype)
+        part_conf = part_conf.to(device=part_label.device, dtype=dtype)
+        if part_conf.dim() == 1:
+            part_conf = part_conf.unsqueeze(0).expand(part_label.shape[0], -1)
+        elif part_conf.dim() == 2 and part_conf.shape[0] == 1 and part_label.shape[0] > 1:
+            part_conf = part_conf.expand(part_label.shape[0], -1)
+        if part_conf.dim() == 2:
+            part_conf = part_conf.unsqueeze(-1)
+        return part_conf.clamp(0.0, 1.0)
+
+    def _normalize_motion(self, motion_strength, tri_features):
+        if motion_strength is None:
+            return torch.zeros(*tri_features.shape[:2], 1, device=tri_features.device, dtype=tri_features.dtype)
+        motion_strength = motion_strength.to(device=tri_features.device, dtype=tri_features.dtype)
+        if motion_strength.dim() == 2:
+            motion_strength = motion_strength.unsqueeze(-1)
+        motion_strength = torch.log1p(motion_strength.clamp_min(0.0))
+        mean = motion_strength.detach().mean(dim=1, keepdim=True)
+        std = motion_strength.detach().std(dim=1, keepdim=True).clamp_min(1e-6)
+        return ((motion_strength - mean) / std).clamp(-3.0, 3.0)
+
+    def _normalize_xyz(self, query_xyz):
+        return (query_xyz / self.extent).clamp(-1.0, 1.0)
+
+    def _sample_plane(self, plane, grid):
+        sampled = F.grid_sample(
+            plane.unsqueeze(0),
+            grid,
+            mode="bilinear",
+            padding_mode="border",
+            align_corners=True,
+        )
+        return sampled.squeeze(-1).transpose(1, 2).contiguous().squeeze(0)
+
+    def _sample_part_delta(self, query_xyz, part_label):
+        if query_xyz.dim() == 2:
+            query_xyz = query_xyz.unsqueeze(0)
+        if query_xyz.shape[0] == 1 and part_label.shape[0] > 1:
+            query_xyz = query_xyz.expand(part_label.shape[0], -1, -1)
+        coords = self._normalize_xyz(query_xyz.to(device=self.part_delta_planes.device))
+        out = torch.zeros(
+            coords.shape[0],
+            coords.shape[1],
+            self.feature_dim,
+            device=coords.device,
+            dtype=coords.dtype,
+        )
+        plane_axes = ((0, 1), (0, 2), (1, 2))
+        flat_out = out.reshape(-1, self.feature_dim)
+        flat_coords = coords.reshape(-1, 3)
+        flat_labels = part_label.reshape(-1)
+
+        for pid in range(self.num_parts):
+            idx = torch.nonzero(flat_labels == pid, as_tuple=False).flatten()
+            if idx.numel() == 0:
+                continue
+            part_coords = flat_coords.index_select(0, idx).unsqueeze(0)
+            part_feat = 0.0
+            for plane_id, axes in enumerate(plane_axes):
+                grid = part_coords[..., list(axes)].unsqueeze(2)
+                part_feat = part_feat + self._sample_plane(self.part_delta_planes[pid, plane_id], grid)
+            flat_out = torch.index_copy(flat_out, 0, idx, part_feat / 3.0)
+
+        return flat_out.reshape_as(out)
+
+    def forward(self, tri_features, query_xyz, part_label, motion_strength=None, part_conf=None):
+        batch_size, num_points = tri_features.shape[:2]
+        part_label = self._normalize_labels(part_label, batch_size, num_points, tri_features.device)
+        part_conf = self._normalize_conf(part_conf, part_label, tri_features.dtype)
+        motion_norm = self._normalize_motion(motion_strength, tri_features)
+        boundary_score = 1.0 - part_conf
+
+        part_delta = self._sample_part_delta(query_xyz, part_label).to(
+            device=tri_features.device,
+            dtype=tri_features.dtype,
+        )
+        part_emb = self.part_embedding(part_label)
+        gate_delta = self.gate_delta(torch.cat([tri_features, part_emb, motion_norm, boundary_score], dim=-1))
+        gate_logits = (
+            self.part_gate_logit(part_label)
+            + self.motion_gain * motion_norm
+            + self.boundary_gain * boundary_score
+            + gate_delta
+        )
+        gate = torch.sigmoid(gate_logits)
+        residual = self.alpha * gate * part_delta
+        reg_weight = (1.0 - torch.sigmoid(motion_norm)) * part_conf
+        reg_loss = (reg_weight * residual.pow(2).mean(dim=-1, keepdim=True)).mean()
+        stats = {
+            "gate_mean": gate.detach().mean(),
+            "gate_std": gate.detach().std(),
+            "motion_mean": motion_norm.detach().mean(),
+            "boundary_mean": boundary_score.detach().mean(),
+            "residual_norm": residual.detach().norm(dim=-1).mean(),
+            "reg_loss": reg_loss,
+        }
+        return tri_features + residual, stats
+
+
+class TriGateAdapter(nn.Module):
+    def __init__(self, tri_dim, feature_dim, hidden_dim=128, gate_init=0.5):
+        super().__init__()
+        self.tri_dim = int(tri_dim)
+        self.feature_dim = int(feature_dim)
+        self.hidden_dim = int(hidden_dim)
+        gate_init = float(gate_init)
+        if self.tri_dim <= 0:
+            raise ValueError("[TRI_GATE] tri_dim must be positive.")
+        if self.feature_dim <= 0:
+            raise ValueError("[TRI_GATE] feature_dim must be positive.")
+        if self.hidden_dim <= 0:
+            raise ValueError("[TRI_GATE] hidden_dim must be positive.")
+        if not 0.0 < gate_init < 1.0:
+            raise ValueError("[TRI_GATE] gate_init must be in (0, 1).")
+
+        self.adapter = nn.Sequential(
+            nn.Linear(self.tri_dim, self.hidden_dim),
+            nn.ReLU(),
+            nn.Linear(self.hidden_dim, self.feature_dim),
+        )
+        self.gate = nn.Sequential(
+            nn.Linear(self.feature_dim + self.tri_dim, self.hidden_dim),
+            nn.ReLU(),
+            nn.Linear(self.hidden_dim, 1),
+        )
+
+        nn.init.zeros_(self.adapter[-1].weight)
+        nn.init.zeros_(self.adapter[-1].bias)
+        nn.init.zeros_(self.gate[-1].weight)
+        gate_bias = torch.logit(torch.tensor(gate_init, dtype=torch.float32)).item()
+        nn.init.constant_(self.gate[-1].bias, gate_bias)
+
+    def forward(self, base_features, tri_features):
+        tri_res = self.adapter(tri_features)
+        gate_input = torch.cat([base_features, tri_features], dim=-1)
+        gate = torch.sigmoid(self.gate(gate_input))
+        return gate * tri_res, gate
+
+
+class TriFeatureGate(nn.Module):
+    def __init__(self, tri_dim, feature_dim, hidden_dim=128, gate_init=0.5):
+        super().__init__()
+        self.tri_dim = int(tri_dim)
+        self.feature_dim = int(feature_dim)
+        self.hidden_dim = int(hidden_dim)
+        gate_init = float(gate_init)
+        self.gate_init = gate_init
+        if self.tri_dim <= 0:
+            raise ValueError("[TRI_GATE] tri_dim must be positive.")
+        if self.feature_dim <= 0:
+            raise ValueError("[TRI_GATE] feature_dim must be positive.")
+        if self.hidden_dim <= 0:
+            raise ValueError("[TRI_GATE] hidden_dim must be positive.")
+        if not 0.0 < gate_init < 1.0:
+            raise ValueError("[TRI_GATE] gate_init must be in (0, 1).")
+
+        self.gate = nn.Sequential(
+            nn.Linear(self.feature_dim + self.tri_dim, self.hidden_dim),
+            nn.ReLU(),
+            nn.Linear(self.hidden_dim, 1),
+        )
+        nn.init.zeros_(self.gate[-1].weight)
+        gate_bias = torch.logit(torch.tensor(gate_init, dtype=torch.float32)).item()
+        nn.init.constant_(self.gate[-1].bias, gate_bias)
+
+    def forward(self, base_features, tri_features):
+        gate_input = torch.cat([base_features, tri_features], dim=-1)
+        return torch.sigmoid(self.gate(gate_input))
+
+
+class PartStatsEncoder(nn.Module):
+    def __init__(self, num_parts, token_dim=32, hidden_dim=128, stat_dim=7):
+        super().__init__()
+        self.num_parts = int(num_parts)
+        self.token_dim = int(token_dim)
+        self.hidden_dim = int(hidden_dim)
+        self.stat_dim = int(stat_dim)
+        if self.num_parts <= 0:
+            raise ValueError("[PART_BUDGET] num_parts must be positive.")
+        if self.token_dim <= 0:
+            raise ValueError("[PART_BUDGET] token_dim must be positive.")
+        if self.hidden_dim <= 0:
+            raise ValueError("[PART_BUDGET] hidden_dim must be positive.")
+        if self.stat_dim <= 0:
+            raise ValueError("[PART_BUDGET] stat_dim must be positive.")
+
+        self.part_embedding = nn.Embedding(self.num_parts, self.token_dim)
+        self.mlp = nn.Sequential(
+            nn.Linear(self.stat_dim, self.hidden_dim),
+            nn.ReLU(),
+            nn.Linear(self.hidden_dim, self.token_dim),
+        )
+        nn.init.normal_(self.part_embedding.weight, mean=0.0, std=0.02)
+
+    def _normalize_inputs(self, part_label, motion_strength, part_conf):
+        if part_label.dim() == 1:
+            part_label = part_label.unsqueeze(0)
+        batch_size, num_points = part_label.shape[:2]
+        device = part_label.device
+        dtype = motion_strength.dtype if motion_strength is not None else (
+            part_conf.dtype if part_conf is not None else torch.float32
+        )
+
+        if motion_strength is None:
+            motion_strength = torch.zeros(batch_size, num_points, 1, device=device, dtype=dtype)
+        else:
+            motion_strength = motion_strength.to(device=device, dtype=dtype)
+            if motion_strength.dim() == 1:
+                motion_strength = motion_strength.unsqueeze(0).expand(batch_size, -1).unsqueeze(-1)
+            elif motion_strength.dim() == 2:
+                if motion_strength.shape[0] == 1 and batch_size > 1:
+                    motion_strength = motion_strength.expand(batch_size, -1)
+                motion_strength = motion_strength.unsqueeze(-1)
+            elif motion_strength.shape[0] == 1 and batch_size > 1:
+                motion_strength = motion_strength.expand(batch_size, -1, -1)
+        motion_strength = motion_strength.to(device=device, dtype=dtype)
+
+        if part_conf is None:
+            part_conf = torch.ones(batch_size, num_points, 1, device=device, dtype=dtype)
+        else:
+            part_conf = part_conf.to(device=device, dtype=dtype)
+            if part_conf.dim() == 1:
+                part_conf = part_conf.unsqueeze(0).expand(batch_size, -1).unsqueeze(-1)
+            elif part_conf.dim() == 2:
+                if part_conf.shape[0] == 1 and batch_size > 1:
+                    part_conf = part_conf.expand(batch_size, -1)
+                part_conf = part_conf.unsqueeze(-1)
+            elif part_conf.shape[0] == 1 and batch_size > 1:
+                part_conf = part_conf.expand(batch_size, -1, -1)
+        part_conf = part_conf.to(device=device, dtype=dtype).clamp(0.0, 1.0)
+        return part_label.long().to(device=device), motion_strength, part_conf
+
+    def forward(self, part_label, motion_strength=None, part_conf=None):
+        part_label, motion_strength, part_conf = self._normalize_inputs(
+            part_label, motion_strength, part_conf
+        )
+        batch_size, num_points = part_label.shape[:2]
+        boundary_score = 1.0 - part_conf
+
+        global_motion_mean = motion_strength.mean(dim=1, keepdim=True)
+        global_motion_std = motion_strength.std(dim=1, keepdim=True, unbiased=False).clamp_min(1e-6)
+        global_boundary_mean = boundary_score.mean(dim=1, keepdim=True)
+        global_boundary_std = boundary_score.std(dim=1, keepdim=True, unbiased=False).clamp_min(1e-6)
+        global_conf_mean = part_conf.mean(dim=1, keepdim=True)
+        global_count_ratio = torch.ones(batch_size, 1, 1, device=part_label.device, dtype=motion_strength.dtype)
+        global_rigidity = 1.0 / (1.0 + global_motion_mean.abs() + global_motion_std + global_boundary_mean)
+        global_stats = torch.cat(
+            [
+                global_motion_mean,
+                global_motion_std,
+                global_boundary_mean,
+                global_boundary_std,
+                global_conf_mean,
+                global_count_ratio,
+                global_rigidity,
+            ],
+            dim=-1,
+        )
+
+        part_stats = []
+        for pid in range(self.num_parts):
+            mask = (part_label == pid).unsqueeze(-1).to(dtype=motion_strength.dtype)
+            count = mask.sum(dim=1, keepdim=True)
+            count_safe = count.clamp_min(1.0)
+
+            motion_mean = (motion_strength * mask).sum(dim=1, keepdim=True) / count_safe
+            motion_var = ((motion_strength - motion_mean) ** 2 * mask).sum(dim=1, keepdim=True) / count_safe
+            motion_std = motion_var.clamp_min(1e-6).sqrt()
+
+            boundary_mean = (boundary_score * mask).sum(dim=1, keepdim=True) / count_safe
+            boundary_var = ((boundary_score - boundary_mean) ** 2 * mask).sum(dim=1, keepdim=True) / count_safe
+            boundary_std = boundary_var.clamp_min(1e-6).sqrt()
+
+            conf_mean = (part_conf * mask).sum(dim=1, keepdim=True) / count_safe
+            count_ratio = count / float(num_points)
+            rigidity = 1.0 / (1.0 + motion_mean.abs() + motion_std + boundary_mean)
+            stats = torch.cat(
+                [
+                    motion_mean,
+                    motion_std,
+                    boundary_mean,
+                    boundary_std,
+                    conf_mean,
+                    count_ratio,
+                    rigidity,
+                ],
+                dim=-1,
+            )
+            valid = (count > 0).to(dtype=stats.dtype)
+            stats = valid * stats + (1.0 - valid) * global_stats
+            part_stats.append(stats)
+
+        part_stats = torch.cat(part_stats, dim=1)
+        part_ids = torch.arange(self.num_parts, device=part_label.device)
+        part_token = self.mlp(part_stats) + self.part_embedding(part_ids)[None, :, :]
+        return part_token, part_stats
+
+
+class PartBudgetRouter(nn.Module):
+    def __init__(self, feature_dim, token_dim, hidden_dim=128):
+        super().__init__()
+        self.feature_dim = int(feature_dim)
+        self.token_dim = int(token_dim)
+        self.hidden_dim = int(hidden_dim)
+        if self.feature_dim <= 0:
+            raise ValueError("[PART_BUDGET] feature_dim must be positive.")
+        if self.token_dim <= 0:
+            raise ValueError("[PART_BUDGET] token_dim must be positive.")
+        if self.hidden_dim <= 0:
+            raise ValueError("[PART_BUDGET] hidden_dim must be positive.")
+
+        self.mlp = nn.Sequential(
+            nn.Linear(self.feature_dim + self.token_dim + 2, self.hidden_dim),
+            nn.ReLU(),
+            nn.Linear(self.hidden_dim, 3),
+        )
+        nn.init.zeros_(self.mlp[-1].weight)
+        nn.init.zeros_(self.mlp[-1].bias)
+
+    def forward(self, base_features, part_token, motion_strength, boundary_score):
+        router_input = torch.cat([base_features, part_token, motion_strength, boundary_score], dim=-1)
+        logits = self.mlp(router_input)
+        budget = torch.softmax(logits, dim=-1)
+        return budget, logits
+
+
+class PartBudgetAdapter(nn.Module):
+    def __init__(self, feature_dim, token_dim, hidden_dim=128):
+        super().__init__()
+        self.feature_dim = int(feature_dim)
+        self.token_dim = int(token_dim)
+        self.hidden_dim = int(hidden_dim)
+        if self.feature_dim <= 0:
+            raise ValueError("[PART_BUDGET] feature_dim must be positive.")
+        if self.token_dim <= 0:
+            raise ValueError("[PART_BUDGET] token_dim must be positive.")
+        if self.hidden_dim <= 0:
+            raise ValueError("[PART_BUDGET] hidden_dim must be positive.")
+
+        self.mlp = nn.Sequential(
+            nn.Linear(self.feature_dim + self.token_dim, self.hidden_dim),
+            nn.ReLU(),
+            nn.Linear(self.hidden_dim, self.feature_dim),
+        )
+        nn.init.zeros_(self.mlp[-1].weight)
+        nn.init.zeros_(self.mlp[-1].bias)
+
+    def forward(self, base_features, part_token):
+        adapter_input = torch.cat([base_features, part_token], dim=-1)
+        return self.mlp(adapter_input)
 
 
 class PartNonrigidExpert(nn.Module):
-    def __init__(self, mlp, gaussian_warp, gaussian_rotation, gaussian_scaling, extra_input_dim=0):
+    def __init__(self, mlp, gaussian_warp, gaussian_rotation, gaussian_scaling):
         super().__init__()
-        self.mlp = _clone_mlp_with_extra_input(mlp, int(extra_input_dim))
+        self.mlp = copy.deepcopy(mlp)
         self.gaussian_warp = copy.deepcopy(gaussian_warp)
         self.gaussian_rotation = copy.deepcopy(gaussian_rotation)
         self.gaussian_scaling = copy.deepcopy(gaussian_scaling)
 
-    def forward(self, features, film=None):
-        if film is None:
-            h = self.mlp(features)
-        else:
-            gamma, beta = film
-            h = features
-            film_idx = 0
-            for layer in self.mlp:
-                h = layer(h)
-                if isinstance(layer, nn.ReLU) and film_idx < gamma.shape[-2]:
-                    h = gamma[..., film_idx, :] * h + beta[..., film_idx, :]
-                    film_idx += 1
+    def forward(self, features):
+        h = self.mlp(features)
         return self.gaussian_warp(h), self.gaussian_rotation(h), self.gaussian_scaling(h)
-
-
-class PartMotionEncoder(nn.Module):
-    def __init__(self, input_dim=15, hidden_dim=64, output_dim=32):
-        super().__init__()
-        self.mlp = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, output_dim),
-            nn.ReLU(),
-        )
-
-    def forward(self, x):
-        return self.mlp(x)
-
-
-class PartMotionFiLM(nn.Module):
-    def __init__(self, input_dim=32, hidden_dim=64, num_layers=3, width=512):
-        super().__init__()
-        self.num_layers = int(num_layers)
-        self.width = int(width)
-        self.hidden = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.ReLU(),
-        )
-        self.out = nn.Linear(hidden_dim, self.num_layers * self.width * 2)
-        nn.init.zeros_(self.out.weight)
-        nn.init.zeros_(self.out.bias)
-
-    def forward(self, z_point):
-        film = self.out(self.hidden(z_point))
-        film = film.view(z_point.shape[:-1] + (self.num_layers, 2, self.width))
-        gamma = 1.0 + film[..., 0, :]
-        beta = film[..., 1, :]
-        return gamma, beta
-
-
-class PartRigidHead(nn.Module):
-    def __init__(self, input_dim=32, hidden_dim=64):
-        super().__init__()
-        self.hidden = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.ReLU(),
-        )
-        self.out = nn.Linear(hidden_dim, 6)
-        nn.init.zeros_(self.out.weight)
-        nn.init.zeros_(self.out.bias)
-
-    def forward(self, z_part):
-        rigid = self.out(self.hidden(z_part))
-        return rigid[..., :3], rigid[..., 3:]
-
-
-class PartRigidityMLP(nn.Module):
-    def __init__(self, pos_input_dim, part_motion_dim, hidden_dim=64):
-        super().__init__()
-        self.mlp = nn.Sequential(
-            nn.Linear(pos_input_dim + part_motion_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1),
-        )
-
-    def forward(self, x_emb, z_point):
-        return torch.sigmoid(self.mlp(torch.cat([x_emb, z_point], dim=-1)))
-
-
-def axis_angle_to_matrix(axis_angle):
-    angle = torch.linalg.norm(axis_angle, dim=-1, keepdim=True).clamp_min(1e-8)
-    x, y, z = axis_angle.unbind(dim=-1)
-    zeros = torch.zeros_like(x)
-    skew = torch.stack(
-        [
-            zeros, -z, y,
-            z, zeros, -x,
-            -y, x, zeros,
-        ],
-        dim=-1,
-    ).reshape(axis_angle.shape[:-1] + (3, 3))
-
-    eye = torch.eye(3, device=axis_angle.device, dtype=axis_angle.dtype)
-    eye = eye.expand(axis_angle.shape[:-1] + (3, 3))
-    sin_term = torch.sin(angle)[..., None] / angle[..., None]
-    cos_term = (1.0 - torch.cos(angle))[..., None] / (angle[..., None] * angle[..., None])
-    return eye + sin_term * skew + cos_term * torch.matmul(skew, skew)
 
 
 class NonrigidDeformer(nn.Module):
@@ -140,84 +504,71 @@ class NonrigidDeformer(nn.Module):
                  pos_input_dim=63, pose_cond_dim=32, seq_pose_cond_dim=32, seq_xyz_cond_dim=96,
                  seq_len=6, seq_xyz_knn=1, time_step_num=1, smpl_type='smpl',
                  use_part_moe=False, num_parts=5, part_moe_global_keep=0.1,
-                 use_part_pamo=False, part_pamo_dim=32, part_pamo_rigidity_min=0.0,
-                 part_pamo_step1_only=False, part_pamo_fixed_rigidity=-1.0,
-                 part_pamo_motion_film=False, part_pamo_motion_feat_mode="mean"):
+                 use_tri=False, tri_plane_dim=32, tri_plane_res=64, tri_plane_extent=1.2,
+                 use_tri_part=False, use_tri_gate=False, tri_gate_alpha=0.2,
+                 tri_gate_init=0.5, tri_gate_hidden_dim=128, tri_gate_mode="additive",
+                 tri_part_alpha=1.0, tri_part_motion_gain=0.5,
+                 tri_part_boundary_gain=0.5, tri_part_hidden_dim=64,
+                 part_label_schema="anatomy5", use_part_budget=False, part_budget_alpha=1.0,
+                 part_budget_start_iter=16000, part_budget_warmup=1000,
+                 part_budget_hidden_dim=128, part_budget_token_dim=32):
         super(NonrigidDeformer, self).__init__()
 
         self.use_pose_cond = use_pose_cond
         self.use_seq_pose_cond = use_seq_pose_cond
         self.use_seq_xyz_cond = use_seq_xyz_cond
         self.use_part_moe = use_part_moe
+        self.use_tri = bool(use_tri and use_part_moe)
+        self.use_tri_part = bool(use_tri_part and self.use_tri)
+        self.use_tri_gate = bool(use_tri_gate and self.use_tri)
+        self.tri_plane_dim = int(tri_plane_dim)
+        self.tri_plane_res = int(tri_plane_res)
+        self.tri_plane_extent = float(tri_plane_extent)
+        self.tri_gate_alpha = float(tri_gate_alpha)
+        self.tri_gate_init = float(tri_gate_init)
+        self.tri_gate_hidden_dim = int(tri_gate_hidden_dim)
+        self.tri_gate_mode = str(tri_gate_mode).lower()
+        self.tri_part_alpha = float(tri_part_alpha)
+        self.tri_part_motion_gain = float(tri_part_motion_gain)
+        self.tri_part_boundary_gain = float(tri_part_boundary_gain)
+        self.tri_part_hidden_dim = int(tri_part_hidden_dim)
+        self.part_label_schema = str(part_label_schema)
+        self.use_part_budget = bool(use_part_budget)
+        self.part_budget_alpha = float(part_budget_alpha)
+        self.part_budget_start_iter = int(part_budget_start_iter)
+        self.part_budget_warmup = int(part_budget_warmup)
+        self.part_budget_hidden_dim = int(part_budget_hidden_dim)
+        self.part_budget_token_dim = int(part_budget_token_dim)
+        if self.tri_gate_mode not in ("additive", "concat", "scale"):
+            raise ValueError("[TRI_GATE] tri_gate_mode must be 'additive', 'concat', or 'scale'.")
         self.num_parts = num_parts
         self.part_moe_global_keep = part_moe_global_keep
         self.pos_input_dim = pos_input_dim
-        self.use_part_pamo = bool(use_part_moe and use_part_pamo)
-        self.part_pamo_dim = int(part_pamo_dim)
-        self.part_pamo_rigidity_min = max(0.0, min(1.0, float(part_pamo_rigidity_min)))
-        self.part_pamo_step1_only = bool(part_pamo_step1_only)
-        self.part_pamo_motion_film = bool(part_pamo_motion_film)
-        self.part_pamo_motion_feat_mode = part_pamo_motion_feat_mode
-        fixed_rigidity = float(part_pamo_fixed_rigidity)
-        self.part_pamo_fixed_rigidity = None if fixed_rigidity < 0.0 else max(0.0, min(1.0, fixed_rigidity))
-        if self.part_pamo_motion_feat_mode == "mean":
-            self.part_motion_feat_dim = 15
-        elif self.part_pamo_motion_feat_mode == "rich":
-            self.part_motion_feat_dim = 28
-        else:
-            raise ValueError(f"Unknown part_pamo_motion_feat_mode: {self.part_pamo_motion_feat_mode}")
         self.part_moe_active = False
         self.part_experts = None
-        self.part_pamo_last_stats = {}
-        if self.use_part_pamo:
-            self.PartMotionEncoder = PartMotionEncoder(
-                input_dim=self.part_motion_feat_dim,
-                hidden_dim=max(64, self.part_pamo_dim * 2),
-                output_dim=self.part_pamo_dim,
-            )
-            self.PartMotionFiLM = None
-            if self.part_pamo_motion_film:
-                self.PartMotionFiLM = PartMotionFiLM(
-                    input_dim=self.part_pamo_dim,
-                    hidden_dim=max(64, self.part_pamo_dim * 2),
-                    num_layers=D,
-                    width=W,
-                )
-            self.PartRigidHead = None
-            self.PartRigidityMLP = None
-            if not self.part_pamo_step1_only:
-                self.PartRigidHead = PartRigidHead(
-                    input_dim=self.part_pamo_dim,
-                    hidden_dim=max(64, self.part_pamo_dim * 2),
-                )
-                if self.part_pamo_fixed_rigidity is None:
-                    self.PartRigidityMLP = PartRigidityMLP(
-                        pos_input_dim=self.pos_input_dim,
-                        part_motion_dim=self.part_pamo_dim,
-                        hidden_dim=max(64, self.part_pamo_dim * 2),
-                    )
-            modules = ["PartMotionEncoder"]
-            if self.PartMotionFiLM is not None:
-                modules.append("PartMotionFiLM")
-            if self.PartRigidHead is not None:
-                modules.append("PartRigidHead")
-            if self.PartRigidityMLP is not None:
-                modules.append("PartRigidityMLP")
-            print(
-                "[PartPAMO] enabled=True "
-                f"modules={','.join(modules)} "
-                f"part_pamo_dim={self.part_pamo_dim} "
-                f"motion_feat_mode={self.part_pamo_motion_feat_mode} "
-                f"motion_film={self.part_pamo_motion_film} "
-                f"rigidity_min={self.part_pamo_rigidity_min} "
-                f"step1_only={self.part_pamo_step1_only} "
-                f"fixed_rigidity={self.part_pamo_fixed_rigidity}"
-            )
-        elif self.use_part_moe:
-            print("[PartPAMO] enabled=False; PartPAMO modules are not constructed.")
+        self.last_tri_part_stats = None
+        self.last_tri_part_reg_loss = None
+        self.last_part_budget_stats = None
 
         self.input_ch = pos_input_dim
         self.pose_cond_dim, self.seq_pose_cond_dim, self.seq_xyz_cond_dim = 0, 0, 0
+
+        if self.use_part_budget and self.use_tri:
+            raise ValueError("[PART_BUDGET] part_budget is defined on top of part_moe_leg only; do not combine it with tri ablations.")
+        if self.use_part_budget and not self.use_part_moe:
+            raise ValueError("[PART_BUDGET] --use_part_budget must be used with --use_part_moe.")
+        if self.use_part_budget:
+            if self.part_label_schema != "part_moe_leg" or int(self.num_parts) != 7:
+                raise ValueError(
+                    "[PART_BUDGET] part_budget is defined on top of part_moe_leg: "
+                    "use --part_label_schema part_moe_leg --num_parts 7."
+                )
+            print(
+                "[PART_BUDGET] enabled=True; part-aware deformation router active. "
+                f"alpha={self.part_budget_alpha} start={self.part_budget_start_iter} "
+                f"warmup={self.part_budget_warmup} hidden={self.part_budget_hidden_dim} "
+                f"token_dim={self.part_budget_token_dim}"
+            )
 
         if self.use_pose_cond:
             self.PoseEncoder = PoseEncoder(32, pose_cond_dim, smpl_type)
@@ -231,6 +582,24 @@ class NonrigidDeformer(nn.Module):
             self.SeqXYZEncoder = SeqXYZEncoder(pos_emb_dim=pos_input_dim, hidden_dim1=96, hidden_dim2=256, output_dim=seq_xyz_cond_dim, 
                                         time_step_num=time_step_num, seq_len=seq_len, seq_xyz_knn=seq_xyz_knn)
             self.input_ch += seq_xyz_cond_dim
+        if self.use_tri:
+            self.TriPlaneFeature = TriPlaneFeature(
+                feature_dim=self.tri_plane_dim,
+                resolution=self.tri_plane_res,
+                extent=self.tri_plane_extent,
+            )
+            self.tri_gate_base_input_ch = self.input_ch
+            if self.use_tri_part and not self.use_tri_gate:
+                self.PartTriFeatureFiLM = PartTriFeatureFiLM(
+                    num_parts=self.num_parts,
+                    feature_dim=self.tri_plane_dim,
+                    resolution=self.tri_plane_res,
+                    extent=self.tri_plane_extent,
+                    alpha=self.tri_part_alpha,
+                    motion_gain=self.tri_part_motion_gain,
+                    boundary_gain=self.tri_part_boundary_gain,
+                    hidden_dim=self.tri_part_hidden_dim,
+                )
         
         layers = []
         in_dim = self.input_ch
@@ -239,10 +608,69 @@ class NonrigidDeformer(nn.Module):
             layers.append(nn.ReLU())
             in_dim = W
         self.mlp = nn.Sequential(*layers)
+        if self.use_tri and (not self.use_tri_gate or self.tri_gate_mode in ("concat", "scale")):
+            self.mlp = _append_mlp_input_dim(self.mlp, self.tri_plane_dim)
+            self.input_ch += self.tri_plane_dim
+            if self.use_tri_gate:
+                print(
+                    f"[TRI_GATE] Tri-plane gated {self.tri_gate_mode} enabled: "
+                    f"dim={self.tri_plane_dim} res={self.tri_plane_res} extent={self.tri_plane_extent} "
+                    f"alpha={self.tri_gate_alpha} gate_init={self.tri_gate_init} "
+                    f"hidden={self.tri_gate_hidden_dim}"
+                )
+            else:
+                print(
+                    "[TRI] Tri-plane feature enabled: "
+                    f"dim={self.tri_plane_dim} res={self.tri_plane_res} extent={self.tri_plane_extent}"
+                )
+                if self.use_tri_part:
+                    print(
+                        "[TRI_PART] Part/motion-aware residual tri feature enabled: "
+                        f"alpha={self.tri_part_alpha} motion_gain={self.tri_part_motion_gain} "
+                        f"boundary_gain={self.tri_part_boundary_gain} hidden={self.tri_part_hidden_dim}"
+                    )
+        elif self.use_tri_gate:
+            print(
+                "[TRI_GATE] Tri-plane gated adapter enabled: "
+                f"dim={self.tri_plane_dim} res={self.tri_plane_res} extent={self.tri_plane_extent} "
+                f"alpha={self.tri_gate_alpha} gate_init={self.tri_gate_init} "
+                f"hidden={self.tri_gate_hidden_dim}"
+            )
 
         self.gaussian_warp = nn.Linear(W, 3)
         self.gaussian_rotation = nn.Linear(W, 4)
         self.gaussian_scaling = nn.Linear(W, 3)
+        if self.use_tri_gate:
+            if self.tri_gate_mode in ("concat", "scale"):
+                self.TriFeatureGate = TriFeatureGate(
+                    tri_dim=self.tri_plane_dim,
+                    feature_dim=self.tri_gate_base_input_ch,
+                    hidden_dim=self.tri_gate_hidden_dim,
+                    gate_init=self.tri_gate_init,
+                )
+            else:
+                self.TriGateAdapter = TriGateAdapter(
+                    tri_dim=self.tri_plane_dim,
+                    feature_dim=self.tri_gate_base_input_ch,
+                    hidden_dim=self.tri_gate_hidden_dim,
+                    gate_init=self.tri_gate_init,
+                )
+        if self.use_part_budget:
+            self.part_budget_stats_encoder = PartStatsEncoder(
+                num_parts=self.num_parts,
+                token_dim=self.part_budget_token_dim,
+                hidden_dim=self.part_budget_hidden_dim,
+            )
+            self.part_budget_router = PartBudgetRouter(
+                feature_dim=self.input_ch,
+                token_dim=self.part_budget_token_dim,
+                hidden_dim=self.part_budget_hidden_dim,
+            )
+            self.part_budget_adapter = PartBudgetAdapter(
+                feature_dim=self.input_ch,
+                token_dim=self.part_budget_token_dim,
+                hidden_dim=self.part_budget_hidden_dim,
+            )
 
     def init_part_moe_from_shared(self, num_parts=None):
         if self.part_moe_active:
@@ -251,17 +679,13 @@ class NonrigidDeformer(nn.Module):
 
         num_parts = int(num_parts or self.num_parts)
         self.num_parts = num_parts
-        extra_input_dim = self.part_pamo_dim if self.use_part_pamo else 0
         print(f"[PartMoE] Initializing {num_parts} experts from the shared non-rigid MLP.")
-        if self.use_part_pamo:
-            print(f"[PartPAMO] Appending per-part motion code dim={self.part_pamo_dim} to each expert input.")
         self.part_experts = nn.ModuleList([
             PartNonrigidExpert(
                 self.mlp,
                 self.gaussian_warp,
                 self.gaussian_rotation,
                 self.gaussian_scaling,
-                extra_input_dim=extra_input_dim,
             )
             for _ in range(num_parts)
         ])
@@ -274,191 +698,136 @@ class NonrigidDeformer(nn.Module):
             for param in module.parameters():
                 param.requires_grad_(False)
 
-    def encode_part_motion(self, part_motion_conds, features, part_label):
-        if not self.use_part_pamo:
-            return features, None, None
-        if part_motion_conds is None:
-            raise RuntimeError("[PartPAMO] part_motion_conds is required when --use_part_pamo is enabled.")
+    def _normalize_budget_motion(self, motion_strength, features):
+        if motion_strength is None:
+            return torch.zeros(*features.shape[:2], 1, device=features.device, dtype=features.dtype)
+        motion_strength = motion_strength.to(device=features.device, dtype=features.dtype)
+        if motion_strength.dim() == 1:
+            motion_strength = motion_strength.unsqueeze(0).expand(features.shape[0], -1).unsqueeze(-1)
+        elif motion_strength.dim() == 2:
+            if motion_strength.shape[0] == 1 and features.shape[0] > 1:
+                motion_strength = motion_strength.expand(features.shape[0], -1)
+            motion_strength = motion_strength.unsqueeze(-1)
+        elif motion_strength.shape[0] == 1 and features.shape[0] > 1:
+            motion_strength = motion_strength.expand(features.shape[0], -1, -1)
+        motion_strength = torch.log1p(motion_strength.clamp_min(0.0))
+        mean = motion_strength.detach().mean(dim=1, keepdim=True)
+        std = motion_strength.detach().std(dim=1, keepdim=True).clamp_min(1e-6)
+        return ((motion_strength - mean) / std).clamp(-3.0, 3.0)
 
-        part_motion_conds = part_motion_conds.to(device=features.device, dtype=features.dtype)
-        if part_motion_conds.dim() == 2:
-            part_motion_conds = part_motion_conds.unsqueeze(0)
-        if part_motion_conds.shape[0] == 1 and features.shape[0] > 1:
-            part_motion_conds = part_motion_conds.expand(features.shape[0], -1, -1)
+    def _normalize_budget_conf(self, part_conf, features):
+        if part_conf is None:
+            return torch.ones(*features.shape[:2], 1, device=features.device, dtype=features.dtype)
+        part_conf = part_conf.to(device=features.device, dtype=features.dtype)
+        if part_conf.dim() == 1:
+            part_conf = part_conf.unsqueeze(0).expand(features.shape[0], -1).unsqueeze(-1)
+        elif part_conf.dim() == 2:
+            if part_conf.shape[0] == 1 and features.shape[0] > 1:
+                part_conf = part_conf.expand(features.shape[0], -1)
+            part_conf = part_conf.unsqueeze(-1)
+        elif part_conf.shape[0] == 1 and features.shape[0] > 1:
+            part_conf = part_conf.expand(features.shape[0], -1, -1)
+        return part_conf.clamp(0.0, 1.0)
 
-        if part_motion_conds.shape[1] < self.num_parts:
-            pad_shape = (
-                part_motion_conds.shape[0],
-                self.num_parts - part_motion_conds.shape[1],
-                part_motion_conds.shape[2],
-            )
-            part_motion_conds = torch.cat(
-                [part_motion_conds, torch.zeros(pad_shape, device=features.device, dtype=features.dtype)],
-                dim=1,
-            )
-        elif part_motion_conds.shape[1] > self.num_parts:
-            part_motion_conds = part_motion_conds[:, :self.num_parts]
+    def apply_part_budget(self, features, part_label, query_xyz=None, motion_strength=None, part_conf=None,
+                          part_budget_alpha_scale=1.0):
+        if not self.use_part_budget:
+            return features, None
+        if part_label is None:
+            return features, None
 
-        z_part = self.PartMotionEncoder(part_motion_conds)
-        gather_idx = part_label.unsqueeze(-1).expand(-1, -1, self.part_pamo_dim)
-        z_point = torch.gather(z_part, 1, gather_idx)
-        return torch.cat([features, z_point], dim=-1), z_part, z_point
+        part_label = part_label.long().to(features.device)
+        if part_label.dim() == 1:
+            part_label = part_label.unsqueeze(0).expand(features.shape[0], -1)
+        elif part_label.shape[0] == 1 and features.shape[0] > 1:
+            part_label = part_label.expand(features.shape[0], -1)
+        part_label = torch.clamp(part_label, min=0, max=self.num_parts - 1)
 
-    def encode_part_motion_film(self, z_point):
-        if not (self.use_part_pamo and self.part_pamo_motion_film):
-            return None
-        if getattr(self, "PartMotionFiLM", None) is None:
-            raise RuntimeError("[PartPAMO] PartMotionFiLM is required when --part_pamo_motion_film is enabled.")
-        return self.PartMotionFiLM(z_point)
-
-    def get_part_centers(self, query_xyz, part_label):
-        query_xyz = query_xyz.to(device=part_label.device)
-        if query_xyz.dim() == 2:
-            query_xyz = query_xyz.unsqueeze(0)
-        if query_xyz.shape[0] == 1 and part_label.shape[0] > 1:
-            query_xyz = query_xyz.expand(part_label.shape[0], -1, -1)
-
-        B, N = part_label.shape
-        centers = torch.zeros(B, self.num_parts, 3, device=query_xyz.device, dtype=query_xyz.dtype)
-        counts = torch.zeros(B, self.num_parts, 1, device=query_xyz.device, dtype=query_xyz.dtype)
-        centers.scatter_add_(1, part_label.unsqueeze(-1).expand(-1, -1, 3), query_xyz)
-        counts.scatter_add_(1, part_label.unsqueeze(-1), torch.ones(B, N, 1, device=query_xyz.device, dtype=query_xyz.dtype))
-
-        global_center = query_xyz.mean(dim=1, keepdim=True)
-        centers = centers / counts.clamp_min(1.0)
-        centers = torch.where(counts > 0, centers, global_center.expand(-1, self.num_parts, -1))
-        return centers
-
-    def compute_point_rigidity(self, x_emb, z_point, d_xyz):
-        if self.part_pamo_fixed_rigidity is not None:
-            return torch.full(
-                d_xyz.shape[:-1] + (1,),
-                self.part_pamo_fixed_rigidity,
-                device=d_xyz.device,
-                dtype=d_xyz.dtype,
-            )
-        if self.PartRigidityMLP is None:
-            raise RuntimeError("[PartPAMO] PartRigidityMLP is required unless fixed rigidity is enabled.")
-        x_emb = x_emb.to(device=d_xyz.device, dtype=d_xyz.dtype)
-        if x_emb.dim() == 2:
-            x_emb = x_emb.unsqueeze(0)
-        if x_emb.shape[0] == 1 and d_xyz.shape[0] > 1:
-            x_emb = x_emb.expand(d_xyz.shape[0], -1, -1)
-        rigidity = self.PartRigidityMLP(x_emb, z_point.to(dtype=d_xyz.dtype))
-        if self.part_pamo_rigidity_min > 0.0:
-            rigidity = self.part_pamo_rigidity_min + (1.0 - self.part_pamo_rigidity_min) * rigidity
-        return rigidity
-
-    def update_part_motion_stats(self, part_label, z_part, z_point, film, part_weight):
-        if z_part is None or z_point is None:
-            return
-        with torch.no_grad():
-            stats = {
-                "part_weight": float(part_weight),
-                "z_norm_mean": float(z_point.detach().norm(dim=-1).mean().item()),
-                "z_norm_std": float(z_point.detach().norm(dim=-1).std(unbiased=False).item()) if z_point.numel() > 0 else 0.0,
-                "z_part_norm_mean": float(z_part.detach().norm(dim=-1).mean().item()),
-                "motion_feat_mode": self.part_pamo_motion_feat_mode,
-                "motion_film": bool(self.part_pamo_motion_film),
-            }
-            if film is not None:
-                gamma, beta = film
-                gamma_delta = gamma.detach() - 1.0
-                beta = beta.detach()
-                stats.update({
-                    "film_gamma_delta_mean": float(gamma_delta.mean().item()),
-                    "film_gamma_delta_std": float(gamma_delta.std(unbiased=False).item()) if gamma_delta.numel() > 1 else 0.0,
-                    "film_gamma_delta_abs_mean": float(gamma_delta.abs().mean().item()),
-                    "film_beta_mean": float(beta.mean().item()),
-                    "film_beta_std": float(beta.std(unbiased=False).item()) if beta.numel() > 1 else 0.0,
-                    "film_beta_abs_mean": float(beta.abs().mean().item()),
-                })
-            self.part_pamo_last_stats = stats
-
-    def update_part_pamo_stats(self, part_label, point_rigidity, d_xyz, rigid_residual, rigid_contrib, part_weight):
-        with torch.no_grad():
-            labels = part_label.detach()
-            rigidity = point_rigidity.detach().squeeze(-1)
-            mlp_norm = d_xyz.detach().norm(dim=-1)
-            rigid_norm = rigid_residual.detach().norm(dim=-1)
-            contrib_norm = rigid_contrib.detach().norm(dim=-1)
-            eps = 1e-8
-
-            per_part = []
-            for pid in range(self.num_parts):
-                mask = labels == pid
-                if mask.any():
-                    values = rigidity[mask]
-                    per_part.append({
-                        "part": int(pid),
-                        "count": int(mask.sum().item()),
-                        "r_mean": float(values.mean().item()),
-                        "r_std": float(values.std(unbiased=False).item()) if values.numel() > 1 else 0.0,
-                    })
-
-            stats = dict(getattr(self, "part_pamo_last_stats", {}))
-            stats.update({
-                "part_weight": float(part_weight),
-                "r_mean": float(rigidity.mean().item()),
-                "r_std": float(rigidity.std(unbiased=False).item()) if rigidity.numel() > 1 else 0.0,
-                "r_min": float(rigidity.min().item()),
-                "r_max": float(rigidity.max().item()),
-                "mlp_norm_mean": float(mlp_norm.mean().item()),
-                "rigid_norm_mean": float(rigid_norm.mean().item()),
-                "rigid_contrib_norm_mean": float(contrib_norm.mean().item()),
-                "ratio": float((contrib_norm.mean() / mlp_norm.mean().clamp_min(eps)).item()),
-                "per_part": per_part,
-            })
-            self.part_pamo_last_stats = stats
-
-    def apply_part_rigid_residual(self, d_xyz, z_part, z_point, x_emb, query_xyz, part_label, part_weight):
-        if not self.use_part_pamo:
-            return d_xyz
-        if self.part_pamo_step1_only:
-            return d_xyz
-        if query_xyz is None:
-            raise RuntimeError("[PartPAMO] query_xyz is required for the part-level rigid residual branch.")
-        if z_part is None:
-            raise RuntimeError("[PartPAMO] z_part is required for the part-level rigid residual branch.")
-        if self.PartRigidHead is None:
-            raise RuntimeError("[PartPAMO] PartRigidHead is required for the part-level rigid residual branch.")
-        if z_point is None:
-            raise RuntimeError("[PartPAMO] point-wise z_part is required for internal rigidity.")
-        if x_emb is None:
-            raise RuntimeError("[PartPAMO] x_emb is required for internal rigidity.")
-
-        query_xyz = query_xyz.to(device=d_xyz.device, dtype=d_xyz.dtype)
-        if query_xyz.dim() == 2:
-            query_xyz = query_xyz.unsqueeze(0)
-        if query_xyz.shape[0] == 1 and d_xyz.shape[0] > 1:
-            query_xyz = query_xyz.expand(d_xyz.shape[0], -1, -1)
-
-        rot_vec, trans = self.PartRigidHead(z_part)
-        rot_mat = axis_angle_to_matrix(rot_vec)
-        centers = self.get_part_centers(query_xyz, part_label).to(dtype=d_xyz.dtype)
-
-        gather_xyz = part_label.unsqueeze(-1).expand(-1, -1, 3)
-        point_centers = torch.gather(centers, 1, gather_xyz)
-        point_trans = torch.gather(trans, 1, gather_xyz)
-        point_rot = torch.gather(
-            rot_mat,
-            1,
-            part_label.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, 3, 3),
+        part_token, part_stats = self.part_budget_stats_encoder(
+            part_label,
+            motion_strength=motion_strength,
+            part_conf=part_conf,
         )
 
-        local_xyz = query_xyz - point_centers
-        rotated_xyz = torch.matmul(point_rot, local_xyz.unsqueeze(-1)).squeeze(-1)
-        rigid_residual = rotated_xyz + point_centers + point_trans - query_xyz
-        point_rigidity = self.compute_point_rigidity(x_emb, z_point, d_xyz)
-        rigid_contrib = float(part_weight) * point_rigidity * rigid_residual
-        self.update_part_pamo_stats(part_label, point_rigidity, d_xyz, rigid_residual, rigid_contrib, part_weight)
-        return d_xyz + rigid_contrib
+        motion_norm = self._normalize_budget_motion(motion_strength, features)
+        boundary_score = 1.0 - self._normalize_budget_conf(part_conf, features)
+        token_idx = part_label.unsqueeze(-1).expand(-1, -1, self.part_budget_token_dim)
+        point_token = torch.gather(part_token, 1, token_idx)
 
-    def forward_part_moe(self, features, part_label, part_motion_conds=None,
-                         x_emb=None, query_xyz=None, part_moe_alpha=0.0, part_moe_global_keep=None):
+        budget, logits = self.part_budget_router(features, point_token, motion_norm, boundary_score)
+        adapter_res = self.part_budget_adapter(features, point_token)
+
+        alpha_scale = max(0.0, min(float(part_budget_alpha_scale), 1.0))
+        alpha = self.part_budget_alpha * alpha_scale
+        if alpha <= 0.0:
+            stats = {
+                "budget_mean": budget.detach().mean(dim=(0, 1)),
+                "budget_std": budget.detach().std(dim=(0, 1), unbiased=False),
+                "budget_min": budget.detach().amin(dim=(0, 1)),
+                "budget_max": budget.detach().amax(dim=(0, 1)),
+                "per_part_budget_mean": self._collect_per_part_budget_stats(budget.detach(), part_label, reduce="mean"),
+                "per_part_budget_std": self._collect_per_part_budget_stats(budget.detach(), part_label, reduce="std"),
+                "feature_delta_norm": torch.zeros((), device=features.device, dtype=features.dtype),
+                "adapter_norm": adapter_res.detach().norm(dim=-1).mean(),
+                "motion_mean": motion_norm.detach().mean(),
+                "boundary_mean": boundary_score.detach().mean(),
+                "entropy": self._budget_entropy(budget.detach()),
+                "logits_mean": logits.detach().mean(),
+            }
+            return features, stats
+
+        rigid_delta = budget[..., 0:1] - 1.0 / 3.0
+        boundary_delta = budget[..., 2:3] - 1.0 / 3.0
+        capacity_scale = 1.0 + alpha * (rigid_delta - boundary_delta)
+        budgeted_features = features * capacity_scale + alpha * budget[..., 1:2] * adapter_res
+        stats = {
+            "budget_mean": budget.detach().mean(dim=(0, 1)),
+            "budget_std": budget.detach().std(dim=(0, 1), unbiased=False),
+            "budget_min": budget.detach().amin(dim=(0, 1)),
+            "budget_max": budget.detach().amax(dim=(0, 1)),
+            "per_part_budget_mean": self._collect_per_part_budget_stats(budget.detach(), part_label, reduce="mean"),
+            "per_part_budget_std": self._collect_per_part_budget_stats(budget.detach(), part_label, reduce="std"),
+            "feature_delta_norm": (budgeted_features - features).detach().norm(dim=-1).mean(),
+            "adapter_norm": adapter_res.detach().norm(dim=-1).mean(),
+            "motion_mean": motion_norm.detach().mean(),
+            "boundary_mean": boundary_score.detach().mean(),
+            "entropy": self._budget_entropy(budget.detach()),
+            "logits_mean": logits.detach().mean(),
+        }
+        return budgeted_features, stats
+
+    def _budget_entropy(self, budget):
+        budget = budget.clamp_min(1e-8)
+        return (-budget * budget.log()).sum(dim=-1).mean()
+
+    def _collect_per_part_budget_stats(self, budget, part_label, reduce="mean"):
+        if part_label.dim() == 1:
+            part_label = part_label.unsqueeze(0).expand(budget.shape[0], -1)
+        elif part_label.shape[0] == 1 and budget.shape[0] > 1:
+            part_label = part_label.expand(budget.shape[0], -1)
+        part_label = torch.clamp(part_label.long().to(budget.device), min=0, max=self.num_parts - 1)
+        collected = []
+        for pid in range(self.num_parts):
+            mask = (part_label == pid).unsqueeze(-1).to(dtype=budget.dtype)
+            count = mask.sum(dim=1, keepdim=True)
+            count_safe = count.clamp_min(1.0)
+            if reduce == "mean":
+                value = (budget * mask).sum(dim=1, keepdim=True) / count_safe
+            elif reduce == "std":
+                mean = (budget * mask).sum(dim=1, keepdim=True) / count_safe
+                var = ((budget - mean) ** 2 * mask).sum(dim=1, keepdim=True) / count_safe
+                value = var.clamp_min(1e-6).sqrt()
+            else:
+                raise ValueError(f"Unknown reduce mode: {reduce}")
+            valid = (count > 0).to(dtype=value.dtype)
+            global_value = budget.mean(dim=1, keepdim=True) if reduce == "mean" else budget.std(dim=1, keepdim=True, unbiased=False)
+            value = valid * value + (1.0 - valid) * global_value
+            collected.append(value.squeeze(1))
+        return torch.stack(collected, dim=1).detach()
+
+    def forward_part_moe(self, features, part_label, part_moe_alpha=0.0, part_moe_global_keep=None):
         if not self.part_moe_active or self.part_experts is None:
             raise RuntimeError("[PartMoE] Experts have not been initialized.")
-        self.part_pamo_last_stats = {}
 
         part_label = part_label.long().to(features.device)
         part_label = torch.clamp(part_label, min=0, max=self.num_parts - 1)
@@ -473,24 +842,14 @@ class NonrigidDeformer(nn.Module):
         part_weight = max(0.0, min(float(part_moe_alpha), max_part_weight))
         global_weight = 1.0 - part_weight
 
-        expert_features, z_part, z_point = self.encode_part_motion(features=features, part_label=part_label,
-                                                                   part_motion_conds=part_motion_conds)
-        motion_film = self.encode_part_motion_film(z_point)
-        self.update_part_motion_stats(part_label, z_part, z_point, motion_film, part_weight)
-        global_xyz, global_rotation, global_scaling = self.part_experts[0](expert_features, film=motion_film)
+        global_xyz, global_rotation, global_scaling = self.part_experts[0](features)
 
         if part_weight <= 0.0:
             return global_xyz, global_rotation, global_scaling
 
-        feature_shape = expert_features.shape
-        flat_features = expert_features.reshape(-1, feature_shape[-1])
+        feature_shape = features.shape
+        flat_features = features.reshape(-1, feature_shape[-1])
         flat_labels = part_label.reshape(-1)
-        flat_film = None
-        if motion_film is not None:
-            flat_film = (
-                motion_film[0].reshape(-1, motion_film[0].shape[-2], motion_film[0].shape[-1]),
-                motion_film[1].reshape(-1, motion_film[1].shape[-2], motion_film[1].shape[-1]),
-            )
 
         d_xyz = global_xyz.reshape(-1, global_xyz.shape[-1])
         d_rotation = global_rotation.reshape(-1, global_rotation.shape[-1])
@@ -503,15 +862,8 @@ class NonrigidDeformer(nn.Module):
             idx = torch.nonzero(flat_labels == pid, as_tuple=False).flatten()
             if idx.numel() == 0:
                 continue
-            part_film = None
-            if flat_film is not None:
-                part_film = (
-                    flat_film[0].index_select(0, idx),
-                    flat_film[1].index_select(0, idx),
-                )
             part_xyz, part_rotation, part_scaling = self.part_experts[pid](
                 flat_features.index_select(0, idx),
-                film=part_film,
             )
             d_xyz = torch.index_copy(
                 d_xyz,
@@ -532,26 +884,59 @@ class NonrigidDeformer(nn.Module):
                 global_weight * flat_global_scaling.index_select(0, idx) + part_weight * part_scaling,
             )
 
-        d_xyz = self.apply_part_rigid_residual(
-            d_xyz.reshape_as(global_xyz).contiguous(),
-            z_part,
-            z_point,
-            x_emb,
-            query_xyz,
-            part_label,
-            part_weight,
-        )
-
         return (
-            d_xyz,
+            d_xyz.reshape_as(global_xyz).contiguous(),
             d_rotation.reshape_as(global_rotation).contiguous(),
             d_scaling.reshape_as(global_scaling).contiguous(),
         )
 
+    def forward_tri(self, features, part_label, part_moe_alpha=0.0, part_moe_global_keep=None):
+        return self.forward_part_moe(
+            features,
+            part_label,
+            part_moe_alpha=part_moe_alpha,
+            part_moe_global_keep=part_moe_global_keep,
+        )
+
+    def sample_tri_features(self, query_xyz, batch_size, dtype):
+        if query_xyz is None:
+            raise RuntimeError("[TRI] query_xyz is required for tri-plane feature sampling.")
+        if query_xyz.dim() == 2:
+            query_xyz = query_xyz.unsqueeze(0)
+        if query_xyz.shape[0] == 1 and batch_size > 1:
+            query_xyz = query_xyz.expand(batch_size, -1, -1)
+        return self.TriPlaneFeature(query_xyz.to(device=self.TriPlaneFeature.planes.device, dtype=dtype))
+
+    def apply_tri_part_film(self, tri_features, query_xyz, part_label, motion_strength=None, part_conf=None):
+        if not self.use_tri_part:
+            return tri_features, None
+        if part_label is None:
+            return tri_features, None
+        return self.PartTriFeatureFiLM(
+            tri_features,
+            query_xyz,
+            part_label,
+            motion_strength=motion_strength,
+            part_conf=part_conf,
+        )
+
+    def apply_tri_gate_adapter(self, base_features, tri_features, tri_gate_alpha_scale=1.0):
+        alpha_scale = max(0.0, min(float(tri_gate_alpha_scale), 1.0))
+        alpha = self.tri_gate_alpha * alpha_scale
+        if self.tri_gate_mode == "concat":
+            gate = self.TriFeatureGate(base_features, tri_features)
+            return torch.cat([base_features, alpha * gate * tri_features], dim=-1)
+        if self.tri_gate_mode == "scale":
+            gate = self.TriFeatureGate(base_features, tri_features)
+            tri_scale = 1.0 + alpha * (gate - self.tri_gate_init)
+            return torch.cat([base_features, tri_scale * tri_features], dim=-1)
+        tri_res, _ = self.TriGateAdapter(base_features, tri_features)
+        return base_features + alpha * tri_res
+
     def forward(self, x_emb, pose_conds=None, seq_pose_conds=None, seq_xyz_conds=None,
                 part_label=None, part_enabled=False,
-                part_motion_conds=None, query_xyz=None,
-                part_moe_alpha=0.0, part_moe_global_keep=None):
+                query_xyz=None, part_moe_alpha=0.0, part_moe_global_keep=None,
+                tri_gate_alpha_scale=1.0, part_conf=None, part_budget_alpha_scale=1.0):
         feats = []
         feats.append(x_emb)
 
@@ -568,23 +953,76 @@ class NonrigidDeformer(nn.Module):
             feats.append(seq_pose_feats)
         
         # sequential point-wise delta xyz condition
+        seq_xyz_feats = None
         if self.use_seq_xyz_cond: 
             seq_xyz_feats = self.SeqXYZEncoder(seq_xyz_conds, x_emb)
             feats.append(seq_xyz_feats)
 
         features = torch.cat(feats, dim=-1)
+        self.last_part_budget_stats = None
+        if self.use_part_budget and self.part_moe_active and part_enabled and part_label is not None:
+            motion_strength = None
+            if seq_xyz_conds is not None:
+                motion_strength = seq_xyz_conds.detach().norm(dim=-1)
+                reduce_dims = tuple(range(2, motion_strength.dim()))
+                motion_strength = motion_strength.mean(dim=reduce_dims).unsqueeze(-1)
+            features, part_budget_stats = self.apply_part_budget(
+                features,
+                part_label,
+                query_xyz=query_xyz,
+                motion_strength=motion_strength,
+                part_conf=part_conf,
+                part_budget_alpha_scale=part_budget_alpha_scale,
+            )
+            self.last_part_budget_stats = part_budget_stats
+
+        if self.use_tri:
+            tri_features = self.sample_tri_features(query_xyz, x_emb.shape[0], x_emb.dtype)
+            self.last_tri_part_stats = None
+            self.last_tri_part_reg_loss = None
+            if self.use_tri_gate:
+                features = self.apply_tri_gate_adapter(
+                    features,
+                    tri_features,
+                    tri_gate_alpha_scale=tri_gate_alpha_scale,
+                )
+            elif self.use_tri_part and part_enabled and part_label is not None:
+                motion_strength = None
+                if seq_xyz_conds is not None:
+                    motion_strength = seq_xyz_conds.detach().norm(dim=-1)
+                    reduce_dims = tuple(range(2, motion_strength.dim()))
+                    motion_strength = motion_strength.mean(dim=reduce_dims).unsqueeze(-1)
+                tri_features, tri_part_stats = self.apply_tri_part_film(
+                    tri_features,
+                    query_xyz,
+                    part_label,
+                    motion_strength=motion_strength,
+                    part_conf=part_conf,
+                )
+                self.last_tri_part_stats = tri_part_stats
+                self.last_tri_part_reg_loss = (
+                    tri_part_stats["reg_loss"] if tri_part_stats is not None else None
+                )
+                features = torch.cat([features, tri_features], dim=-1)
+            else:
+                features = torch.cat([features, tri_features], dim=-1)
+
         if (
             self.use_part_moe
             and self.part_moe_active
             and part_enabled
             and part_label is not None
         ):
+            if self.use_tri:
+                return self.forward_tri(
+                    features,
+                    part_label,
+                    part_moe_alpha=part_moe_alpha,
+                    part_moe_global_keep=part_moe_global_keep,
+                )
             return self.forward_part_moe(
                 features,
                 part_label,
-                part_motion_conds=part_motion_conds,
-                x_emb=x_emb,
-                query_xyz=query_xyz,
                 part_moe_alpha=part_moe_alpha,
                 part_moe_global_keep=part_moe_global_keep,
             )

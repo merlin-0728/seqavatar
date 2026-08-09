@@ -28,7 +28,7 @@ from visual_effects import compose_torch_render, visual_metadata
 # ================= User Settings =================
 GPU_ID = "2"
 DEFAULT_SEQUENCES = ["0019", "0044", "0051", "0206", "0813"]
-DEFAULT_EXPERIMENT = "part_moe_arm"
+DEFAULT_EXPERIMENT = "part_moe_leg"
 DEFAULT_RUN = "latest"
 DEFAULT_ITERATION = 25000
 
