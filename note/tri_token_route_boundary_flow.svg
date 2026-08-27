@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="860" viewBox="0 0 1600 860">
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#334155"/>
+    </marker>
+    <marker id="arrowRed" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#b42318"/>
+    </marker>
+    <style>
+      .bg { fill: #ffffff; }
+      .box { stroke: #334155; stroke-width: 2.2; rx: 18; ry: 18; }
+      .soft { fill: #f8fafc; }
+      .mint { fill: #ecfdf5; }
+      .blue { fill: #eff6ff; }
+      .amber { fill: #fffbeb; }
+      .rose { fill: #fff1f2; }
+      .line { stroke: #334155; stroke-width: 2.4; fill: none; marker-end: url(#arrow); }
+      .line-red { stroke: #b42318; stroke-width: 2.4; fill: none; marker-end: url(#arrowRed); stroke-dasharray: 8 6; }
+      .title { font-family: "Noto Sans CJK SC", "Microsoft YaHei", Arial, sans-serif; font-size: 34px; font-weight: 700; fill: #0f172a; }
+      .subtitle { font-family: "Noto Sans CJK SC", "Microsoft YaHei", Arial, sans-serif; font-size: 18px; fill: #475569; }
+      .label { font-family: "Noto Sans CJK SC", "Microsoft YaHei", Arial, sans-serif; font-size: 22px; font-weight: 700; fill: #0f172a; }
+      .text { font-family: "Noto Sans CJK SC", "Microsoft YaHei", Arial, sans-serif; font-size: 18px; fill: #334155; }
+      .small { font-family: "Noto Sans CJK SC", "Microsoft YaHei", Arial, sans-serif; font-size: 16px; fill: #475569; }
+      .pill { fill: #e2e8f0; }
+      .note { font-family: "Noto Sans CJK SC", "Microsoft YaHei", Arial, sans-serif; font-size: 16px; fill: #64748b; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1600" height="860"/>
+
+  <text x="80" y="72" class="title">tri_token_route_boundary 网络流程图</text>
+  <text x="80" y="104" class="subtitle">核心：token 写入 tri-plane 记忆，再用 route gate 做边界感知的残差修正</text>
+
+  <!-- Top input tokens -->
+  <rect x="80" y="150" width="220" height="90" class="box mint"/>
+  <text x="190" y="186" text-anchor="middle" class="label">输入 token</text>
+  <text x="190" y="214" text-anchor="middle" class="text">pose / seq / motion / part</text>
+
+  <rect x="350" y="150" width="300" height="90" class="box blue"/>
+  <text x="500" y="186" text-anchor="middle" class="label">TokenConditionedTriPlane</text>
+  <text x="500" y="214" text-anchor="middle" class="text">cross-attn 更新 base_planes + delta</text>
+
+  <rect x="720" y="150" width="230" height="90" class="box amber"/>
+  <text x="835" y="186" text-anchor="middle" class="label">tri-plane 记忆</text>
+  <text x="835" y="214" text-anchor="middle" class="text">条件化空间特征场</text>
+
+  <path class="line" d="M300 195 C320 195, 330 195, 350 195"/>
+  <path class="line" d="M650 195 C680 195, 690 195, 720 195"/>
+
+  <!-- Query branch -->
+  <rect x="350" y="300" width="300" height="90" class="box soft"/>
+  <text x="500" y="336" text-anchor="middle" class="label">采样 query_xyz</text>
+  <text x="500" y="364" text-anchor="middle" class="text">取当前点的空间特征</text>
+
+  <path class="line" d="M835 240 C835 265, 620 270, 620 300"/>
+  <path class="line" d="M500 240 C500 260, 500 270, 500 300"/>
+
+  <!-- Route adapter -->
+  <rect x="720" y="285" width="360" height="120" class="box blue"/>
+  <text x="900" y="320" text-anchor="middle" class="label">TriTokenRouteAdapter</text>
+  <text x="900" y="350" text-anchor="middle" class="text">base_features + token_features + motion</text>
+  <text x="900" y="376" text-anchor="middle" class="text">+ boundary + query_xyz</text>
+
+  <path class="line" d="M650 345 C680 345, 690 345, 720 345"/>
+
+  <!-- Side context -->
+  <rect x="1110" y="145" width="360" height="110" class="box mint"/>
+  <text x="1290" y="182" text-anchor="middle" class="label">boundary-aware 监督</text>
+  <text x="1290" y="210" text-anchor="middle" class="text">route_boundary_loss</text>
+  <text x="1290" y="236" text-anchor="middle" class="small">让 gate 不要长期学成 0</text>
+
+  <path class="line-red" d="M1110 200 C1080 200, 1060 245, 1040 300"/>
+
+  <rect x="1110" y="310" width="360" height="100" class="box rose"/>
+  <text x="1290" y="346" text-anchor="middle" class="label">route gate / residual</text>
+  <text x="1290" y="374" text-anchor="middle" class="text">决定补多少修正</text>
+
+  <path class="line" d="M1080 345 C1100 345, 1105 345, 1110 345"/>
+
+  <!-- Main MLP -->
+  <rect x="450" y="520" width="700" height="130" class="box soft"/>
+  <text x="800" y="560" text-anchor="middle" class="label">part_moe_leg non-rigid MLP</text>
+  <text x="800" y="592" text-anchor="middle" class="text">主特征 + route 残差</text>
+  <text x="800" y="620" text-anchor="middle" class="text">输出 d_xyz / rotation / scaling</text>
+
+  <path class="line" d="M900 405 C900 440, 900 470, 900 520"/>
+  <path class="line" d="M1290 410 C1290 450, 1080 480, 1040 520"/>
+
+  <!-- Footer note -->
+  <rect x="80" y="690" width="1440" height="110" class="box soft"/>
+  <text x="110" y="734" class="label">一句话理解</text>
+  <text x="110" y="770" class="text">先把 token 写进 tri-plane 记忆，再让 route 依据 boundary / motion / query_xyz 做小残差修正，最后交给 part_moe_leg 出形变。</text>
+  <text x="110" y="800" class="note">当前版本仍是“条件控制 + 路由残差”，还没有升级到直接改写 part expert。</text>
+</svg>

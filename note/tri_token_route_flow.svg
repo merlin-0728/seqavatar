@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="860" viewBox="0 0 1600 860">
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#334155"/>
+    </marker>
+    <style>
+      .bg { fill: #ffffff; }
+      .box { stroke: #334155; stroke-width: 2.2; rx: 18; ry: 18; }
+      .soft { fill: #f8fafc; }
+      .mint { fill: #ecfdf5; }
+      .blue { fill: #eff6ff; }
+      .amber { fill: #fffbeb; }
+      .rose { fill: #fff1f2; }
+      .line { stroke: #334155; stroke-width: 2.4; fill: none; marker-end: url(#arrow); }
+      .title { font-family: "Noto Sans CJK SC", "Microsoft YaHei", Arial, sans-serif; font-size: 34px; font-weight: 700; fill: #0f172a; }
+      .subtitle { font-family: "Noto Sans CJK SC", "Microsoft YaHei", Arial, sans-serif; font-size: 18px; fill: #475569; }
+      .label { font-family: "Noto Sans CJK SC", "Microsoft YaHei", Arial, sans-serif; font-size: 22px; font-weight: 700; fill: #0f172a; }
+      .text { font-family: "Noto Sans CJK SC", "Microsoft YaHei", Arial, sans-serif; font-size: 18px; fill: #334155; }
+      .small { font-family: "Noto Sans CJK SC", "Microsoft YaHei", Arial, sans-serif; font-size: 16px; fill: #475569; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1600" height="860"/>
+
+  <text x="80" y="72" class="title">tri_token_route 网络流程图</text>
+  <text x="80" y="104" class="subtitle">核心：条件 token 写入三平面，再通过 route 残差影响非刚性形变</text>
+
+  <rect x="70" y="150" width="220" height="100" class="box mint"/>
+  <text x="180" y="188" text-anchor="middle" class="label">输入条件</text>
+  <text x="180" y="218" text-anchor="middle" class="text">pose / seq_pose / motion / part</text>
+
+  <rect x="335" y="130" width="260" height="140" class="box blue"/>
+  <text x="465" y="170" text-anchor="middle" class="label">条件编码器</text>
+  <text x="465" y="202" text-anchor="middle" class="text">Pose / SeqPose / Motion</text>
+  <text x="465" y="230" text-anchor="middle" class="text">PartStatsEncoder</text>
+
+  <rect x="655" y="140" width="280" height="120" class="box amber"/>
+  <text x="795" y="178" text-anchor="middle" class="label">cond_tokens</text>
+  <text x="795" y="210" text-anchor="middle" class="text">当前帧条件向量序列</text>
+
+  <path class="line" d="M290 200 C310 200, 320 200, 335 200"/>
+  <path class="line" d="M595 200 C620 200, 630 200, 655 200"/>
+
+  <rect x="655" y="320" width="280" height="120" class="box soft"/>
+  <text x="795" y="358" text-anchor="middle" class="label">plane_query</text>
+  <text x="795" y="390" text-anchor="middle" class="text">768 个三平面槽位</text>
+  <text x="795" y="416" text-anchor="middle" class="small">3 × 16 × 16 × 32</text>
+
+  <path class="line" d="M795 260 C795 285, 795 295, 795 320"/>
+
+  <rect x="1000" y="150" width="250" height="110" class="box blue"/>
+  <text x="1125" y="186" text-anchor="middle" class="label">cross-attention</text>
+  <text x="1125" y="216" text-anchor="middle" class="text">query=plane_tokens</text>
+  <text x="1125" y="240" text-anchor="middle" class="text">key/value=cond_tokens</text>
+
+  <rect x="1290" y="145" width="240" height="120" class="box amber"/>
+  <text x="1410" y="182" text-anchor="middle" class="label">条件化三平面</text>
+  <text x="1410" y="214" text-anchor="middle" class="text">base_planes + delta</text>
+  <text x="1410" y="240" text-anchor="middle" class="small">xy / xz / yz</text>
+
+  <path class="line" d="M935 380 C980 380, 985 250, 1000 205"/>
+  <path class="line" d="M1250 205 C1268 205, 1278 205, 1290 205"/>
+
+  <rect x="980" y="320" width="270" height="120" class="box soft"/>
+  <text x="1115" y="356" text-anchor="middle" class="label">query_xyz 采样</text>
+  <text x="1115" y="388" text-anchor="middle" class="text">从三平面读取局部隐式特征</text>
+  <text x="1115" y="414" text-anchor="middle" class="small">grid_sample + bilinear</text>
+
+  <path class="line" d="M1400 265 C1400 310, 1205 300, 1205 320"/>
+  <path class="line" d="M1115 440 C1115 470, 1115 490, 1115 520"/>
+
+  <rect x="940" y="520" width="380" height="120" class="box rose"/>
+  <text x="1130" y="558" text-anchor="middle" class="label">TriTokenRouteAdapter</text>
+  <text x="1130" y="590" text-anchor="middle" class="text">base_features + token_features + motion + query_xyz</text>
+  <text x="1130" y="616" text-anchor="middle" class="small">输出 route residual / gate</text>
+
+  <rect x="560" y="520" width="290" height="120" class="box mint"/>
+  <text x="705" y="558" text-anchor="middle" class="label">part_moe_leg</text>
+  <text x="705" y="590" text-anchor="middle" class="text">非刚性形变主干</text>
+  <text x="705" y="616" text-anchor="middle" class="small">d_xyz / rotation / scaling</text>
+
+  <path class="line" d="M940 580 C910 580, 880 580, 850 580"/>
+
+  <rect x="70" y="700" width="1460" height="100" class="box soft"/>
+  <text x="100" y="742" class="label">一句话</text>
+  <text x="100" y="775" class="text">先把 pose / seq_pose / motion / part 编成 cond_tokens，写进三平面特征，再拿采样到的局部特征和主干特征一起走 route，最后进入 part_moe_leg 输出形变。</text>
+</svg>
