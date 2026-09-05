@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HOLDER_SCRIPT="${SCRIPT_DIR}/gpu_memory_holder.py"
+HOLDER_SCRIPT="${SCRIPT_DIR}/train.py"
 
 GPU_IDS="${GPU_IDS:-0,1}"
 THRESHOLD_MIB="${THRESHOLD_MIB:-100}"

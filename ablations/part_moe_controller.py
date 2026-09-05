@@ -34,10 +34,24 @@ class PartMoeController:
         self.args = args
         self.loaded = False
         self.start_iter = int(getattr(args, "part_moe_start_iter", 15000))
+        self.robust_labels = bool(getattr(args, "part_label_robust", False))
+        self.refresh_interval = max(0, int(getattr(args, "part_label_refresh_interval", 0)))
 
     # train.py 每轮 optimizer step 后调用；到达指定步数时执行分层。
     def after_iteration(self, iteration, scene, gaussians):
         if self.loaded:
+            if (
+                self.refresh_interval > 0
+                and iteration > self.start_iter
+                and (iteration - self.start_iter) % self.refresh_interval == 0
+            ):
+                out_dir = default_part_label_dir(scene.model_path, iteration)
+                out_dir.mkdir(parents=True, exist_ok=True)
+                label_path, conf_path = self._build_prior_only_labels(
+                    out_dir, iteration, gaussians, scene.model_path
+                )
+                gaussians.load_part_labels(label_path, conf_path)
+                print(f"[PartMoE] Refreshed labels at iteration {iteration}.")
             return
         if iteration != self.start_iter:
             return
@@ -80,9 +94,36 @@ class PartMoeController:
 
         vertex_labels, seg_meta = self._build_vertex_labels(gaussians, canon_vertices.shape[0])
         tree = cKDTree(canon_vertices)
-        smpl_dist, vert_ids = tree.query(gaussian_xyz, k=1)
-        smpl_prior = vertex_labels[vert_ids].astype(np.uint8)
-        smpl_dist = smpl_dist.astype(np.float32)
+        requested_k = max(1, int(getattr(self.args, "part_label_knn", 1)))
+        if not self.robust_labels:
+            requested_k = 1
+        k = min(requested_k, canon_vertices.shape[0])
+        neighbor_dist, neighbor_ids = tree.query(gaussian_xyz, k=k)
+        if k == 1:
+            neighbor_dist = neighbor_dist[:, None]
+            neighbor_ids = neighbor_ids[:, None]
+        neighbor_dist = neighbor_dist.astype(np.float32)
+        neighbor_ids = neighbor_ids.astype(np.int64)
+        smpl_dist = neighbor_dist[:, 0]
+        vote_temperature = max(
+            1e-5, float(getattr(self.args, "part_label_vote_temperature", 0.01))
+        )
+        relative_dist = neighbor_dist - neighbor_dist[:, :1]
+        neighbor_weights = np.exp(-relative_dist / vote_temperature).astype(np.float32)
+        neighbor_labels = vertex_labels[neighbor_ids]
+        vote = np.zeros((gaussian_xyz.shape[0], num_parts), dtype=np.float32)
+        for neighbor_id in range(k):
+            np.add.at(
+                vote,
+                (np.arange(gaussian_xyz.shape[0]), neighbor_labels[:, neighbor_id]),
+                neighbor_weights[:, neighbor_id],
+            )
+        smpl_prior = np.argmax(vote, axis=1).astype(np.uint8)
+        vote_total = vote.sum(axis=1)
+        sorted_vote = np.sort(vote, axis=1)
+        top1 = sorted_vote[:, -1]
+        top2 = sorted_vote[:, -2] if num_parts > 1 else np.zeros_like(top1)
+        label_margin = ((top1 - top2) / np.maximum(vote_total, 1e-6)).astype(np.float32)
 
         max_dist = float(self.args.part_max_smpl_dist)
         final = np.zeros_like(smpl_prior, dtype=np.uint8)
@@ -93,12 +134,17 @@ class PartMoeController:
         final[prior_valid] = smpl_prior[prior_valid]
         conf[prior_valid] = np.clip(1.0 - smpl_dist[prior_valid] / max_dist, 0.0, 1.0)
         source[prior_valid] = 1
-        vote = np.zeros((smpl_prior.shape[0], num_parts), dtype=np.uint32)
+        distance_conf = np.clip(1.0 - smpl_dist / max_dist, 0.0, 1.0)
+        if self.robust_labels:
+            conf[prior_valid] = (
+                distance_conf[prior_valid] * (0.5 + 0.5 * label_margin[prior_valid])
+            ).astype(np.float32)
 
         label_path = out_dir / "gaussian_part_label.npy"
         conf_path = out_dir / "gaussian_part_conf.npy"
         np.save(out_dir / "gaussian_smpl_prior_label.npy", smpl_prior)
         np.save(out_dir / "gaussian_smpl_dist.npy", smpl_dist)
+        np.save(out_dir / "gaussian_part_margin.npy", label_margin)
         np.save(label_path, final)
         np.save(conf_path, conf)
         np.save(out_dir / "gaussian_part_vote.npy", vote)
@@ -140,6 +186,8 @@ class PartMoeController:
                     "prior_only": True,
                     "part_grouping_mode": str(getattr(self.args, "part_grouping_mode", "prior_only")),
                     "max_smpl_dist": max_dist,
+                    "label_knn": k,
+                    "vote_temperature": vote_temperature,
                     "use_part_moe": True,
                     "use_tri": bool(getattr(self.args, "use_tri", False)),
                     "part_moe_start_iter": int(getattr(self.args, "part_moe_start_iter", self.start_iter)),

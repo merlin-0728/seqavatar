@@ -1127,11 +1127,84 @@ class PartNonrigidExpert(nn.Module):
         return self.gaussian_warp(h), self.gaussian_rotation(h), self.gaussian_scaling(h)
 
 
+class TemporalDeformationExpert(nn.Module):
+    """A time-segment deformation branch sharing the Gaussian attributes."""
+
+    def __init__(self, mlp, gaussian_warp, gaussian_rotation, gaussian_scaling):
+        super().__init__()
+        self.mlp = copy.deepcopy(mlp)
+        self.gaussian_warp = copy.deepcopy(gaussian_warp)
+        self.gaussian_rotation = copy.deepcopy(gaussian_rotation)
+        self.gaussian_scaling = copy.deepcopy(gaussian_scaling)
+
+    def forward(self, features):
+        h = self.mlp(features)
+        return self.gaussian_warp(h), self.gaussian_rotation(h), self.gaussian_scaling(h)
+
+
+class TemporalPartialExpert(nn.Module):
+    """A complete temporal predictor over a shared MLP prefix."""
+
+    def __init__(self, suffix, gaussian_warp, gaussian_rotation, gaussian_scaling):
+        super().__init__()
+        self.suffix = copy.deepcopy(suffix)
+        self.gaussian_warp = copy.deepcopy(gaussian_warp)
+        self.gaussian_rotation = copy.deepcopy(gaussian_rotation)
+        self.gaussian_scaling = copy.deepcopy(gaussian_scaling)
+
+    def forward(self, shared_hidden):
+        h = self.suffix(shared_hidden)
+        return self.gaussian_warp(h), self.gaussian_rotation(h), self.gaussian_scaling(h)
+
+
+class TemporalConditionedFullPartExpert(nn.Module):
+    """A complete part predictor reused across all temporal branches."""
+
+    def __init__(self, width, source_warp=None, source_rotation=None, source_scaling=None):
+        super().__init__()
+        self.body = nn.Sequential(nn.Linear(width, width), nn.ReLU())
+        self.gaussian_warp = nn.Linear(width, 3)
+        self.gaussian_rotation = nn.Linear(width, 4)
+        self.gaussian_scaling = nn.Linear(width, 3)
+
+        with torch.no_grad():
+            nn.init.eye_(self.body[0].weight)
+            nn.init.zeros_(self.body[0].bias)
+            if source_warp is not None:
+                self.gaussian_warp.load_state_dict(source_warp.state_dict())
+            if source_rotation is not None:
+                self.gaussian_rotation.load_state_dict(source_rotation.state_dict())
+            if source_scaling is not None:
+                self.gaussian_scaling.load_state_dict(source_scaling.state_dict())
+
+    def forward(self, temporal_hidden):
+        h = self.body(temporal_hidden)
+        return self.gaussian_warp(h), self.gaussian_rotation(h), self.gaussian_scaling(h)
+
+
+class TemporalResidualExpert(nn.Module):
+    """A small time-specific residual head over the shared deformation trunk."""
+
+    def __init__(self, width):
+        super().__init__()
+        self.gaussian_warp = nn.Linear(width, 3)
+        self.gaussian_rotation = nn.Linear(width, 4)
+        self.gaussian_scaling = nn.Linear(width, 3)
+        for module in (self.gaussian_warp, self.gaussian_rotation, self.gaussian_scaling):
+            nn.init.zeros_(module.weight)
+            nn.init.zeros_(module.bias)
+
+    def forward(self, hidden):
+        return self.gaussian_warp(hidden), self.gaussian_rotation(hidden), self.gaussian_scaling(hidden)
+
+
 class NonrigidDeformer(nn.Module):
     def __init__(self, D=3, W=512, use_pose_cond=0, use_seq_pose_cond=0, use_seq_xyz_cond=0, 
                  pos_input_dim=63, pose_cond_dim=32, seq_pose_cond_dim=32, seq_xyz_cond_dim=96,
                  seq_len=6, seq_xyz_knn=1, time_step_num=1, smpl_type='smpl',
                  use_part_moe=False, num_parts=5, part_moe_global_keep=0.1,
+                 part_moe_conf_threshold=0.5, part_confidence_route=False,
+                 use_dynomo_c=False, dynomo_c_affinity_dim=32,
                  use_tri=False, tri_plane_dim=32, tri_plane_res=64, tri_plane_extent=1.2,
                  use_tri_token=False, token_tri_dim=32, token_tri_res=16, token_tri_extent=1.0,
                  token_tri_heads=4, token_tri_layers=2, token_tri_hidden_dim=128,
@@ -1148,6 +1221,21 @@ class NonrigidDeformer(nn.Module):
                  token_tri_part_fusion_spatial_boundary_mix=0.5,
                  token_tri_part_fusion_spatial_part_mix=0.5,
                  use_time=False, time_scale_emb_dim=16, time_scale_temperature=1.5,
+                 use_mapo_all_dynamic=False, mapo_max_partition_level=2,
+                 mapo_num_frames=100, mapo_soft_routing=False,
+                 mapo_soft_blend_width=4.0,
+                 mapo_shared_trunk=False, mapo_partial_sharing=False,
+                 use_temporal_conditioned_part_moe=False,
+                 temporal_conditioned_part_fusion_mode="replace",
+                 temporal_conditioned_part_conf_threshold=0.5,
+                 temporal_conditioned_part_max_mix=0.75,
+                 mapo_residual_alpha=1.0,
+                 mapo_dynamic_score_enabled=False,
+                 mapo_dynamic_score_momentum=0.95,
+                 mapo_dynamic_score_alpha=0.5,
+                 use_motion_temporal_temperature=False,
+                 motion_temperature_min=0.50, motion_temperature_max=1.50,
+                 motion_velocity_weight=0.50, motion_acceleration_weight=0.50,
                  use_tri_part=False, use_tri_gate=False, tri_gate_alpha=0.2,
                  tri_gate_init=0.5, tri_gate_hidden_dim=128, tri_gate_mode="additive",
                  tri_part_alpha=1.0, tri_part_motion_gain=0.5,
@@ -1170,7 +1258,56 @@ class NonrigidDeformer(nn.Module):
         self.use_seq_pose_cond = use_seq_pose_cond
         self.use_seq_xyz_cond = use_seq_xyz_cond
         self.use_part_moe = use_part_moe
+        self.use_dynomo_c = bool(use_dynomo_c)
+        self.dynomo_c_affinity_dim = int(dynomo_c_affinity_dim)
         self.use_time = bool(use_time)
+        self.use_mapo_all_dynamic = bool(use_mapo_all_dynamic)
+        self.mapo_max_partition_level = int(mapo_max_partition_level)
+        self.mapo_num_frames = max(1, int(mapo_num_frames))
+        self.mapo_soft_routing = bool(mapo_soft_routing)
+        self.mapo_soft_blend_width = max(0.0, float(mapo_soft_blend_width))
+        self.mapo_shared_trunk = bool(mapo_shared_trunk)
+        self.mapo_partial_sharing = bool(mapo_partial_sharing)
+        self.use_temporal_conditioned_part_moe = bool(use_temporal_conditioned_part_moe)
+        self.temporal_conditioned_part_fusion_mode = str(
+            temporal_conditioned_part_fusion_mode
+        ).lower()
+        self.temporal_conditioned_part_conf_threshold = min(
+            max(float(temporal_conditioned_part_conf_threshold), 0.0), 0.999
+        )
+        self.temporal_conditioned_part_max_mix = min(
+            max(float(temporal_conditioned_part_max_mix), 0.0), 1.0
+        )
+        if self.temporal_conditioned_part_fusion_mode not in ("replace", "confidence"):
+            raise ValueError(
+                "[TEMPORAL_CONDITIONED_PART] fusion mode must be 'replace' or 'confidence'."
+            )
+        if self.mapo_partial_sharing and not self.use_mapo_all_dynamic:
+            raise ValueError("[MAPO_PARTIAL] requires use_mapo_all_dynamic.")
+        if self.mapo_partial_sharing and self.mapo_shared_trunk:
+            raise ValueError("[MAPO_PARTIAL] cannot be combined with mapo_shared_trunk.")
+        if self.use_temporal_conditioned_part_moe and not (
+            self.use_mapo_all_dynamic and self.use_part_moe
+        ):
+            raise ValueError(
+                "[TEMPORAL_CONDITIONED_PART] requires mapo temporal branches and part-moe."
+            )
+        self.mapo_residual_alpha = float(mapo_residual_alpha)
+        self.mapo_dynamic_score_enabled = bool(mapo_dynamic_score_enabled)
+        self.mapo_dynamic_score_momentum = min(max(float(mapo_dynamic_score_momentum), 0.0), 0.999)
+        self.mapo_dynamic_score_alpha = max(0.0, float(mapo_dynamic_score_alpha))
+        self.use_motion_temporal_temperature = bool(use_motion_temporal_temperature)
+        self.motion_temperature_min = max(1e-3, float(motion_temperature_min))
+        self.motion_temperature_max = max(self.motion_temperature_min, float(motion_temperature_max))
+        self.motion_velocity_weight = max(0.0, float(motion_velocity_weight))
+        self.motion_acceleration_weight = max(0.0, float(motion_acceleration_weight))
+        if self.motion_velocity_weight + self.motion_acceleration_weight <= 0.0:
+            self.motion_velocity_weight = 0.5
+            self.motion_acceleration_weight = 0.5
+        self.mapo_dynamic_score = None
+        self.mapo_pose_position_cache = {}
+        self.last_mapo_dynamic_stats = None
+        self.mapo_active_level = 0
         self.use_tri = bool(use_tri and use_part_moe)
         self.use_tri_part = bool(use_tri_part and self.use_tri)
         self.use_tri_gate = bool(use_tri_gate and self.use_tri)
@@ -1237,6 +1374,8 @@ class NonrigidDeformer(nn.Module):
             raise ValueError("[TRI_GATE] tri_gate_mode must be 'additive', 'concat', or 'scale'.")
         self.num_parts = num_parts
         self.part_moe_global_keep = part_moe_global_keep
+        self.part_moe_conf_threshold = min(max(float(part_moe_conf_threshold), 0.0), 0.999)
+        self.part_confidence_route = bool(part_confidence_route)
         self.pos_input_dim = pos_input_dim
         self.part_moe_active = False
         self.part_experts = None
@@ -1250,10 +1389,17 @@ class NonrigidDeformer(nn.Module):
         self.last_part_budget_ctx = None
         self.last_part_score_route_stats = None
         self.last_time_stats = None
+        self.last_dynomo_affinity = None
+        self.last_mapo_branch_id = 0
+        self.last_motion_temperature_stats = None
+        self.last_temporal_conditioned_part_stats = None
+        self._motion_temperature_logged_level = -1
 
         self.input_ch = pos_input_dim
         self.pose_cond_dim, self.seq_pose_cond_dim, self.seq_xyz_cond_dim = 0, 0, 0
 
+        if self.use_dynomo_c and (self.use_part_moe or self.use_tri or self.use_tri_token or self.use_part_budget):
+            raise ValueError("[DYNOMO_C] dynomo_c is an original-baseline ablation; do not combine it with part_moe/tri/tri_token/part_budget.")
         if self.use_part_budget and self.use_tri:
             raise ValueError("[PART_BUDGET] part_budget is defined on top of part_moe_leg only; do not combine it with tri ablations.")
         if self.use_time and (self.use_part_moe or self.use_tri or self.use_tri_token or self.use_part_budget):
@@ -1369,6 +1515,13 @@ class NonrigidDeformer(nn.Module):
                                         scale_emb_dim=self.time_scale_emb_dim,
                                         temperature=self.time_scale_temperature)
             self.input_ch += seq_xyz_cond_dim
+        if self.use_dynomo_c:
+            affinity_hidden = max(64, W // 2)
+            self.dynomo_affinity_head = nn.Sequential(
+                nn.Linear(W, affinity_hidden),
+                nn.ReLU(),
+                nn.Linear(affinity_hidden, self.dynomo_c_affinity_dim),
+            )
         if self.use_part_score_route:
             self.PartScoreRouteAdapter = PartScoreRouteAdapter(
                 base_feature_dim=self.input_ch,
@@ -1529,9 +1682,60 @@ class NonrigidDeformer(nn.Module):
                 )
             torch.set_rng_state(cpu_rng_state)
 
+        self.mapo_partial_suffix = None
+        if self.mapo_partial_sharing:
+            mlp_layers = list(self.mlp.children())
+            shared_layer_count = min(4, len(mlp_layers))
+            if shared_layer_count <= 0 or shared_layer_count >= len(mlp_layers):
+                raise ValueError("[MAPO_PARTIAL] requires at least one shared and one branch-specific MLP layer.")
+            self.mapo_partial_suffix = nn.Sequential(*mlp_layers[shared_layer_count:])
+            self.mlp = nn.Sequential(*mlp_layers[:shared_layer_count])
+
         self.gaussian_warp = nn.Linear(W, 3)
         self.gaussian_rotation = nn.Linear(W, 4)
         self.gaussian_scaling = nn.Linear(W, 3)
+        self.mapo_branches = nn.ModuleDict()
+        self.mapo_partial_branches = nn.ModuleDict()
+        self.mapo_residual_branches = nn.ModuleDict()
+        self.temporal_conditioned_part_experts = nn.ModuleList()
+        self.temporal_conditioned_part_active = False
+        if self.use_temporal_conditioned_part_moe:
+            self.temporal_conditioned_part_experts = nn.ModuleList([
+                TemporalConditionedFullPartExpert(
+                    W,
+                    source_warp=self.gaussian_warp,
+                    source_rotation=self.gaussian_rotation,
+                    source_scaling=self.gaussian_scaling,
+                )
+                for _ in range(self.num_parts)
+            ])
+        if self.use_mapo_all_dynamic:
+            max_branch_count = 1 << self.mapo_max_partition_level
+            for branch_id in range(max_branch_count):
+                if self.mapo_partial_sharing and branch_id > 0:
+                    self.mapo_partial_branches[f"branch_{branch_id}"] = TemporalPartialExpert(
+                        self.mapo_partial_suffix,
+                        self.gaussian_warp,
+                        self.gaussian_rotation,
+                        self.gaussian_scaling,
+                    )
+                elif self.mapo_shared_trunk:
+                    self.mapo_residual_branches[f"branch_{branch_id}"] = TemporalResidualExpert(W)
+                elif branch_id > 0:
+                    self.mapo_branches[f"branch_{branch_id}"] = TemporalDeformationExpert(
+                        self.mlp, self.gaussian_warp, self.gaussian_rotation, self.gaussian_scaling
+                    )
+            print(
+                "[MAPO_ALL_DYNAMIC] enabled=True; "
+                f"max_level={self.mapo_max_partition_level} branches={1 << self.mapo_max_partition_level} "
+                f"num_frames={self.mapo_num_frames} shared_trunk={self.mapo_shared_trunk} "
+                f"partial_sharing={self.mapo_partial_sharing}"
+            )
+        if self.use_temporal_conditioned_part_moe:
+            print(
+                "[TEMPORAL_CONDITIONED_PART] enabled=True; "
+                f"full_part_experts={self.num_parts} shared_across_temporal_branches=True"
+            )
         if self.use_tri_gate:
             if self.tri_gate_mode in ("concat", "scale"):
                 self.TriFeatureGate = TriFeatureGate(
@@ -1627,6 +1831,525 @@ class NonrigidDeformer(nn.Module):
         self.part_moe_active = True
         print(f"[PartMoE] expert_0: global/unknown; expert_1-{num_parts - 1}: routed part experts.")
         return True
+
+    def mapo_set_training_level(self, level=0):
+        if not self.use_mapo_all_dynamic:
+            return
+        self.mapo_active_level = max(0, min(int(level), self.mapo_max_partition_level))
+
+    @torch.no_grad()
+    def mapo_activate_level(self, level):
+        if not self.use_mapo_all_dynamic:
+            return []
+        level = max(0, min(int(level), self.mapo_max_partition_level))
+        if level <= self.mapo_active_level:
+            return []
+        activated_params = []
+        for current_level in range(self.mapo_active_level + 1, level + 1):
+            old_leaf_count = 1 << (current_level - 1)
+            if self.mapo_partial_sharing:
+                old_states = []
+                for leaf_id in range(old_leaf_count):
+                    if leaf_id == 0:
+                        root_state = {}
+                        for module_name, module in (
+                            ("suffix", self.mapo_partial_suffix),
+                            ("gaussian_warp", self.gaussian_warp),
+                            ("gaussian_rotation", self.gaussian_rotation),
+                            ("gaussian_scaling", self.gaussian_scaling),
+                        ):
+                            root_state.update(
+                                {f"{module_name}.{key}": value for key, value in module.state_dict().items()}
+                            )
+                        old_states.append(copy.deepcopy(root_state))
+                    else:
+                        old_states.append(copy.deepcopy(self.mapo_partial_branches[f"branch_{leaf_id}"].state_dict()))
+
+                new_leaf_count = 1 << current_level
+                for leaf_id in range(1, new_leaf_count):
+                    parent_state = old_states[leaf_id // 2]
+                    child = self.mapo_partial_branches[f"branch_{leaf_id}"]
+                    child.load_state_dict(parent_state)
+                    activated_params.extend(child.parameters())
+                self.mapo_active_level = current_level
+                print(
+                    f"[MAPO_ALL_DYNAMIC] activated level={current_level} "
+                    f"branches={1 << current_level} intervals={self.mapo_num_frames // (1 << current_level)}"
+                )
+                continue
+            if self.mapo_shared_trunk:
+                old_states = [
+                    copy.deepcopy(self.mapo_residual_branches[f"branch_{leaf_id}"].state_dict())
+                    for leaf_id in range(old_leaf_count)
+                ]
+                new_leaf_count = 1 << current_level
+                for leaf_id in range(new_leaf_count):
+                    parent_id = leaf_id // 2
+                    child = self.mapo_residual_branches[f"branch_{leaf_id}"]
+                    child.load_state_dict(
+                        old_states[parent_id]
+                    )
+                    activated_params.extend(child.parameters())
+                self.mapo_active_level = current_level
+                print(
+                    f"[MAPO_ALL_DYNAMIC] activated level={current_level} "
+                    f"branches={1 << current_level} intervals={self.mapo_num_frames // (1 << current_level)}"
+                )
+                continue
+            old_states = []
+            for leaf_id in range(old_leaf_count):
+                if leaf_id == 0:
+                    # TemporalDeformationExpert stores the four modules under
+                    # the same top-level names as this deformer. Flatten the
+                    # root module states to match its state_dict layout.
+                    root_state = {}
+                    for module_name, module in (
+                        ("mlp", self.mlp),
+                        ("gaussian_warp", self.gaussian_warp),
+                        ("gaussian_rotation", self.gaussian_rotation),
+                        ("gaussian_scaling", self.gaussian_scaling),
+                    ):
+                        root_state.update(
+                            {f"{module_name}.{key}": value for key, value in module.state_dict().items()}
+                        )
+                    old_states.append(copy.deepcopy(root_state))
+                else:
+                    old_states.append(copy.deepcopy(self.mapo_branches[f"branch_{leaf_id}"].state_dict()))
+
+            new_leaf_count = 1 << current_level
+            for leaf_id in range(1, new_leaf_count):
+                parent_state = old_states[leaf_id // 2]
+                child = self.mapo_branches[f"branch_{leaf_id}"]
+                child.load_state_dict(parent_state)
+                activated_params.extend(child.parameters())
+            self.mapo_active_level = current_level
+            print(
+                f"[MAPO_ALL_DYNAMIC] activated level={current_level} "
+                f"branches={1 << current_level} intervals={self.mapo_num_frames // (1 << current_level)}"
+            )
+        return activated_params
+
+    def _mapo_expert_for_pose(self, pose_id):
+        level = max(0, min(int(self.mapo_active_level), self.mapo_max_partition_level))
+        if level == 0:
+            return self
+        try:
+            pose_id = int(pose_id)
+        except (TypeError, ValueError):
+            pose_id = 0
+        leaf_count = 1 << level
+        leaf_id = min(max((pose_id * leaf_count) // self.mapo_num_frames, 0), leaf_count - 1)
+        if leaf_id == 0:
+            return self
+        if self.mapo_partial_sharing:
+            return self.mapo_partial_branches[f"branch_{leaf_id}"]
+        return self.mapo_branches[f"branch_{leaf_id}"]
+
+    def _mapo_outputs_for_leaf(self, features, leaf_id, shared_hidden=None):
+        h = self.mlp(features) if shared_hidden is None else shared_hidden
+        if self.mapo_partial_sharing:
+            if int(leaf_id) == 0:
+                partial_h = self.mapo_partial_suffix(h)
+                return (
+                    self.gaussian_warp(partial_h),
+                    self.gaussian_rotation(partial_h),
+                    self.gaussian_scaling(partial_h),
+                )
+            return self.mapo_partial_branches[f"branch_{int(leaf_id)}"](h)
+        base = (self.gaussian_warp(h), self.gaussian_rotation(h), self.gaussian_scaling(h))
+        if self.mapo_shared_trunk:
+            residual = self.mapo_residual_branches[f"branch_{int(leaf_id)}"](h)
+            scale = self.mapo_residual_alpha
+            if self.mapo_dynamic_score_enabled and self.mapo_dynamic_score is not None:
+                score = self.mapo_dynamic_score.to(device=features.device, dtype=features.dtype)
+                if score.numel() == features.shape[1]:
+                    reference = torch.quantile(score.detach(), 0.95).clamp_min(1e-6)
+                    normalized = (score / reference).clamp(0.0, 1.0)
+                    strength = min(self.mapo_dynamic_score_alpha, 1.0)
+                    gate = (1.0 - strength) + strength * normalized
+                    gate = gate.view(1, -1, 1)
+                    residual = tuple(value * gate for value in residual)
+            return tuple(base_value + scale * residual_value for base_value, residual_value in zip(base, residual))
+        if int(leaf_id) == 0:
+            return base
+        return self.mapo_branches[f"branch_{int(leaf_id)}"](features)
+
+    def init_temporal_conditioned_part_moe(self):
+        if not self.use_temporal_conditioned_part_moe:
+            return False
+        if self.temporal_conditioned_part_active:
+            return False
+        self.temporal_conditioned_part_active = True
+        print(
+            "[TEMPORAL_CONDITIONED_PART] full part predictors activated; "
+            "temporal suffix features remain trainable."
+        )
+        return True
+
+    def _mapo_temporal_weights(self, pose_id, leaf_count, device, dtype):
+        try:
+            phase = float(pose_id)
+        except (TypeError, ValueError):
+            phase = 0.0
+        weights = torch.zeros(leaf_count, device=device, dtype=dtype)
+        if self.mapo_soft_routing and self.mapo_soft_blend_width > 0.0:
+            boundary_step = self.mapo_num_frames / float(leaf_count)
+            boundary_id = min(max(int(round(phase / boundary_step)), 1), leaf_count - 1)
+            boundary = boundary_id * boundary_step
+            distance = abs(phase - boundary)
+            if distance < self.mapo_soft_blend_width:
+                u = (phase - (boundary - self.mapo_soft_blend_width)) / (2.0 * self.mapo_soft_blend_width)
+                u = min(max(u, 0.0), 1.0)
+                blend = u * u * (3.0 - 2.0 * u)
+                weights[boundary_id - 1] = 1.0 - blend
+                weights[boundary_id] = blend
+                return weights.view(1, 1, -1), boundary_id if blend >= 0.5 else boundary_id - 1
+        leaf_id = min(max(int(phase * leaf_count // self.mapo_num_frames), 0), leaf_count - 1)
+        weights[leaf_id] = 1.0
+        return weights.view(1, 1, -1), leaf_id
+
+    def _mapo_hidden_for_leaf(self, features, leaf_id, shared_hidden):
+        leaf_id = int(leaf_id)
+        if self.mapo_partial_sharing:
+            if leaf_id == 0:
+                return self.mapo_partial_suffix(shared_hidden)
+            return self.mapo_partial_branches[f"branch_{leaf_id}"].suffix(shared_hidden)
+        if leaf_id == 0:
+            return shared_hidden
+        return self.mapo_branches[f"branch_{leaf_id}"].mlp(features)
+
+    def _temporal_conditioned_part_outputs(
+        self, temporal_hidden, part_label, global_keep, route_mask=None
+    ):
+        feature_shape = temporal_hidden.shape
+        flat_hidden = temporal_hidden.reshape(-1, feature_shape[-1])
+        flat_label = part_label.reshape(-1)
+        if route_mask is None:
+            flat_route = torch.ones_like(flat_label, dtype=torch.bool)
+        else:
+            flat_route = route_mask.reshape(-1).bool()
+        route_idx = torch.nonzero(flat_route, as_tuple=False).flatten()
+        d_xyz = flat_hidden.new_zeros((flat_hidden.shape[0], 3))
+        d_rotation = flat_hidden.new_zeros((flat_hidden.shape[0], 4))
+        d_scaling = flat_hidden.new_zeros((flat_hidden.shape[0], 3))
+        if route_idx.numel() == 0:
+            return (
+                d_xyz.reshape(feature_shape[0], feature_shape[1], -1),
+                d_rotation.reshape(feature_shape[0], feature_shape[1], -1),
+                d_scaling.reshape(feature_shape[0], feature_shape[1], -1),
+            )
+        route_hidden = flat_hidden.index_select(0, route_idx)
+        global_xyz, global_rotation, global_scaling = self.temporal_conditioned_part_experts[0](
+            route_hidden
+        )
+        d_xyz = torch.index_copy(d_xyz, 0, route_idx, global_xyz)
+        d_rotation = torch.index_copy(d_rotation, 0, route_idx, global_rotation)
+        d_scaling = torch.index_copy(d_scaling, 0, route_idx, global_scaling)
+        for pid in range(1, self.num_parts):
+            idx = torch.nonzero((flat_label == pid) & flat_route, as_tuple=False).flatten()
+            if idx.numel() == 0:
+                continue
+            part_xyz, part_rotation, part_scaling = self.temporal_conditioned_part_experts[pid](
+                flat_hidden.index_select(0, idx)
+            )
+            keep = float(global_keep)
+            part_weight = 1.0 - keep
+            global_idx = torch.searchsorted(route_idx, idx)
+            d_xyz = torch.index_copy(
+                d_xyz, 0, idx,
+                keep * global_xyz.index_select(0, global_idx) + part_weight * part_xyz,
+            )
+            d_rotation = torch.index_copy(
+                d_rotation, 0, idx,
+                keep * global_rotation.index_select(0, global_idx) + part_weight * part_rotation,
+            )
+            d_scaling = torch.index_copy(
+                d_scaling, 0, idx,
+                keep * global_scaling.index_select(0, global_idx) + part_weight * part_scaling,
+            )
+        return (
+            d_xyz.reshape(feature_shape[0], feature_shape[1], -1),
+            d_rotation.reshape(feature_shape[0], feature_shape[1], -1),
+            d_scaling.reshape(feature_shape[0], feature_shape[1], -1),
+        )
+
+    def forward_temporal_conditioned_part(self, features, pose_id, part_label, part_moe_alpha,
+                                          part_moe_global_keep=0.1, part_conf=None):
+        if not self.temporal_conditioned_part_active:
+            return None
+        part_label = part_label.long().to(features.device)
+        if part_label.dim() == 1:
+            part_label = part_label.unsqueeze(0).expand(features.shape[0], -1)
+        elif part_label.shape[0] == 1 and features.shape[0] > 1:
+            part_label = part_label.expand(features.shape[0], -1)
+        part_label = torch.clamp(part_label, min=0, max=self.num_parts - 1)
+        shared_hidden = self.mlp(features)
+        level = max(0, min(int(self.mapo_active_level), self.mapo_max_partition_level))
+        leaf_count = 1 << level
+        weights, active_leaf = self._mapo_temporal_weights(
+            pose_id, leaf_count, features.device, features.dtype
+        )
+        global_keep = max(0.0, min(1.0, float(part_moe_global_keep)))
+        if self.temporal_conditioned_part_fusion_mode == "confidence":
+            if part_conf is None:
+                confidence = torch.ones(
+                    features.shape[0], features.shape[1], 1,
+                    device=features.device, dtype=features.dtype,
+                )
+            else:
+                confidence = self._normalize_budget_conf(part_conf, features)
+            threshold = self.temporal_conditioned_part_conf_threshold
+            route_mask = (part_label > 0) & (confidence.squeeze(-1) > threshold)
+        else:
+            route_mask = None
+        # Most poses have exactly one non-zero routing weight.  Materializing
+        # every temporal branch and every Part expert at once creates a large
+        # autograd graph when the Gaussian count is high, so evaluate only the
+        # one or two leaves that can contribute to the current pose.
+        active_leaves = torch.nonzero(
+            weights[0, 0] > 0.0, as_tuple=False
+        ).flatten().tolist()
+        if not active_leaves:
+            active_leaves = [int(active_leaf)]
+        temporal_fused = [None, None, None]
+        part_fused = [None, None, None]
+        for leaf_id in active_leaves:
+            leaf_weight = weights[..., leaf_id:leaf_id + 1]
+            temporal_hidden = self._mapo_hidden_for_leaf(features, leaf_id, shared_hidden)
+            temporal_output = (
+                self.gaussian_warp(temporal_hidden),
+                self.gaussian_rotation(temporal_hidden),
+                self.gaussian_scaling(temporal_hidden),
+            )
+            part_output = self._temporal_conditioned_part_outputs(
+                temporal_hidden, part_label, global_keep, route_mask=route_mask
+            )
+            for component in range(3):
+                weighted_temporal = leaf_weight * temporal_output[component]
+                weighted_part = leaf_weight * part_output[component]
+                if temporal_fused[component] is None:
+                    temporal_fused[component] = weighted_temporal
+                    part_fused[component] = weighted_part
+                else:
+                    temporal_fused[component] = temporal_fused[component] + weighted_temporal
+                    part_fused[component] = part_fused[component] + weighted_part
+        temporal_fused = tuple(temporal_fused)
+        part_fused = tuple(part_fused)
+        max_part_weight = max(1e-6, 1.0 - global_keep)
+        part_gate = max(0.0, min(1.0, float(part_moe_alpha) / max_part_weight))
+        if self.temporal_conditioned_part_fusion_mode == "confidence":
+            confidence = confidence.clamp(0.0, 1.0)
+            threshold = self.temporal_conditioned_part_conf_threshold
+            confidence_mix = ((confidence - threshold) / max(1e-6, 1.0 - threshold)).clamp(0.0, 1.0)
+            known_mask = (part_label > 0).to(dtype=features.dtype).unsqueeze(-1)
+            confidence_gate = (
+                self.temporal_conditioned_part_max_mix
+                * part_gate
+                * confidence_mix
+                * known_mask
+            )
+            fused = tuple(
+                temporal_fused[component]
+                + confidence_gate * (part_fused[component] - temporal_fused[component])
+                for component in range(3)
+            )
+            gate_stats = {
+                "confidence_gate_mean": confidence_gate.detach().mean(),
+                "confidence_gate_max": confidence_gate.detach().amax(),
+                "confidence_active_ratio": (confidence_gate.detach() > 0).to(features.dtype).mean(),
+                "confidence_unknown_ratio": (known_mask.detach() == 0).to(features.dtype).mean(),
+            }
+        else:
+            fused = tuple(
+                (1.0 - part_gate) * temporal_fused[component] + part_gate * part_fused[component]
+                for component in range(3)
+            )
+            gate_stats = {}
+        self.last_temporal_conditioned_part_stats = {
+            "part_gate": torch.tensor(part_gate, device=features.device, dtype=features.dtype),
+            "temporal_weight_entropy": (
+                -(weights * torch.log(weights.clamp_min(1e-8))).sum(dim=-1).mean()
+            ),
+            "active_leaf": torch.tensor(float(active_leaf), device=features.device, dtype=features.dtype),
+        }
+        self.last_temporal_conditioned_part_stats.update(gate_stats)
+        return fused[0], fused[1], fused[2], active_leaf
+
+    def _mapo_update_dynamic_score(self, query_xyz, d_xyz, pose_id):
+        if not torch.is_grad_enabled():
+            return
+        self._mapo_update_dynamic_score_impl(query_xyz, d_xyz, pose_id)
+
+    @torch.no_grad()
+    def _mapo_update_dynamic_score_impl(self, query_xyz, d_xyz, pose_id):
+        if (
+            not self.mapo_dynamic_score_enabled
+            or query_xyz is None
+        ):
+            return
+        try:
+            pose_id = int(pose_id)
+        except (TypeError, ValueError):
+            return
+        current = query_xyz.detach().reshape(-1, 3)
+        displacement = d_xyz.detach().reshape(-1, 3)
+        if current.shape != displacement.shape:
+            return
+        current = current + displacement
+        if self.mapo_dynamic_score is None or self.mapo_dynamic_score.shape[0] != current.shape[0]:
+            self.mapo_dynamic_score = torch.zeros(current.shape[0], device=current.device, dtype=current.dtype)
+            self.mapo_pose_position_cache = {}
+            self.last_mapo_dynamic_stats = None
+        neighbors = []
+        for neighbor_pose in (pose_id - 1, pose_id + 1):
+            cached = self.mapo_pose_position_cache.get(neighbor_pose)
+            if cached is not None and cached.shape == current.shape:
+                neighbors.append(torch.linalg.vector_norm(current - cached, dim=-1))
+        self.mapo_pose_position_cache[pose_id] = current.clone()
+        if not neighbors:
+            return
+        delta = torch.stack(neighbors, dim=0).mean(dim=0)
+        self.mapo_dynamic_score.mul_(self.mapo_dynamic_score_momentum).add_(
+            delta, alpha=1.0 - self.mapo_dynamic_score_momentum
+        )
+        self.last_mapo_dynamic_stats = {
+            "mean": float(self.mapo_dynamic_score.mean().item()),
+            "p50": float(torch.quantile(self.mapo_dynamic_score, 0.50).item()),
+            "p95": float(torch.quantile(self.mapo_dynamic_score, 0.95).item()),
+            "max": float(self.mapo_dynamic_score.max().item()),
+        }
+
+    def _forward_motion_temperature(self, features, pose_id, leaf_count,
+                                     motion_velocity=None, motion_acceleration=None):
+        """Fuse the fixed temporal branches with a detached per-Gaussian temperature."""
+        batch_size, num_points = features.shape[:2]
+        device, dtype = features.device, features.dtype
+
+        def normalize_signal(signal):
+            if signal is None:
+                return torch.zeros(batch_size, num_points, device=device, dtype=dtype)
+            signal = signal.to(device=device, dtype=dtype)
+            if signal.dim() == 1:
+                signal = signal.view(1, -1)
+            while signal.dim() > 2:
+                signal = signal.mean(dim=-1)
+            if signal.shape[0] == 1 and batch_size > 1:
+                signal = signal.expand(batch_size, -1)
+            if signal.shape[1] != num_points:
+                return torch.zeros(batch_size, num_points, device=device, dtype=dtype)
+            return signal.clamp(0.0, 1.0).detach()
+
+        velocity = normalize_signal(motion_velocity)
+        acceleration = normalize_signal(motion_acceleration)
+        weight_sum = self.motion_velocity_weight + self.motion_acceleration_weight
+        complexity = (
+            self.motion_velocity_weight * velocity
+            + self.motion_acceleration_weight * acceleration
+        ) / weight_sum
+        temperature_multiplier = (
+            self.motion_temperature_max
+            - complexity * (self.motion_temperature_max - self.motion_temperature_min)
+        ).clamp(self.motion_temperature_min, self.motion_temperature_max).detach()
+
+        phase = float(pose_id) if pose_id is not None else 0.0
+        interval = self.mapo_num_frames / float(leaf_count)
+        centers = (torch.arange(leaf_count, device=device, dtype=dtype) + 0.5) * interval
+        base_temperature = max(float(self.mapo_soft_blend_width), 1e-3)
+        effective_temperature = (base_temperature * temperature_multiplier).clamp_min(1e-3)
+        distances = (torch.tensor(phase, device=device, dtype=dtype) - centers).view(1, 1, -1)
+        logits = -0.5 * (distances / effective_temperature.unsqueeze(-1)) ** 2
+        weights = torch.softmax(logits, dim=-1)
+
+        shared_hidden = self.mlp(features) if self.mapo_partial_sharing else None
+        outputs = [
+            self._mapo_outputs_for_leaf(features, leaf_id, shared_hidden=shared_hidden)
+            for leaf_id in range(leaf_count)
+        ]
+        fused = tuple(
+            sum(weights[..., leaf_id:leaf_id + 1] * output[component]
+                for leaf_id, output in enumerate(outputs))
+            for component in range(3)
+        )
+        self.last_motion_temperature_stats = {
+            "velocity_mean": velocity.detach().mean(),
+            "acceleration_mean": acceleration.detach().mean(),
+            "complexity_mean": complexity.detach().mean(),
+            "temperature_mean": temperature_multiplier.detach().mean(),
+            "temperature_p50": torch.quantile(temperature_multiplier.detach(), 0.50),
+            "temperature_p95": torch.quantile(temperature_multiplier.detach(), 0.95),
+            "weight_entropy": (-(weights * torch.log(weights.clamp_min(1e-8))).sum(dim=-1)).mean(),
+            "level": int(self.mapo_active_level),
+        }
+        if self._motion_temperature_logged_level != int(self.mapo_active_level):
+            stats = self.last_motion_temperature_stats
+            print(
+                "[MOTION_TEMP] routing active: "
+                f"level={self.mapo_active_level} branches={leaf_count} "
+                f"velocity={stats['velocity_mean'].item():.6f} "
+                f"acceleration={stats['acceleration_mean'].item():.6f} "
+                f"temperature(mean/p50/p95)={stats['temperature_mean'].item():.6f}/"
+                f"{stats['temperature_p50'].item():.6f}/"
+                f"{stats['temperature_p95'].item():.6f} "
+                f"weight_entropy={stats['weight_entropy'].item():.6f}"
+            )
+            self._motion_temperature_logged_level = int(self.mapo_active_level)
+        return fused
+
+    def forward_mapo(self, features, pose_id, query_xyz=None,
+                     motion_velocity=None, motion_acceleration=None):
+        level = max(0, min(int(self.mapo_active_level), self.mapo_max_partition_level))
+        shared_hidden = self.mlp(features) if self.mapo_partial_sharing else None
+        if level == 0:
+            d_xyz, d_rotation, d_scaling = self._mapo_outputs_for_leaf(
+                features, 0, shared_hidden=shared_hidden
+            )
+            self._mapo_update_dynamic_score(query_xyz, d_xyz, pose_id)
+            return d_xyz, d_rotation, d_scaling, 0
+        try:
+            pose_id = int(pose_id)
+        except (TypeError, ValueError):
+            pose_id = 0
+        leaf_count = 1 << level
+        leaf_id = min(max((pose_id * leaf_count) // self.mapo_num_frames, 0), leaf_count - 1)
+
+        if self.use_motion_temporal_temperature:
+            d_xyz, d_rotation, d_scaling = self._forward_motion_temperature(
+                features,
+                pose_id,
+                leaf_count,
+                motion_velocity=motion_velocity,
+                motion_acceleration=motion_acceleration,
+            )
+            self._mapo_update_dynamic_score(query_xyz, d_xyz, pose_id)
+            return d_xyz, d_rotation, d_scaling, leaf_id
+
+        if self.mapo_soft_routing and self.mapo_soft_blend_width > 0.0:
+            boundary_step = self.mapo_num_frames / float(leaf_count)
+            boundary_id = min(max(int(round(pose_id / boundary_step)), 1), leaf_count - 1)
+            boundary = boundary_id * boundary_step
+            distance = abs(float(pose_id) - boundary)
+            if distance < self.mapo_soft_blend_width:
+                u = (float(pose_id) - (boundary - self.mapo_soft_blend_width)) / (2.0 * self.mapo_soft_blend_width)
+                u = min(max(u, 0.0), 1.0)
+                blend = u * u * (3.0 - 2.0 * u)
+                left = self._mapo_outputs_for_leaf(
+                    features, boundary_id - 1, shared_hidden=shared_hidden
+                )
+                right = self._mapo_outputs_for_leaf(
+                    features, boundary_id, shared_hidden=shared_hidden
+                )
+                d_xyz = (1.0 - blend) * left[0] + blend * right[0]
+                d_rotation = (1.0 - blend) * left[1] + blend * right[1]
+                d_scaling = (1.0 - blend) * left[2] + blend * right[2]
+                active_leaf = boundary_id if blend >= 0.5 else boundary_id - 1
+                self._mapo_update_dynamic_score(query_xyz, d_xyz, pose_id)
+                return d_xyz, d_rotation, d_scaling, active_leaf
+
+        d_xyz, d_rotation, d_scaling = self._mapo_outputs_for_leaf(
+            features, leaf_id, shared_hidden=shared_hidden
+        )
+        self._mapo_update_dynamic_score(query_xyz, d_xyz, pose_id)
+        return d_xyz, d_rotation, d_scaling, leaf_id
 
     def freeze_shared_after_part_moe(self):
         for module in (self.mlp, self.gaussian_warp, self.gaussian_rotation, self.gaussian_scaling):
@@ -2027,6 +2750,14 @@ class NonrigidDeformer(nn.Module):
         global_keep = max(0.0, min(1.0, global_keep))
         max_part_weight = 1.0 - global_keep
         part_weight = self._prepare_part_moe_alpha(part_moe_alpha, features, max_part_weight)
+        if self.part_confidence_route and part_conf is not None:
+            confidence = self._normalize_budget_conf(part_conf, features)
+            confidence_mix = (
+                (confidence - self.part_moe_conf_threshold)
+                / max(1e-6, 1.0 - self.part_moe_conf_threshold)
+            ).clamp(0.0, 1.0)
+            known_mask = (part_label > 0).to(dtype=features.dtype).unsqueeze(-1)
+            part_weight = part_weight * confidence_mix * known_mask
         fusion_stats = None
         if (
             self.use_tri_token
@@ -2459,13 +3190,15 @@ class NonrigidDeformer(nn.Module):
                 part_label=None, part_enabled=False,
                 query_xyz=None, part_moe_alpha=0.0, part_moe_global_keep=None,
                 tri_gate_alpha_scale=1.0, part_conf=None, part_budget_alpha_scale=1.0,
-                tri_token_alpha_scale=1.0):
+                tri_token_alpha_scale=1.0, mapo_pose_id=None, mapo_query_xyz=None,
+                motion_velocity=None, motion_acceleration=None):
         self.last_part_budget_ctx = None
         self.last_tri_token_stats = None
         self.last_tri_token_loss = None
         self.last_tri_token_part_alpha = None
         self.last_time_stats = None
         self.last_part_score_route_stats = None
+        self.last_temporal_conditioned_part_stats = None
         feats = []
         feats.append(x_emb)
 
@@ -2611,12 +3344,27 @@ class NonrigidDeformer(nn.Module):
         if self.use_tri_token and self.token_tri_fusion_mode == "route_hard" and self.last_tri_token_part_alpha is not None:
             effective_part_moe_alpha = part_moe_alpha * self.last_tri_token_part_alpha
 
+        part_route_active = self.part_moe_active or self.temporal_conditioned_part_active
         if (
             self.use_part_moe
-            and self.part_moe_active
+            and part_route_active
             and part_enabled
             and part_label is not None
         ):
+            if self.use_temporal_conditioned_part_moe:
+                combined = self.forward_temporal_conditioned_part(
+                    features,
+                    mapo_pose_id,
+                    part_label,
+                    effective_part_moe_alpha,
+                    part_moe_global_keep=part_moe_global_keep,
+                    part_conf=part_conf,
+                )
+                if combined is not None:
+                    d_xyz, d_rotation, d_scaling, branch_id = combined
+                    self.last_mapo_branch_id = int(branch_id)
+                    self.last_dynomo_affinity = None
+                    return d_xyz, d_rotation, d_scaling
             if self.use_tri:
                 d_xyz, d_rotation, d_scaling = self.forward_tri(
                     features,
@@ -2654,6 +3402,7 @@ class NonrigidDeformer(nn.Module):
                     part_label,
                     part_moe_alpha=effective_part_moe_alpha,
                     part_moe_global_keep=part_moe_global_keep,
+                    part_conf=part_conf,
                 )
 
             if self.use_part_budget and self.part_budget_mode.startswith("v2_"):
@@ -2687,7 +3436,25 @@ class NonrigidDeformer(nn.Module):
                     self.last_tri_token_stats = tri_token_stats
             return d_xyz, d_rotation, d_scaling
 
+        if self.use_mapo_all_dynamic:
+            d_xyz, d_rotation, d_scaling, branch_id = self.forward_mapo(
+                features,
+                mapo_pose_id,
+                mapo_query_xyz,
+                motion_velocity=motion_velocity,
+                motion_acceleration=motion_acceleration,
+            )
+            self.last_mapo_branch_id = int(branch_id)
+            self.last_dynomo_affinity = None
+            return d_xyz, d_rotation, d_scaling
+
         h = self.mlp(features)
+        if self.use_dynomo_c:
+            dynomo_affinity = self.dynomo_affinity_head(h)
+            dynomo_affinity = F.normalize(dynomo_affinity, dim=-1)
+            self.last_dynomo_affinity = dynomo_affinity
+        else:
+            self.last_dynomo_affinity = None
         d_xyz, d_scaling, d_rotation = self.gaussian_warp(h), self.gaussian_scaling(h), self.gaussian_rotation(h)
         if self.use_tri_token and self.token_tri_fusion_mode == "route_output":
             d_xyz, d_rotation, d_scaling, output_route_stats = self.apply_tri_token_output_route(

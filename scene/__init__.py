@@ -64,6 +64,7 @@ class Scene:
         self.gaussians.canon_vertices = torch.tensor(scene_info.canon_vertices).to(args.data_device).unsqueeze(0)
         self.gaussians.smpl_params_dict = dict_to_device(scene_info.smpl_params_dict, args.data_device)
         self.gaussians.cond_dict = dict_to_device(scene_info.cond_dict, args.data_device)
+        self.gaussians.prepare_smpl_motion_stats()
 
         # get transformation from A pose to T pose
         self.gaussians.get_canon2Tpose_transform(self.gaussians.canon_params)
@@ -124,6 +125,17 @@ class Scene:
                     if getattr(self.gaussians, "use_part_moe", False) and has_part_moe:
                         self.gaussians.prepare_part_moe_for_loading()
                     self.gaussians.non_rigid_deformer.load_state_dict(ckpt['non_rigid_deformer'])
+                    if (
+                        getattr(self.gaussians, "mapo_dynamic_score_enabled", False)
+                        and ckpt.get("mapo_dynamic_score") is not None
+                    ):
+                        self.gaussians.non_rigid_deformer.mapo_dynamic_score = ckpt[
+                            "mapo_dynamic_score"
+                        ].to(self.gaussians.device)
+                        print(
+                            "[MAPO_DYNAMIC] loaded score for "
+                            f"{self.gaussians.non_rigid_deformer.mapo_dynamic_score.numel()} Gaussians"
+                        )
 
     def save(self, iteration):
         point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))
@@ -141,6 +153,13 @@ class Scene:
 
             if self.gaussians.non_rigid_flag:
                 save_dict['non_rigid_deformer'] = self.gaussians.non_rigid_deformer.state_dict()
+                if (
+                    getattr(self.gaussians, "mapo_dynamic_score_enabled", False)
+                    and self.gaussians.non_rigid_deformer.mapo_dynamic_score is not None
+                ):
+                    save_dict['mapo_dynamic_score'] = (
+                        self.gaussians.non_rigid_deformer.mapo_dynamic_score.detach().cpu()
+                    )
             
             torch.save(save_dict, model_path)
 

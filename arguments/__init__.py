@@ -66,12 +66,65 @@ class ModelParams(ParamGroup):
         self.nonrigid_deltaxyzconds_flag = True
         self.non_rigid_mlp_depth = 3
         self.non_rigid_mlp_width = 512
+        self.dynomo_c_affinity_dim = 32
         self.seq_xyz_knn = 5
         self.time_step_num = 5
         self.seq_len = 8
         self.max_time_step = 6
         self.minimal_time_step = 2
         self.use_part_moe = False
+        self.part_label_robust = False
+        self.part_label_knn = 1
+        self.part_label_vote_temperature = 0.01
+        self.part_label_refresh_interval = 0
+        self.part_confidence_route = False
+        self.part_moe_conf_threshold = 0.5
+        self.use_dynomo_c = False
+        self.use_mapo_all_dynamic = False
+        self.mapo_max_partition_level = 2
+        self.mapo_partition_level1_iter = 5000
+        self.mapo_partition_level2_iter = 10000
+        self.mapo_partition_level3_iter = 15000
+        self.mapo_num_frames = 100
+        self.mapo_soft_routing = False
+        self.mapo_soft_blend_width = 4.0
+        self.mapo_shared_trunk = False
+        self.mapo_partial_sharing = False
+        self.use_temporal_conditioned_part_moe = False
+        self.temporal_conditioned_part_fusion_mode = "replace"
+        self.temporal_conditioned_part_conf_threshold = 0.5
+        self.temporal_conditioned_part_max_mix = 0.75
+        self.mapo_residual_alpha = 1.0
+        self.mapo_dynamic_score_enabled = False
+        self.mapo_dynamic_score_momentum = 0.95
+        self.mapo_dynamic_score_alpha = 0.5
+        self.use_motion_temporal_temperature = False
+        self.motion_temperature_min = 0.50
+        self.motion_temperature_max = 1.50
+        self.motion_velocity_weight = 0.50
+        self.motion_acceleration_weight = 0.50
+        self.use_vggt_garment = False
+        self.vggt_candidate_path = ""
+        self.vggt_candidate_path_template = ""
+        self.vggt_target_points_file = ""
+        self.vggt_target_points = 0
+        self.vggt_garment_start_iter = 800
+        self.vggt_garment_end_iter = 1500
+        self.vggt_garment_interval = 100
+        self.vggt_garment_max_spawn = 512
+        self.vggt_garment_repeat = True
+        self.vggt_candidate_opacity = 0.04
+        self.vggt_candidate_scale_ratio = 0.65
+        self.vggt_candidate_min_distance = 0.004
+        self.vggt_max_points = 120000
+        self.vggt_replace_opacity_w = 1.0
+        self.vggt_replace_gradient_w = 0.25
+        self.vggt_replace_visibility_w = 0.10
+        self.vggt_min_keep = 1024
+        self.vggt_strict_budget = False
+        self.vggt_high_error_enabled = False
+        self.vggt_high_error_quantile = 0.75
+        self.vggt_high_error_candidate_w = 1.0
         self.use_tri = False
         self.use_tri_part = False
         self.use_tri_gate = False
@@ -255,11 +308,54 @@ class ModelParams(ParamGroup):
         self.part_label_path = ""
         self.smpl_vertex_seg_path = ""
         self.part_log_dir = ""
+        self.dynomo_c_label_iter = 0
+        if self.use_dynomo_c and (
+            self.use_part_moe or self.use_tri or self.use_tri_token or self.use_time or self.use_part_budget or self.use_mapo_all_dynamic
+        ):
+            raise ValueError(
+                "[DYNOMO_C] dynomo_c is an original-baseline ablation; "
+                "do not combine it with part_moe/tri/tri_token/time/part_budget."
+            )
+        if self.use_mapo_all_dynamic and (
+            self.use_part_moe or self.use_tri or self.use_tri_token or self.use_time or
+            self.use_point or self.use_point_anchor or self.use_point_anchor_tb or
+            self.use_point_update or self.use_point_cloth_budget or self.use_point_depth or
+            self.use_vggt_garment or self.use_part_budget or self.use_dynomo_c
+        ) and not (
+            self.use_temporal_conditioned_part_moe
+            and self.use_part_moe
+            and not (self.use_tri or self.use_tri_token or self.use_time or self.use_point or
+                     self.use_point_anchor or self.use_point_anchor_tb or self.use_point_update or
+                     self.use_point_cloth_budget or self.use_point_depth or self.use_vggt_garment or
+                     self.use_part_budget or self.use_dynomo_c)
+        ):
+            raise ValueError(
+                "[MAPO_ALL_DYNAMIC] is an original-baseline ablation; "
+                "do not combine it with another ablation."
+            )
+        if self.use_temporal_conditioned_part_moe and not (self.use_mapo_all_dynamic and self.use_part_moe):
+            raise ValueError(
+                "[TEMPORAL_CONDITIONED_PART] requires both --use_mapo_all_dynamic and --use_part_moe."
+            )
+        if self.use_mapo_all_dynamic and int(self.mapo_max_partition_level) not in (1, 2, 3):
+            raise ValueError("[MAPO_ALL_DYNAMIC] mapo_max_partition_level must be 1, 2, or 3.")
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
         g = super().extract(args)
         g.source_path = os.path.abspath(g.source_path)
+        if getattr(g, "use_vggt_garment", False) and (
+            getattr(g, "use_part_moe", False) or getattr(g, "use_tri", False) or
+            getattr(g, "use_tri_token", False) or getattr(g, "use_time", False) or
+            getattr(g, "use_point", False) or getattr(g, "use_point_anchor", False) or
+            getattr(g, "use_point_anchor_tb", False) or getattr(g, "use_point_update", False) or
+            getattr(g, "use_point_cloth_budget", False) or getattr(g, "use_point_depth", False) or
+            getattr(g, "use_dynomo_c", False) or getattr(g, "use_part_budget", False)
+        ):
+            raise ValueError(
+                "[VGGT_GARMENT] is an original-baseline ablation; "
+                "do not combine it with another ablation."
+            )
         return g
 
 class PipelineParams(ParamGroup):
@@ -289,7 +385,7 @@ class OptimizationParams(ParamGroup):
         self.densification_interval = 100
         self.opacity_reset_interval = 3000
         self.densify_from_iter = 400 #500
-        self.densify_until_iter = 1500 #15_000
+        self.densify_until_iter = 1800
         self.densify_grad_threshold = 0.0002
         self.mlp_lr_ratio = 0.1
 
@@ -298,6 +394,12 @@ class OptimizationParams(ParamGroup):
         self.ssim_loss_w = 0.1
         self.iospos_w = 1.0
         self.ioscov_w = 100.0
+        self.dynomo_c_knn = 5
+        self.dynomo_c_part_same_w = 1.0
+        self.dynomo_c_part_adj_w = 0.1
+        self.dynomo_c_part_other_w = 0.0
+        self.dynomo_c_motion_w = 0.01
+        self.dynomo_c_rotation_w = 0.01
         super().__init__(parser, "Optimization Parameters")
 
 def get_combined_args(parser : ArgumentParser):

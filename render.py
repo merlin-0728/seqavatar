@@ -126,6 +126,21 @@ def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParam
     with torch.no_grad():
         gaussians = GaussianModel(dataset.sh_degree, dataset.smpl_type, dataset.motion_offset_flag, dataset.actor_gender, dataset)
         scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
+        if getattr(dataset, "use_mapo_all_dynamic", False):
+            gaussians.non_rigid_deformer.mapo_set_training_level(
+                getattr(dataset, "mapo_max_partition_level", 0)
+            )
+            print(
+                "[MAPO_ALL_DYNAMIC] render configured: "
+                f"level={gaussians.non_rigid_deformer.mapo_active_level} "
+                f"branches={1 << gaussians.non_rigid_deformer.mapo_active_level}"
+            )
+        if getattr(dataset, "use_temporal_conditioned_part_moe", False):
+            gaussians.init_temporal_conditioned_part_moe()
+            print(
+                "[TEMPORAL_CONDITIONED_PART] render activation enabled; "
+                "using temporal-conditioned Part predictors."
+            )
         if getattr(dataset, "use_part_moe", False):
             gaussians.part_moe_alpha = max(0.0, min(1.0, 1.0 - float(getattr(dataset, "part_moe_global_keep", 0.1))))
         if getattr(dataset, "use_part_budget", False):
@@ -142,6 +157,20 @@ def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParam
             if dataset.part_label_path:
                 candidate_paths.append(dataset.part_label_path)
             candidate_paths.append(current_part_label_path)
+            part_labels_root = os.path.join(dataset.model_path, "part_labels")
+            refreshed_label_dirs = []
+            if os.path.isdir(part_labels_root):
+                for name in os.listdir(part_labels_root):
+                    if not name.startswith("iteration_"):
+                        continue
+                    try:
+                        refreshed_label_dirs.append((int(name.split("_")[-1]), name))
+                    except ValueError:
+                        continue
+                for _, name in sorted(refreshed_label_dirs, reverse=True):
+                    candidate_paths.append(
+                        os.path.join(part_labels_root, name, "gaussian_part_label.npy")
+                    )
             part_iter = getattr(dataset, "part_moe_start_iter", 15000)
             candidate_paths.append(
                 os.path.join(

@@ -122,7 +122,7 @@ SKIP_COMPLETED=${SKIP_COMPLETED:-0}
 
 # ================= 训练参数 =================
 iter=${ITERATIONS:-3000}
-base_densify_until_iter=${DENSIFY_UNTIL_ITER:-1200}
+base_densify_until_iter=${DENSIFY_UNTIL_ITER:-1800}
 
 seq_len=${SEQ_LEN:-3}
 seq_xyz_knn=${SEQ_XYZ_KNN:-6}

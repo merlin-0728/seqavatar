@@ -5,6 +5,7 @@ set -euo pipefail
 #   bash scripts/exps_dnarendering.sh
 #   bash scripts/exps_dnarendering.sh original
 #   bash scripts/exps_dnarendering.sh part_moe_leg
+#   bash scripts/exps_dnarendering.sh part_moe_leg_robust
 #   bash scripts/exps_dnarendering.sh part_budget
 #   bash scripts/exps_dnarendering.sh part_budget_v2
 #   bash scripts/exps_dnarendering.sh part_budget_sup
@@ -26,10 +27,24 @@ set -euo pipefail
 #   bash scripts/exps_dnarendering.sh point_anchor
 #   bash scripts/exps_dnarendering.sh point_anchor_tb
 #   bash scripts/exps_dnarendering.sh point_tem
+#   bash scripts/exps_dnarendering.sh dynomo_c
 #   bash scripts/exps_dnarendering.sh point_depth
 #   bash scripts/exps_dnarendering.sh point_cloth_boundary
 #   bash scripts/exps_dnarendering.sh point_cloth_boundary_hf
 #   bash scripts/exps_dnarendering.sh point_cloth_budget
+#   bash scripts/exps_dnarendering.sh mapo_all_dynamic_l1
+#   bash scripts/exps_dnarendering.sh mapo_all_dynamic_l2
+#   bash scripts/exps_dnarendering.sh mapo_all_dynamic_l2_soft
+#   bash scripts/exps_dnarendering.sh mapo_all_dynamic_l2_wide
+#   bash scripts/exps_dnarendering.sh mapo_all_dynamic_l2_residual
+#   bash scripts/exps_dnarendering.sh mapo_all_dynamic_l2_partial
+#   bash scripts/exps_dnarendering.sh mapo_all_dynamic_l2_residual_dynamic
+#   bash scripts/exps_dnarendering.sh part_time
+#   bash scripts/exps_dnarendering.sh part_time_moe
+#   bash scripts/exps_dnarendering.sh mapo_single_mlp_partial_match
+#   bash scripts/exps_dnarendering.sh motion_temporal_temperature
+#   bash scripts/exps_dnarendering.sh motion_temporal_temperature_velocity
+#   bash scripts/exps_dnarendering.sh motion_temporal_temperature_acceleration
 #
 # 常用覆盖方式：
 #   GPU_id=3 bash scripts/exps_dnarendering.sh part_moe_leg
@@ -54,6 +69,7 @@ set -euo pipefail
 #   GPU_id=3 bash scripts/exps_dnarendering.sh point_anchor
 #   GPU_id=3 bash scripts/exps_dnarendering.sh point_anchor_tb
 #   GPU_id=3 bash scripts/exps_dnarendering.sh point_depth
+#   GPU_id=3 bash scripts/exps_dnarendering.sh vggt_garment
 #   SEQUENCES_OVERRIDE="0007_04 0019_10" GPU_id=3 bash scripts/exps_dnarendering.sh part_moe_leg
 #   TRI_PLANE_DIM=32 TRI_PLANE_RES=64 TRI_PLANE_EXTENT=1.0 GPU_id=3 bash scripts/exps_dnarendering.sh tri
 #
@@ -85,6 +101,23 @@ token_tri_fusion_mode=concat
 token_tri_fusion_hidden_dim=${TOKEN_TRI_FUSION_HIDDEN_DIM:-128}
 part_budget_enabled=0
 part_budget_mode=base
+dynomo_c_enabled=0
+vggt_garment_enabled=0
+vggt_strict_budget_enabled=0
+vggt_high_error_enabled=0
+mapo_all_dynamic_enabled=0
+mapo_l2_wide_enabled=0
+single_mlp_partial_match_enabled=0
+mapo_partial_sharing_enabled=0
+temporal_conditioned_part_enabled=0
+temporal_conditioned_part_fusion_mode=replace
+temporal_conditioned_part_conf_threshold=${TEMPORAL_CONDITIONED_PART_CONF_THRESHOLD:-0.5}
+temporal_conditioned_part_max_mix=${TEMPORAL_CONDITIONED_PART_MAX_MIX:-0.75}
+part_label_robust_enabled=0
+part_confidence_route_enabled=0
+mapo_max_partition_level=2
+motion_temperature_enabled=0
+motion_temperature_variant=none
 case "$MODE" in
     original)
         experiment_name=original
@@ -125,6 +158,205 @@ case "$MODE" in
         part_moe_enabled=0
         point_anchor_tb_enabled=1
         final_eval_only=0
+        ;;
+    dynomo_c)
+        experiment_name=dynomo_c
+        part_moe_enabled=0
+        dynomo_c_enabled=1
+        final_eval_only=0
+        ;;
+    vggt_garment)
+        experiment_name=vggt_garment
+        part_moe_enabled=0
+        vggt_garment_enabled=1
+        final_eval_only=0
+        ;;
+    vggt_garment_strict)
+        experiment_name=vggt_garment_strict
+        part_moe_enabled=0
+        vggt_garment_enabled=1
+        vggt_strict_budget_enabled=1
+        final_eval_only=1
+        ;;
+    vggt_garment_strict_high_error)
+        experiment_name=vggt_garment_strict_high_error
+        part_moe_enabled=0
+        vggt_garment_enabled=1
+        vggt_strict_budget_enabled=1
+        vggt_high_error_enabled=1
+        final_eval_only=1
+        ;;
+    mapo_all_dynamic_l1)
+        experiment_name=mapo_all_dynamic_l1
+        part_moe_enabled=0
+        mapo_all_dynamic_enabled=1
+        mapo_max_partition_level=1
+        final_eval_only=1
+        ;;
+    mapo_all_dynamic_l2)
+        experiment_name=mapo_all_dynamic_l2
+        part_moe_enabled=0
+        mapo_all_dynamic_enabled=1
+        mapo_max_partition_level=2
+        final_eval_only=1
+        ;;
+    mapo_all_dynamic_l2_soft)
+        experiment_name=mapo_all_dynamic_l2_soft
+        part_moe_enabled=0
+        mapo_all_dynamic_enabled=1
+        mapo_max_partition_level=2
+        mapo_soft_routing_enabled=1
+        final_eval_only=1
+        ;;
+    mapo_all_dynamic_l2_partial)
+        experiment_name=mapo_all_dynamic_l2_partial
+        part_moe_enabled=0
+        mapo_all_dynamic_enabled=1
+        mapo_max_partition_level=2
+        mapo_soft_routing_enabled=1
+        mapo_partial_sharing_enabled=1
+        final_eval_only=1
+        ;;
+    mapo_temporal_conditioned_part)
+        experiment_name=mapo_temporal_conditioned_part
+        part_moe_enabled=1
+        part_label_schema=part_moe_leg
+        num_parts=7
+        mapo_all_dynamic_enabled=1
+        mapo_max_partition_level=2
+        mapo_soft_routing_enabled=1
+        mapo_partial_sharing_enabled=1
+        temporal_conditioned_part_enabled=1
+        final_eval_only=1
+        ;;
+    mapo_temporal_conditioned_part_confidence)
+        experiment_name=mapo_temporal_conditioned_part_confidence
+        part_moe_enabled=1
+        part_label_schema=part_moe_leg
+        num_parts=7
+        mapo_all_dynamic_enabled=1
+        mapo_max_partition_level=2
+        mapo_soft_routing_enabled=1
+        mapo_partial_sharing_enabled=1
+        temporal_conditioned_part_enabled=1
+        temporal_conditioned_part_fusion_mode=confidence
+        final_eval_only=1
+        ;;
+    mapo_temporal_conditioned_part_full_confidence)
+        experiment_name=mapo_temporal_conditioned_part_full_confidence
+        part_moe_enabled=1
+        part_label_schema=part_moe_leg
+        num_parts=7
+        mapo_all_dynamic_enabled=1
+        mapo_max_partition_level=2
+        mapo_soft_routing_enabled=1
+        mapo_partial_sharing_enabled=0
+        temporal_conditioned_part_enabled=1
+        temporal_conditioned_part_fusion_mode=confidence
+        part_label_robust_enabled=1
+        part_confidence_route_enabled=1
+        final_eval_only=1
+        ;;
+    part_time)
+        experiment_name=part_time
+        part_moe_enabled=1
+        part_label_schema=part_moe_leg
+        num_parts=7
+        mapo_all_dynamic_enabled=1
+        mapo_max_partition_level=2
+        mapo_soft_routing_enabled=1
+        mapo_partial_sharing_enabled=0
+        temporal_conditioned_part_enabled=1
+        temporal_conditioned_part_fusion_mode=confidence
+        part_label_robust_enabled=1
+        part_confidence_route_enabled=1
+        final_eval_only=1
+        ;;
+    part_time_moe)
+        experiment_name=part_time_moe
+        part_moe_enabled=1
+        part_label_schema=part_moe_leg
+        num_parts=7
+        mapo_all_dynamic_enabled=1
+        mapo_max_partition_level=2
+        mapo_soft_routing_enabled=1
+        mapo_partial_sharing_enabled=0
+        temporal_conditioned_part_enabled=1
+        temporal_conditioned_part_fusion_mode=replace
+        part_label_robust_enabled=0
+        part_confidence_route_enabled=0
+        final_eval_only=1
+        ;;
+    motion_temporal_temperature)
+        experiment_name=motion_temporal_temperature
+        part_moe_enabled=0
+        mapo_all_dynamic_enabled=1
+        mapo_max_partition_level=2
+        mapo_soft_routing_enabled=1
+        motion_temperature_enabled=1
+        motion_temperature_variant=both
+        final_eval_only=1
+        ;;
+    motion_temporal_temperature_velocity)
+        experiment_name=motion_temporal_temperature_velocity
+        part_moe_enabled=0
+        mapo_all_dynamic_enabled=1
+        mapo_max_partition_level=2
+        mapo_soft_routing_enabled=1
+        motion_temperature_enabled=1
+        motion_temperature_variant=velocity
+        final_eval_only=1
+        ;;
+    motion_temporal_temperature_acceleration)
+        experiment_name=motion_temporal_temperature_acceleration
+        part_moe_enabled=0
+        mapo_all_dynamic_enabled=1
+        mapo_max_partition_level=2
+        mapo_soft_routing_enabled=1
+        motion_temperature_enabled=1
+        motion_temperature_variant=acceleration
+        final_eval_only=1
+        ;;
+    motion_temporal_temperature_both)
+        experiment_name=motion_temporal_temperature_both
+        part_moe_enabled=0
+        mapo_all_dynamic_enabled=1
+        mapo_max_partition_level=2
+        mapo_soft_routing_enabled=1
+        motion_temperature_enabled=1
+        motion_temperature_variant=both
+        final_eval_only=1
+        ;;
+    mapo_all_dynamic_l2_wide)
+        experiment_name=mapo_all_dynamic_l2_wide
+        part_moe_enabled=0
+        mapo_l2_wide_enabled=1
+        final_eval_only=1
+        ;;
+    mapo_single_mlp_partial_match)
+        experiment_name=mapo_single_mlp_partial_match
+        part_moe_enabled=0
+        single_mlp_partial_match_enabled=1
+        final_eval_only=1
+        ;;
+    mapo_all_dynamic_l2_residual)
+        experiment_name=mapo_all_dynamic_l2_residual
+        part_moe_enabled=0
+        mapo_all_dynamic_enabled=1
+        mapo_max_partition_level=2
+        mapo_shared_trunk_enabled=1
+        mapo_soft_routing_enabled=1
+        final_eval_only=1
+        ;;
+    mapo_all_dynamic_l2_residual_dynamic)
+        experiment_name=mapo_all_dynamic_l2_residual_dynamic
+        part_moe_enabled=0
+        mapo_all_dynamic_enabled=1
+        mapo_max_partition_level=2
+        mapo_shared_trunk_enabled=1
+        mapo_soft_routing_enabled=1
+        mapo_dynamic_score_enabled=1
+        final_eval_only=1
         ;;
     part_point)
         experiment_name=part_point
@@ -217,6 +449,15 @@ case "$MODE" in
         part_moe_enabled=1
         part_label_schema=part_moe_leg
         num_parts=7
+        final_eval_only=1
+        ;;
+    part_moe_leg_robust)
+        experiment_name=part_moe_leg_robust
+        part_moe_enabled=1
+        part_label_schema=part_moe_leg
+        num_parts=7
+        part_label_robust_enabled=1
+        part_confidence_route_enabled=1
         final_eval_only=1
         ;;
     part_moe_leg_unknown_route)
@@ -418,7 +659,7 @@ case "$MODE" in
         ;;
     *)
         echo "[ERROR] Unknown mode: $MODE"
-        echo "        Supported modes: original, time, point, point_anchor, point_anchor_tb, point_tem, point_tem_mul, point_update, point_update_soft, point_update_perf, point_update_edge, point_update_nonrigid, point_cloth_boundary, point_cloth_boundary_hf, point_cloth_budget, point_depth, part_moe_leg, part_moe_leg_unknown_route, part_moe_leg_unknown_route_strong, part_point, part_budget, part_budget_v2, part_budget_sup, part_budget_route, part_budget_full, tri, tri_part, tri_gate, tri_token, tri_token_residual, tri_token_route, tri_token_part_fusion, tri_token_part_fusion_spatial, tri_token_route_nopart, tri_token_route_hard, tri_token_route_output, tri_token_route_boundary"
+        echo "        Supported modes include original, part_moe_leg, mapo_all_dynamic_l2_soft, mapo_temporal_conditioned_part, mapo_temporal_conditioned_part_confidence, mapo_temporal_conditioned_part_full_confidence, and existing ablations"
         exit 1
         ;;
 esac
@@ -475,10 +716,8 @@ image_data_device=${IMAGE_DATA_DEVICE:-cuda}
 
 # ================= 训练参数 =================
 iter=${ITERATIONS:-25000}
-densify_until_iter=${DENSIFY_UNTIL_ITER:-1500}
-if { [ "$point_anchor_enabled" = "1" ] || [ "$point_anchor_tb_enabled" = "1" ] || [ "$point_cloth_budget_enabled" = "1" ] || [ "$point_depth_enabled" = "1" ]; } && [ -z "${DENSIFY_UNTIL_ITER:-}" ]; then
-    densify_until_iter=1801
-fi
+densify_until_iter=${DENSIFY_UNTIL_ITER:-1800}
+seed=${SEED:-0}
 
 seq_len=8
 seq_xyz_knn=8
@@ -487,6 +726,22 @@ max_time_step=3
 minimal_time_step=1
 non_rigid_mlp_depth=${NON_RIGID_MLP_DEPTH:-3}
 non_rigid_mlp_width=${NON_RIGID_MLP_WIDTH:-512}
+if [ "$mapo_l2_wide_enabled" = "1" ]; then
+    if [ -n "${NON_RIGID_MLP_WIDTH:-}" ] && [ "$NON_RIGID_MLP_WIDTH" != "1078" ]; then
+        echo "[ERROR] mapo_all_dynamic_l2_wide requires NON_RIGID_MLP_WIDTH=1078 for parameter matching."
+        exit 1
+    fi
+    # Matches the full l2 four-branch deformation predictor within 0.075%.
+    non_rigid_mlp_width=1078
+fi
+if [ "$single_mlp_partial_match_enabled" = "1" ]; then
+    if [ -n "${NON_RIGID_MLP_WIDTH:-}" ] && [ "$NON_RIGID_MLP_WIDTH" != "794" ]; then
+        echo "[ERROR] mapo_single_mlp_partial_match requires NON_RIGID_MLP_WIDTH=794 for parameter matching."
+        exit 1
+    fi
+    # Matches partial-sharing within 222 NonrigidDeformer parameters.
+    non_rigid_mlp_width=794
+fi
 
 l1_loss_w=1.0
 ssim_loss_w=0.01
@@ -496,6 +751,10 @@ lpips_loss_w=0.01
 part_moe_start_iter=10000
 part_moe_warmup=1000
 part_moe_global_keep=0.1
+part_label_knn=${PART_LABEL_KNN:-8}
+part_label_vote_temperature=${PART_LABEL_VOTE_TEMPERATURE:-0.01}
+part_label_refresh_interval=${PART_LABEL_REFRESH_INTERVAL:-5000}
+part_moe_conf_threshold=${PART_MOE_CONF_THRESHOLD:-0.5}
 tri_plane_dim=${TRI_PLANE_DIM:-32}
 tri_plane_res=${TRI_PLANE_RES:-64}
 tri_plane_extent=${TRI_PLANE_EXTENT:-1.0}
@@ -652,6 +911,56 @@ point_depth_fixed_budget=${POINT_DEPTH_FIXED_BUDGET:-1}
 point_depth_replace_opacity_w=${POINT_DEPTH_REPLACE_OPACITY_W:-1.0}
 point_depth_replace_gradient_w=${POINT_DEPTH_REPLACE_GRADIENT_W:-0.25}
 point_depth_replace_visibility_w=${POINT_DEPTH_REPLACE_VISIBILITY_W:-0.10}
+dynomo_c_label_iter=${DYNOMO_C_LABEL_ITER:-0}
+dynomo_c_affinity_dim=${DYNOMO_C_AFFINITY_DIM:-32}
+dynomo_c_knn=${DYNOMO_C_KNN:-5}
+dynomo_c_part_same_w=${DYNOMO_C_PART_SAME_W:-1.0}
+dynomo_c_part_adj_w=${DYNOMO_C_PART_ADJ_W:-0.1}
+dynomo_c_part_other_w=${DYNOMO_C_PART_OTHER_W:-0.0}
+dynomo_c_motion_w=${DYNOMO_C_MOTION_W:-0.01}
+dynomo_c_rotation_w=${DYNOMO_C_ROTATION_W:-0.01}
+vggt_candidate_path=${VGGT_CANDIDATE_PATH:-}
+vggt_target_points_file=${VGGT_TARGET_POINTS_FILE:-}
+vggt_garment_start_iter=${VGGT_GARMENT_START_ITER:-800}
+vggt_garment_end_iter=${VGGT_GARMENT_END_ITER:-1500}
+vggt_garment_interval=${VGGT_GARMENT_INTERVAL:-100}
+vggt_garment_max_spawn=${VGGT_GARMENT_MAX_SPAWN:-512}
+vggt_candidate_opacity=${VGGT_CANDIDATE_OPACITY:-0.04}
+vggt_candidate_scale_ratio=${VGGT_CANDIDATE_SCALE_RATIO:-0.65}
+vggt_candidate_min_distance=${VGGT_CANDIDATE_MIN_DISTANCE:-0.004}
+vggt_max_points=${VGGT_MAX_POINTS:-120000}
+vggt_replace_opacity_w=${VGGT_REPLACE_OPACITY_W:-1.0}
+vggt_replace_gradient_w=${VGGT_REPLACE_GRADIENT_W:-0.25}
+vggt_replace_visibility_w=${VGGT_REPLACE_VISIBILITY_W:-0.10}
+vggt_min_keep=${VGGT_MIN_KEEP:-1024}
+vggt_high_error_quantile=${VGGT_HIGH_ERROR_QUANTILE:-0.75}
+vggt_high_error_candidate_w=${VGGT_HIGH_ERROR_CANDIDATE_W:-1.0}
+mapo_partition_level1_iter=${MAPO_PARTITION_LEVEL1_ITER:-5000}
+mapo_partition_level2_iter=${MAPO_PARTITION_LEVEL2_ITER:-10000}
+mapo_partition_level3_iter=${MAPO_PARTITION_LEVEL3_ITER:-15000}
+mapo_num_frames=${MAPO_NUM_FRAMES:-100}
+mapo_soft_blend_width=${MAPO_SOFT_BLEND_WIDTH:-4.0}
+mapo_soft_routing_enabled=${mapo_soft_routing_enabled:-0}
+mapo_shared_trunk_enabled=${mapo_shared_trunk_enabled:-0}
+mapo_partial_sharing_enabled=${mapo_partial_sharing_enabled:-0}
+mapo_residual_alpha=${MAPO_RESIDUAL_ALPHA:-1.0}
+mapo_dynamic_score_enabled=${mapo_dynamic_score_enabled:-0}
+mapo_dynamic_score_momentum=${MAPO_DYNAMIC_SCORE_MOMENTUM:-0.95}
+mapo_dynamic_score_alpha=${MAPO_DYNAMIC_SCORE_ALPHA:-0.5}
+motion_temperature_min=${MOTION_TEMPERATURE_MIN:-0.50}
+motion_temperature_max=${MOTION_TEMPERATURE_MAX:-1.50}
+motion_velocity_weight=${MOTION_VELOCITY_WEIGHT:-0.50}
+motion_acceleration_weight=${MOTION_ACCELERATION_WEIGHT:-0.50}
+if [ "$motion_temperature_variant" = "velocity" ]; then
+    motion_velocity_weight=1.0
+    motion_acceleration_weight=0.0
+elif [ "$motion_temperature_variant" = "acceleration" ]; then
+    motion_velocity_weight=0.0
+    motion_acceleration_weight=1.0
+elif [ "$motion_temperature_variant" = "both" ]; then
+    motion_velocity_weight=0.5
+    motion_acceleration_weight=0.5
+fi
 
 if [ "$part_budget_enabled" = "1" ]; then
     if [ -z "${SKIP_LOAD_TEST_CAMERAS:-}" ]; then
@@ -720,6 +1029,11 @@ fi
 
 test_iterations=(3000 "$part_moe_start_iter" "$iter")
 save_iterations=(3000 "$part_moe_start_iter" "$iter")
+if [ "$MODE" = "original" ]; then
+    # Match the reference DNA script's train.py default evaluation schedule.
+    test_iterations=(3000 15000 "$iter")
+    save_iterations=(3000 15000 "$iter")
+fi
 if [ "$final_eval_only" = "1" ]; then
     # part_moe_leg on DNA is memory tight during intermediate full-set eval.
     # Keep label activation at part_moe_start_iter, but only evaluate/save final outputs.
@@ -753,6 +1067,18 @@ elif [ "$point_cloth_budget_enabled" = "1" ]; then
     GLOBAL_LOG_FILE="$GLOBAL_LOG_DIR/${log_tag}.log"
 elif [ "$point_depth_enabled" = "1" ]; then
     GLOBAL_LOG_DIR="$POINT_DEPTH_LOG_DIR"
+    GLOBAL_LOG_FILE="$GLOBAL_LOG_DIR/${log_tag}.log"
+elif [ "$dynomo_c_enabled" = "1" ]; then
+    GLOBAL_LOG_DIR="$REPO_ROOT/logs/dynomo_c"
+    GLOBAL_LOG_FILE="$GLOBAL_LOG_DIR/${log_tag}.log"
+elif [ "$mapo_l2_wide_enabled" = "1" ]; then
+    GLOBAL_LOG_DIR="$REPO_ROOT/logs/mapo_all_dynamic_l2_wide"
+    GLOBAL_LOG_FILE="$GLOBAL_LOG_DIR/${log_tag}.log"
+elif [ "$single_mlp_partial_match_enabled" = "1" ]; then
+    GLOBAL_LOG_DIR="$REPO_ROOT/logs/mapo_single_mlp_partial_match"
+    GLOBAL_LOG_FILE="$GLOBAL_LOG_DIR/${log_tag}.log"
+elif [ "$mapo_all_dynamic_enabled" = "1" ]; then
+    GLOBAL_LOG_DIR="$REPO_ROOT/logs/mapo_all_dynamic"
     GLOBAL_LOG_FILE="$GLOBAL_LOG_DIR/${log_tag}.log"
 elif [ "$part_score_route_enabled" = "1" ]; then
     GLOBAL_LOG_DIR="$PART_SCORE_ROUTE_LOG_DIR"
@@ -792,6 +1118,14 @@ elif [ "$point_cloth_budget_enabled" = "1" ]; then
     AUTO_PART_LOG_DIR="$POINT_CLOTH_LOG_DIR/.auto_${RUN_TIME}_gpu${GPU_id}_${experiment_name}"
 elif [ "$point_depth_enabled" = "1" ]; then
     AUTO_PART_LOG_DIR="$POINT_DEPTH_LOG_DIR/.auto_${RUN_TIME}_gpu${GPU_id}_${experiment_name}"
+elif [ "$dynomo_c_enabled" = "1" ]; then
+    AUTO_PART_LOG_DIR="$REPO_ROOT/logs/dynomo_c/.auto_${RUN_TIME}_gpu${GPU_id}_${experiment_name}"
+elif [ "$mapo_l2_wide_enabled" = "1" ]; then
+    AUTO_PART_LOG_DIR="$REPO_ROOT/logs/mapo_all_dynamic_l2_wide/.auto_${RUN_TIME}_gpu${GPU_id}_${experiment_name}"
+elif [ "$single_mlp_partial_match_enabled" = "1" ]; then
+    AUTO_PART_LOG_DIR="$REPO_ROOT/logs/mapo_single_mlp_partial_match/.auto_${RUN_TIME}_gpu${GPU_id}_${experiment_name}"
+elif [ "$mapo_all_dynamic_enabled" = "1" ]; then
+    AUTO_PART_LOG_DIR="$REPO_ROOT/logs/mapo_all_dynamic/.auto_${RUN_TIME}_gpu${GPU_id}_${experiment_name}"
 elif [ "$part_score_route_enabled" = "1" ]; then
     AUTO_PART_LOG_DIR="$PART_SCORE_ROUTE_LOG_DIR/.auto_${RUN_TIME}_gpu${GPU_id}_${experiment_name}"
 elif [ "$point_enabled" = "1" ]; then
@@ -841,6 +1175,33 @@ echo "[INFO] POINT_CLOTH_BUDGET_ENABLED: $point_cloth_budget_enabled"
 echo "[INFO] POINT_CLOTH_LOG_DIR: $POINT_CLOTH_LOG_DIR"
 echo "[INFO] POINT_DEPTH_ENABLED: $point_depth_enabled"
 echo "[INFO] POINT_DEPTH_LOG_DIR: $POINT_DEPTH_LOG_DIR"
+echo "[INFO] DYNOMO_C_ENABLED: $dynomo_c_enabled"
+echo "[INFO] DYNOMO_C_LABEL_ITER: $dynomo_c_label_iter"
+echo "[INFO] DYNOMO_C_AFFINITY_DIM: $dynomo_c_affinity_dim"
+echo "[INFO] DYNOMO_C_KNN: $dynomo_c_knn"
+echo "[INFO] DYNOMO_C_PART_SAME_W: $dynomo_c_part_same_w"
+echo "[INFO] DYNOMO_C_PART_ADJ_W: $dynomo_c_part_adj_w"
+echo "[INFO] DYNOMO_C_PART_OTHER_W: $dynomo_c_part_other_w"
+echo "[INFO] DYNOMO_C_MOTION_W: $dynomo_c_motion_w"
+echo "[INFO] DYNOMO_C_ROTATION_W: $dynomo_c_rotation_w"
+echo "[INFO] MAPO_ALL_DYNAMIC_ENABLED: $mapo_all_dynamic_enabled"
+echo "[INFO] MAPO_L2_WIDE_ENABLED: $mapo_l2_wide_enabled"
+echo "[INFO] SINGLE_MLP_PARTIAL_MATCH_ENABLED: $single_mlp_partial_match_enabled"
+echo "[INFO] MAPO_MAX_PARTITION_LEVEL: $mapo_max_partition_level"
+echo "[INFO] MAPO_PARTITION_LEVEL1_ITER: $mapo_partition_level1_iter"
+echo "[INFO] MAPO_PARTITION_LEVEL2_ITER: $mapo_partition_level2_iter"
+echo "[INFO] MAPO_PARTITION_LEVEL3_ITER: $mapo_partition_level3_iter"
+echo "[INFO] MAPO_NUM_FRAMES: $mapo_num_frames"
+echo "[INFO] MAPO_SOFT_ROUTING: $mapo_soft_routing_enabled"
+echo "[INFO] MAPO_SOFT_BLEND_WIDTH: $mapo_soft_blend_width"
+echo "[INFO] MAPO_SHARED_TRUNK: $mapo_shared_trunk_enabled"
+echo "[INFO] MAPO_PARTIAL_SHARING: $mapo_partial_sharing_enabled"
+echo "[INFO] MAPO_RESIDUAL_ALPHA: $mapo_residual_alpha"
+echo "[INFO] MAPO_DYNAMIC_SCORE: $mapo_dynamic_score_enabled"
+echo "[INFO] MOTION_TEMPERATURE_ENABLED: $motion_temperature_enabled"
+echo "[INFO] MOTION_TEMPERATURE_MIN/MAX: $motion_temperature_min / $motion_temperature_max"
+echo "[INFO] MOTION_VELOCITY_WEIGHT: $motion_velocity_weight"
+echo "[INFO] MOTION_ACCELERATION_WEIGHT: $motion_acceleration_weight"
 echo "[INFO] POINT_PATCH_SIZE: $point_patch_size"
 echo "[INFO] POINT_START_ITER: $point_start_iter"
 echo "[INFO] POINT_INTERVAL: $point_interval"
@@ -1005,6 +1366,14 @@ echo "[INFO] NON_RIGID_MLP_WIDTH: $non_rigid_mlp_width"
 echo "[INFO] FINAL_EVAL_ONLY: $final_eval_only"
 echo "[INFO] SKIP_LOAD_TEST_CAMERAS: $skip_load_test_cameras"
 echo "[INFO] IMAGE_DATA_DEVICE: $image_data_device"
+echo "[INFO] DENSIFY_UNTIL_ITER: $densify_until_iter"
+echo "[INFO] SEED: $seed"
+echo "[INFO] VGGT_GARMENT_ENABLED: $vggt_garment_enabled"
+echo "[INFO] VGGT_CANDIDATE_PATH: $vggt_candidate_path"
+echo "[INFO] VGGT_TARGET_POINTS_FILE: $vggt_target_points_file"
+echo "[INFO] VGGT_STRICT_BUDGET: $vggt_strict_budget_enabled"
+echo "[INFO] VGGT_HIGH_ERROR: $vggt_high_error_enabled"
+echo "[INFO] VGGT_HIGH_ERROR_QUANTILE: $vggt_high_error_quantile"
 echo "[INFO] TEST_ITERATIONS: ${test_iterations[*]}"
 echo "[INFO] SAVE_ITERATIONS: ${save_iterations[*]}"
 echo "[INFO] Sequences: ${SEQUENCES[*]}"
@@ -1019,6 +1388,7 @@ COMMON_TRAIN_ARGS=(
     --actor_gender neutral
     --iterations "$iter"
     --densify_until_iter "$densify_until_iter"
+    --seed "$seed"
     --seq_len "$seq_len"
     --seq_xyz_knn "$seq_xyz_knn"
     --time_step_num "$time_step_num"
@@ -1207,6 +1577,35 @@ if [ "$point_depth_enabled" = "1" ]; then
     fi
 fi
 
+VGGT_GARMENT_ARGS=()
+if [ "$vggt_garment_enabled" = "1" ]; then
+    VGGT_GARMENT_ARGS=(
+        --use_vggt_garment
+        --vggt_candidate_path "$vggt_candidate_path"
+        --vggt_target_points_file "$vggt_target_points_file"
+        --vggt_garment_start_iter "$vggt_garment_start_iter"
+        --vggt_garment_end_iter "$vggt_garment_end_iter"
+        --vggt_garment_interval "$vggt_garment_interval"
+        --vggt_garment_max_spawn "$vggt_garment_max_spawn"
+        --vggt_candidate_opacity "$vggt_candidate_opacity"
+        --vggt_candidate_scale_ratio "$vggt_candidate_scale_ratio"
+        --vggt_candidate_min_distance "$vggt_candidate_min_distance"
+        --vggt_max_points "$vggt_max_points"
+        --vggt_replace_opacity_w "$vggt_replace_opacity_w"
+        --vggt_replace_gradient_w "$vggt_replace_gradient_w"
+        --vggt_replace_visibility_w "$vggt_replace_visibility_w"
+        --vggt_min_keep "$vggt_min_keep"
+        --vggt_high_error_quantile "$vggt_high_error_quantile"
+        --vggt_high_error_candidate_w "$vggt_high_error_candidate_w"
+    )
+    if [ "$vggt_strict_budget_enabled" = "1" ]; then
+        VGGT_GARMENT_ARGS+=(--vggt_strict_budget)
+    fi
+    if [ "$vggt_high_error_enabled" = "1" ]; then
+        VGGT_GARMENT_ARGS+=(--vggt_high_error_enabled)
+    fi
+fi
+
 PART_MOE_ARGS=()
 if [ "$part_moe_enabled" = "1" ]; then
     PART_MOE_ARGS=(
@@ -1214,10 +1613,20 @@ if [ "$part_moe_enabled" = "1" ]; then
         --part_moe_start_iter "$part_moe_start_iter"
         --part_moe_warmup "$part_moe_warmup"
         --part_moe_global_keep "$part_moe_global_keep"
+        --part_label_knn "$part_label_knn"
+        --part_label_vote_temperature "$part_label_vote_temperature"
+        --part_label_refresh_interval "$part_label_refresh_interval"
+        --part_moe_conf_threshold "$part_moe_conf_threshold"
         --num_parts "$num_parts"
         --part_label_schema "$part_label_schema"
         --part_log_dir "$AUTO_PART_LOG_DIR"
     )
+    if [ "$part_label_robust_enabled" = "1" ]; then
+        PART_MOE_ARGS+=(--part_label_robust)
+    fi
+    if [ "$part_confidence_route_enabled" = "1" ]; then
+        PART_MOE_ARGS+=(--part_confidence_route)
+    fi
     if [ "$part_point_enabled" = "1" ]; then
         PART_MOE_ARGS+=(--use_part_point)
     fi
@@ -1228,6 +1637,14 @@ if [ "$part_moe_enabled" = "1" ]; then
             --part_score_route_alpha "$part_score_route_alpha"
             --part_score_route_gate_bias "$part_score_route_gate_bias"
             --part_score_route_mode "$part_score_route_mode"
+        )
+    fi
+    if [ "$temporal_conditioned_part_enabled" = "1" ]; then
+        PART_MOE_ARGS+=(
+            --use_temporal_conditioned_part_moe
+            --temporal_conditioned_part_fusion_mode "$temporal_conditioned_part_fusion_mode"
+            --temporal_conditioned_part_conf_threshold "$temporal_conditioned_part_conf_threshold"
+            --temporal_conditioned_part_max_mix "$temporal_conditioned_part_max_mix"
         )
     fi
     if [ "$tri_enabled" = "1" ]; then
@@ -1259,7 +1676,7 @@ if [ "$part_moe_enabled" = "1" ]; then
             )
         fi
     fi
-    if [ "$part_budget_enabled" = "1" ]; then
+if [ "$part_budget_enabled" = "1" ]; then
         PART_MOE_ARGS+=(
             --use_part_budget
             --part_budget_alpha "$part_budget_alpha"
@@ -1307,6 +1724,60 @@ if [ "$tri_token_enabled" = "1" ]; then
         --token_tri_part_fusion_spatial_motion_mix "$token_tri_part_fusion_spatial_motion_mix"
         --token_tri_part_fusion_spatial_boundary_mix "$token_tri_part_fusion_spatial_boundary_mix"
         --token_tri_part_fusion_spatial_part_mix "$token_tri_part_fusion_spatial_part_mix"
+    )
+fi
+
+DYNOMO_C_ARGS=()
+if [ "$dynomo_c_enabled" = "1" ]; then
+    DYNOMO_C_ARGS=(
+        --use_dynomo_c
+        --dynomo_c_label_iter "$dynomo_c_label_iter"
+        --dynomo_c_affinity_dim "$dynomo_c_affinity_dim"
+        --dynomo_c_knn "$dynomo_c_knn"
+        --dynomo_c_part_same_w "$dynomo_c_part_same_w"
+        --dynomo_c_part_adj_w "$dynomo_c_part_adj_w"
+        --dynomo_c_part_other_w "$dynomo_c_part_other_w"
+        --dynomo_c_motion_w "$dynomo_c_motion_w"
+        --dynomo_c_rotation_w "$dynomo_c_rotation_w"
+    )
+fi
+
+MAPO_ARGS=()
+if [ "$mapo_all_dynamic_enabled" = "1" ]; then
+    MAPO_ARGS=(
+        --use_mapo_all_dynamic
+        --mapo_max_partition_level "$mapo_max_partition_level"
+        --mapo_partition_level1_iter "$mapo_partition_level1_iter"
+        --mapo_partition_level2_iter "$mapo_partition_level2_iter"
+        --mapo_partition_level3_iter "$mapo_partition_level3_iter"
+        --mapo_num_frames "$mapo_num_frames"
+        --mapo_soft_blend_width "$mapo_soft_blend_width"
+        --mapo_residual_alpha "$mapo_residual_alpha"
+        --mapo_dynamic_score_momentum "$mapo_dynamic_score_momentum"
+        --mapo_dynamic_score_alpha "$mapo_dynamic_score_alpha"
+    )
+    if [ "$mapo_soft_routing_enabled" = "1" ]; then
+        MAPO_ARGS+=(--mapo_soft_routing)
+    fi
+    if [ "$mapo_shared_trunk_enabled" = "1" ]; then
+        MAPO_ARGS+=(--mapo_shared_trunk)
+    fi
+    if [ "$mapo_partial_sharing_enabled" = "1" ]; then
+        MAPO_ARGS+=(--mapo_partial_sharing)
+    fi
+    if [ "$mapo_dynamic_score_enabled" = "1" ]; then
+        MAPO_ARGS+=(--mapo_dynamic_score_enabled)
+    fi
+fi
+
+MOTION_TEMPERATURE_ARGS=()
+if [ "$motion_temperature_enabled" = "1" ]; then
+    MOTION_TEMPERATURE_ARGS=(
+        --use_motion_temporal_temperature
+        --motion_temperature_min "$motion_temperature_min"
+        --motion_temperature_max "$motion_temperature_max"
+        --motion_velocity_weight "$motion_velocity_weight"
+        --motion_acceleration_weight "$motion_acceleration_weight"
     )
 fi
 
@@ -1362,6 +1833,10 @@ for SEQUENCE in "${SEQUENCES[@]}"; do
         "${POINT_ANCHOR_TB_ARGS[@]}" \
         "${POINT_CLOTH_ARGS[@]}" \
         "${POINT_DEPTH_ARGS[@]}" \
+        "${VGGT_GARMENT_ARGS[@]}" \
+        "${DYNOMO_C_ARGS[@]}" \
+        "${MAPO_ARGS[@]}" \
+        "${MOTION_TEMPERATURE_ARGS[@]}" \
         "${PART_MOE_ARGS[@]}" \
         "${TRI_TOKEN_ARGS[@]}" \
         2>&1 | tee "$model_path/logs/train_${SEQUENCE}_${experiment_name}.log"
@@ -1380,6 +1855,8 @@ for SEQUENCE in "${SEQUENCES[@]}"; do
         "${POINT_ANCHOR_TB_ARGS[@]}" \
         "${POINT_CLOTH_ARGS[@]}" \
         "${POINT_DEPTH_ARGS[@]}" \
+        "${MAPO_ARGS[@]}" \
+        "${MOTION_TEMPERATURE_ARGS[@]}" \
         "${PART_MOE_ARGS[@]}" \
         "${TRI_TOKEN_ARGS[@]}" \
         2>&1 | tee "$model_path/logs/render_${SEQUENCE}_${experiment_name}.log"

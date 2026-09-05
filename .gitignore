@@ -20,3 +20,4 @@ smpl_model/models/**/*.npz
 *.ckpt
 __pycache__/
 *.pyc
+third_party/vggt/

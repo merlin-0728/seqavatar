@@ -71,6 +71,18 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor,
 
                 _, vert_ids = pc.custom_knn_near(pc.canon_vertices, means3D)
                 query_pts_delta_conds = seq_xyz_conds[vert_ids, :,:,:].permute(0,1,3,2,4,5).contiguous()
+                motion_velocity = None
+                motion_acceleration = None
+                if getattr(pc, "use_motion_temporal_temperature", False):
+                    pose_velocity = pc.smpl_motion_velocity_by_pose.get(int(pose_id))
+                    pose_acceleration = pc.smpl_motion_acceleration_by_pose.get(int(pose_id))
+                    if pose_velocity is None or pose_acceleration is None:
+                        pose_velocity = pc.smpl_motion_velocity
+                        pose_acceleration = pc.smpl_motion_acceleration
+                    if pose_velocity is None or pose_acceleration is None:
+                        raise RuntimeError("[MOTION_TEMP] SMPL/LBS motion statistics were not prepared.")
+                    motion_velocity = pose_velocity[vert_ids].mean(dim=-1)
+                    motion_acceleration = pose_acceleration[vert_ids].mean(dim=-1)
 
                 part_label = None
                 part_conf = None
@@ -94,6 +106,10 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor,
                     tri_gate_alpha_scale=getattr(pc, "tri_gate_alpha_scale", 1.0),
                     part_budget_alpha_scale=getattr(pc, "part_budget_alpha_scale", 1.0),
                     tri_token_alpha_scale=getattr(pc, "tri_token_alpha_scale", 1.0),
+                    mapo_pose_id=pose_id,
+                    mapo_query_xyz=means3D,
+                    motion_velocity=motion_velocity,
+                    motion_acceleration=motion_acceleration,
                 )
                 d_nonrigid = (d_xyz, d_rotation, d_scaling)
             else:

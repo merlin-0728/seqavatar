@@ -62,6 +62,23 @@ PART_LABEL_SCHEMAS = {
     },
 }
 
+PART_NEIGHBOR_ADJACENCY = {
+    "anatomy5": {
+        1: {2, 3, 4},
+        2: {1, 4},
+        3: {1, 4},
+        4: {1, 2, 3},
+    },
+    "part_moe_leg": {
+        1: {2, 3, 4, 5, 6},
+        2: {1, 4},
+        3: {1, 4},
+        4: {1, 2, 3},
+        5: {1, 6},
+        6: {1, 5},
+    },
+}
+
 PART_LABEL_COLORS = {
     "anatomy5": {idx: LABEL_COLORS[idx] for idx in PART_LABEL_SCHEMAS["anatomy5"]},
     "part_moe_leg": {
@@ -102,6 +119,34 @@ def get_part_label_colors(schema="anatomy5"):
 # 返回当前 schema 应该使用的 expert 数量。
 def get_num_parts_from_schema(schema="anatomy5"):
     return len(get_part_label_names(schema))
+
+
+def get_part_neighbor_weight(schema, lhs, rhs, same_weight=1.0, adjacent_weight=0.1, other_weight=0.0):
+    if lhs == rhs:
+        return float(same_weight)
+    adjacency = PART_NEIGHBOR_ADJACENCY.get(schema, {})
+    if rhs in adjacency.get(lhs, set()) or lhs in adjacency.get(rhs, set()):
+        return float(adjacent_weight)
+    return float(other_weight)
+
+
+def build_part_neighbor_weight_matrix(
+    schema="anatomy5", same_weight=1.0, adjacent_weight=0.1, other_weight=0.0
+):
+    label_names = get_part_label_names(schema)
+    num_parts = len(label_names)
+    mat = np.zeros((num_parts, num_parts), dtype=np.float32)
+    for i in range(num_parts):
+        for j in range(num_parts):
+            mat[i, j] = get_part_neighbor_weight(
+                schema,
+                i,
+                j,
+                same_weight=same_weight,
+                adjacent_weight=adjacent_weight,
+                other_weight=other_weight,
+            )
+    return mat
 
 
 # 简单 tee 输出流：把 stdout/stderr 同时写到终端和 part 日志文件。

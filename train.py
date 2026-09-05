@@ -13,11 +13,12 @@ import os
 import torch
 import torch.nn.functional as F
 from random import randint
-from utils.loss_utils import l1_loss, l1_loss_masked, l2_loss_masked, ssim, full_aiap_loss
+from utils.loss_utils import l1_loss, l1_loss_masked, l2_loss_masked, ssim, full_aiap_loss, weighted_aiap_loss
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel
 from utils.general_utils import safe_state
+from part_label.common import build_part_neighbor_weight_matrix
 import json
 import numpy as np
 import pickle
@@ -771,11 +772,15 @@ def compute_tri_token_alpha_scale(iteration, dataset):
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
     first_iter = 0
-    tb_writer = prepare_output_and_logger(dataset)
+    tb_writer = prepare_output_and_logger(dataset, opt)
     gaussians = GaussianModel(dataset.sh_degree, dataset.smpl_type, dataset.motion_offset_flag, dataset.actor_gender, dataset)
     scene = Scene(dataset, gaussians)
+    gaussians.configure_mapo_training()
     gaussians.training_setup(opt)
     part_controller = None
+    dynomo_controller = None
+    vggt_garment_controller = None
+    dynomo_part_weight_matrix = None
     part_label_start_iter = int(getattr(dataset, "part_moe_start_iter", 15000))
     if getattr(dataset, "use_part_moe", False) and opt.densify_until_iter > part_label_start_iter:
         raise ValueError(
@@ -785,6 +790,22 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     if getattr(dataset, "use_part_moe", False):
         from ablations.part_moe_controller import build_part_moe_controller
         part_controller = build_part_moe_controller(dataset)
+    if getattr(dataset, "use_dynomo_c", False):
+        from ablations.dynomo_controller import build_dynomo_controller
+        dynomo_controller = build_dynomo_controller(dataset)
+        dynomo_part_weight_matrix = torch.tensor(
+            build_part_neighbor_weight_matrix(
+                schema=str(getattr(dataset, "part_label_schema", "anatomy5")),
+                same_weight=float(getattr(opt, "dynomo_c_part_same_w", 1.0)),
+                adjacent_weight=float(getattr(opt, "dynomo_c_part_adj_w", 0.1)),
+                other_weight=float(getattr(opt, "dynomo_c_part_other_w", 0.0)),
+            ),
+            device=gaussians.get_xyz.device,
+            dtype=gaussians.get_xyz.dtype,
+        )
+    if getattr(dataset, "use_vggt_garment", False):
+        from ablations.vggt_garment_controller import build_vggt_garment_controller
+        vggt_garment_controller = build_vggt_garment_controller(dataset)
 
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
@@ -807,6 +828,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
     elapsed_time = 0
     for iteration in range(first_iter, opt.iterations + 1):  
+        gaussians.update_mapo_partition(iteration)
+        if iteration == opt.iterations and vggt_garment_controller is not None:
+            vggt_garment_controller.finalize_budget(scene, gaussians)
         if network_gui.conn == None:
             network_gui.try_connect()
         while network_gui.conn != None:
@@ -842,7 +866,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         if (
             getattr(dataset, "use_part_moe", False)
             and gaussians.part_label_enabled
-            and gaussians.non_rigid_deformer.part_moe_active
+            and (
+                gaussians.non_rigid_deformer.part_moe_active
+                or gaussians.non_rigid_deformer.temporal_conditioned_part_active
+            )
             and iteration == int(getattr(dataset, "part_moe_start_iter", 15000)) + 1
         ):
             print(
@@ -850,10 +877,15 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 f"alpha={gaussians.part_moe_alpha:.6f} "
                 f"global_keep={gaussians.part_moe_global_keep}"
             )
+        if dynomo_controller is not None:
+            dynomo_controller.refresh(scene, gaussians, iteration)
         if (
             getattr(dataset, "use_part_budget", False)
             and gaussians.part_label_enabled
-            and gaussians.non_rigid_deformer.part_moe_active
+            and (
+                gaussians.non_rigid_deformer.part_moe_active
+                or gaussians.non_rigid_deformer.temporal_conditioned_part_active
+            )
             and iteration == int(getattr(dataset, "part_budget_start_iter", 16000)) + 1
         ):
             print(
@@ -869,7 +901,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             tri_token_part_enabled = (
                 getattr(dataset, "use_part_moe", False)
                 and gaussians.part_label_enabled
-                and gaussians.non_rigid_deformer.part_moe_active
+                and (
+                    gaussians.non_rigid_deformer.part_moe_active
+                    or gaussians.non_rigid_deformer.temporal_conditioned_part_active
+                )
             )
             print(
                 f"[TRI_TOKEN Status] active=True part_enabled={tri_token_part_enabled} "
@@ -881,7 +916,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             getattr(dataset, "use_tri_token", False)
             and getattr(dataset, "token_tri_fusion_mode", "") == "route_hard"
             and gaussians.part_label_enabled
-            and gaussians.non_rigid_deformer.part_moe_active
+            and (
+                gaussians.non_rigid_deformer.part_moe_active
+                or gaussians.non_rigid_deformer.temporal_conditioned_part_active
+            )
             and iteration == int(getattr(dataset, "token_tri_start_iter", 10000)) + 1
         ):
             print(
@@ -965,8 +1003,37 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         loss = opt.l1_loss_w * Ll1 + 0.1 * alpha_loss + opt.ssim_loss_w * (1.0 - ssim_loss) + opt.lpips_loss_w * lpips_loss
 
         # iospos ioscov loss
-        loss_aiap_xyz, loss_aiap_cov = full_aiap_loss(scene.gaussians.get_xyz, render_pkg["deformed_means3D"], scene.gaussians.get_covariance(), render_pkg["deformed_cov3D"])
-        loss = loss + opt.iospos_w * loss_aiap_xyz + opt.ioscov_w * loss_aiap_cov
+        if getattr(dataset, "use_dynomo_c", False):
+            dynomo_part_label = scene.gaussians.get_part_label if scene.gaussians.part_label_enabled else None
+            dynomo_part_conf = scene.gaussians.get_part_conf if scene.gaussians.part_label_enabled else None
+            dynomo_affinity = getattr(scene.gaussians.non_rigid_deformer, "last_dynomo_affinity", None)
+            d_xyz, d_rotation, d_scaling = render_pkg.get("d_nonrigid", (None, None, None))
+            motion_obs = d_xyz.squeeze(0) if d_xyz is not None else None
+            rotation_obs = d_rotation.squeeze(0) if d_rotation is not None else None
+            loss_aiap_xyz, loss_aiap_cov, loss_aiap_motion, loss_aiap_rotation = weighted_aiap_loss(
+                scene.gaussians.get_xyz,
+                render_pkg["deformed_means3D"],
+                scene.gaussians.get_covariance(),
+                render_pkg["deformed_cov3D"],
+                affinity_feat=dynomo_affinity,
+                part_label=dynomo_part_label,
+                part_weight_matrix=dynomo_part_weight_matrix,
+                part_conf=dynomo_part_conf,
+                motion_obs=motion_obs,
+                rotation_obs=rotation_obs,
+                n_neighbors=int(getattr(opt, "dynomo_c_knn", 5)),
+            )
+            loss = loss + opt.iospos_w * loss_aiap_xyz + opt.ioscov_w * loss_aiap_cov
+            loss = loss + float(getattr(opt, "dynomo_c_motion_w", 0.01)) * loss_aiap_motion
+            loss = loss + float(getattr(opt, "dynomo_c_rotation_w", 0.01)) * loss_aiap_rotation
+        else:
+            loss_aiap_xyz, loss_aiap_cov = full_aiap_loss(
+                scene.gaussians.get_xyz,
+                render_pkg["deformed_means3D"],
+                scene.gaussians.get_covariance(),
+                render_pkg["deformed_cov3D"],
+            )
+            loss = loss + opt.iospos_w * loss_aiap_xyz + opt.ioscov_w * loss_aiap_cov
         tri_part_reg_loss = None
         if getattr(dataset, "use_tri_part", False):
             tri_part_reg_loss = getattr(scene.gaussians.non_rigid_deformer, "last_tri_part_reg_loss", None)
@@ -1197,6 +1264,16 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     if "spatial_loss" in stats:
                         msg += f" spatial_loss={stats['spatial_loss'].item():.8f}"
                     print(msg)
+            if getattr(dataset, "use_mapo_all_dynamic", False) and getattr(
+                dataset, "mapo_dynamic_score_enabled", False
+            ) and iteration % 1000 == 0:
+                stats = getattr(scene.gaussians.non_rigid_deformer, "last_mapo_dynamic_stats", None)
+                if stats is not None:
+                    print(
+                        "[MAPO_DYNAMIC Stats] "
+                        f"iter={iteration} mean={stats['mean']:.8f} "
+                        f"p50={stats['p50']:.8f} p95={stats['p95']:.8f} max={stats['max']:.8f}"
+                    )
             if iteration == opt.iterations:
                 progress_bar.close()
 
@@ -1216,9 +1293,34 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     radii[visibility_filter],
                 )
                 gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
-                if getattr(dataset, "use_point_update", False) or getattr(dataset, "use_point_cloth_budget", False):
+                if (
+                    getattr(dataset, "use_point_update", False)
+                    or getattr(dataset, "use_point_cloth_budget", False)
+                    or getattr(dataset, "use_vggt_garment", False)
+                ):
                     gaussians.update_point_value_ema(
                         getattr(dataset, "point_update_ema_momentum", 0.95)
+                    )
+
+                # VGGT strict modes consume the current render before regular
+                # densification changes the point index space.
+                if (
+                    vggt_garment_controller is not None
+                    and bool(getattr(dataset, "vggt_strict_budget", False))
+                    and iteration < opt.densify_until_iter
+                ):
+                    vggt_garment_controller.after_iteration(
+                        iteration,
+                        scene,
+                        gaussians,
+                        context={
+                            "viewpoint_camera": viewpoint_cam,
+                            "deformed_means3D": render_pkg["deformed_means3D"].detach(),
+                            "visibility_filter": visibility_filter,
+                            "image": image,
+                            "gt_image": gt_image,
+                            "bound_mask": bound_mask_full,
+                        },
                     )
 
                 if (
@@ -1651,7 +1753,27 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     ):
                         if not gaussians.part_label_enabled:
                             raise RuntimeError("[PartMoE] Part labels must be loaded before initializing experts.")
-                        gaussians.init_part_moe_from_shared()
+                        if getattr(dataset, "use_temporal_conditioned_part_moe", False):
+                            gaussians.init_temporal_conditioned_part_moe()
+                        else:
+                            gaussians.init_part_moe_from_shared()
+                if (
+                    vggt_garment_controller is not None
+                    and not bool(getattr(dataset, "vggt_strict_budget", False))
+                ):
+                    vggt_garment_controller.after_iteration(
+                        iteration,
+                        scene,
+                        gaussians,
+                        context={
+                            "viewpoint_camera": viewpoint_cam,
+                            "deformed_means3D": render_pkg["deformed_means3D"].detach(),
+                            "visibility_filter": visibility_filter,
+                            "image": image,
+                            "gt_image": gt_image,
+                            "bound_mask": bound_mask_full,
+                        },
+                    )
 
             # end time
             end_time = time.time()
@@ -1662,7 +1784,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
         
-def prepare_output_and_logger(args):    
+def prepare_output_and_logger(args, opt=None):
     if not args.model_path:
         args.model_path = os.path.join("./output/", args.exp_name)
 
@@ -1672,6 +1794,10 @@ def prepare_output_and_logger(args):
     os.makedirs(args.model_path, exist_ok = True)
     with open(os.path.join(args.model_path, "cfg_args"), 'w') as cfg_log_f:
         cfg_log_f.write(str(Namespace(**vars(args))))
+    if opt is not None:
+        train_cfg = {**vars(args), **vars(opt)}
+        with open(os.path.join(args.model_path, "train_cfg_args"), 'w') as cfg_log_f:
+            cfg_log_f.write(str(Namespace(**train_cfg)))
 
     # Create Tensorboard writer
     tb_writer = None
@@ -1780,6 +1906,7 @@ if __name__ == "__main__":
     parser.add_argument('--ip', type=str, default="127.0.0.1")
     parser.add_argument('--port', type=int, default=6009)
     parser.add_argument('--debug_from', type=int, default=-1)
+    parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
     parser.add_argument("--test_iterations", nargs="+", type=int, default=[3000, 15_000, 25_000, 30_000])
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[3000, 15_000, 25_000, 30_000])
@@ -1795,7 +1922,7 @@ if __name__ == "__main__":
     
     print("Optimizing " + args.model_path)
     # Initialize system state (RNG)
-    safe_state(args.quiet)
+    safe_state(args.quiet, seed=args.seed)
 
     # network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)

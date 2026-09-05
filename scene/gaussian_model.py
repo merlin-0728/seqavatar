@@ -95,11 +95,47 @@ class GaussianModel:
         self.nonrigid_deltaposeconds_flag = args.nonrigid_deltaposeconds_flag
         self.nonrigid_deltaxyzconds_flag = args.nonrigid_deltaxyzconds_flag
         self.use_part_moe = getattr(args, "use_part_moe", False)
+        self.use_dynomo_c = bool(getattr(args, "use_dynomo_c", False))
         self.use_tri = bool(getattr(args, "use_tri", False))
         self.use_tri_part = bool(getattr(args, "use_tri_part", False))
         self.use_tri_gate = bool(getattr(args, "use_tri_gate", False))
         self.use_tri_token = bool(getattr(args, "use_tri_token", False))
         self.use_time = bool(getattr(args, "use_time", False))
+        self.use_mapo_all_dynamic = bool(getattr(args, "use_mapo_all_dynamic", False))
+        self.mapo_max_partition_level = int(getattr(args, "mapo_max_partition_level", 2))
+        self.mapo_partition_level1_iter = int(getattr(args, "mapo_partition_level1_iter", 5000))
+        self.mapo_partition_level2_iter = int(getattr(args, "mapo_partition_level2_iter", 10000))
+        self.mapo_partition_level3_iter = int(getattr(args, "mapo_partition_level3_iter", 15000))
+        self.mapo_num_frames = int(getattr(args, "mapo_num_frames", 100))
+        self.mapo_soft_routing = bool(getattr(args, "mapo_soft_routing", False))
+        self.mapo_soft_blend_width = float(getattr(args, "mapo_soft_blend_width", 4.0))
+        self.mapo_shared_trunk = bool(getattr(args, "mapo_shared_trunk", False))
+        self.mapo_partial_sharing = bool(getattr(args, "mapo_partial_sharing", False))
+        self.use_temporal_conditioned_part_moe = bool(
+            getattr(args, "use_temporal_conditioned_part_moe", False)
+        )
+        self.temporal_conditioned_part_fusion_mode = str(
+            getattr(args, "temporal_conditioned_part_fusion_mode", "replace")
+        )
+        self.temporal_conditioned_part_conf_threshold = float(
+            getattr(args, "temporal_conditioned_part_conf_threshold", 0.5)
+        )
+        self.temporal_conditioned_part_max_mix = float(
+            getattr(args, "temporal_conditioned_part_max_mix", 0.75)
+        )
+        self.mapo_residual_alpha = float(getattr(args, "mapo_residual_alpha", 1.0))
+        self.mapo_dynamic_score_enabled = bool(getattr(args, "mapo_dynamic_score_enabled", False))
+        self.mapo_dynamic_score_momentum = float(getattr(args, "mapo_dynamic_score_momentum", 0.95))
+        self.mapo_dynamic_score_alpha = float(getattr(args, "mapo_dynamic_score_alpha", 0.5))
+        self.use_motion_temporal_temperature = bool(getattr(args, "use_motion_temporal_temperature", False))
+        self.motion_temperature_min = float(getattr(args, "motion_temperature_min", 0.50))
+        self.motion_temperature_max = float(getattr(args, "motion_temperature_max", 1.50))
+        self.motion_velocity_weight = float(getattr(args, "motion_velocity_weight", 0.50))
+        self.motion_acceleration_weight = float(getattr(args, "motion_acceleration_weight", 0.50))
+        self.smpl_motion_velocity = None
+        self.smpl_motion_acceleration = None
+        self.smpl_motion_velocity_by_pose = {}
+        self.smpl_motion_acceleration_by_pose = {}
         self.use_point = bool(getattr(args, "use_point", False))
         self.use_point_anchor = bool(getattr(args, "use_point_anchor", False))
         self.use_point_anchor_tb = bool(getattr(args, "use_point_anchor_tb", False))
@@ -212,6 +248,13 @@ class GaussianModel:
                 "[POINT_DEPTH] point_depth is an original-baseline ablation; "
                 "do not combine it with point/point_anchor/part_moe/tri/tri_token/time/part_budget."
             )
+        if self.use_dynomo_c and (
+            self.use_part_moe or self.use_tri or self.use_tri_token or self.use_time or self.use_part_budget
+        ):
+            raise ValueError(
+                "[DYNOMO_C] dynomo_c is an original-baseline ablation; "
+                "do not combine it with part_moe/tri/tri_token/time/part_budget."
+            )
         if self.use_tri_token and self.token_tri_fusion_mode in ("route_hard", "part_fusion", "part_fusion_spatial") and not self.use_part_moe:
             raise ValueError("[TRI_TOKEN] route_hard/part_fusion/part_fusion_spatial requires --use_part_moe.")
         if self.use_tri_token and self.use_part_moe and (self.part_label_schema != "part_moe_leg" or int(getattr(args, "num_parts", 0)) != 7):
@@ -304,6 +347,8 @@ class GaussianModel:
         self.part_moe_start_iter = getattr(args, "part_moe_start_iter", 15000)
         self.part_moe_warmup = getattr(args, "part_moe_warmup", 1000)
         self.part_moe_global_keep = getattr(args, "part_moe_global_keep", 0.1)
+        self.part_moe_conf_threshold = float(getattr(args, "part_moe_conf_threshold", 0.5))
+        self.part_confidence_route = bool(getattr(args, "part_confidence_route", False))
         self.part_moe_alpha = 0.0
         self.tri_gate_alpha_scale = 1.0
         self.tri_token_alpha_scale = 0.0
@@ -332,6 +377,10 @@ class GaussianModel:
                         seq_len=args.seq_len, seq_xyz_knn=self.seq_xyz_knn, time_step_num=args.time_step_num, smpl_type=smpl_type,
                         use_part_moe=self.use_part_moe, num_parts=self.num_parts,
                         part_moe_global_keep=self.part_moe_global_keep,
+                        part_moe_conf_threshold=self.part_moe_conf_threshold,
+                        part_confidence_route=self.part_confidence_route,
+                        use_dynomo_c=self.use_dynomo_c,
+                        dynomo_c_affinity_dim=getattr(args, "dynomo_c_affinity_dim", 32),
                         use_tri=self.use_tri,
                         tri_plane_dim=self.tri_plane_dim,
                         tri_plane_res=self.tri_plane_res,
@@ -364,6 +413,26 @@ class GaussianModel:
                         use_time=self.use_time,
                         time_scale_emb_dim=self.time_scale_emb_dim,
                         time_scale_temperature=self.time_scale_temperature,
+                        use_mapo_all_dynamic=self.use_mapo_all_dynamic,
+                        mapo_max_partition_level=self.mapo_max_partition_level,
+                        mapo_num_frames=self.mapo_num_frames,
+                        mapo_soft_routing=self.mapo_soft_routing,
+                        mapo_soft_blend_width=self.mapo_soft_blend_width,
+                        mapo_shared_trunk=self.mapo_shared_trunk,
+                        mapo_partial_sharing=self.mapo_partial_sharing,
+                        use_temporal_conditioned_part_moe=self.use_temporal_conditioned_part_moe,
+                        temporal_conditioned_part_fusion_mode=self.temporal_conditioned_part_fusion_mode,
+                        temporal_conditioned_part_conf_threshold=self.temporal_conditioned_part_conf_threshold,
+                        temporal_conditioned_part_max_mix=self.temporal_conditioned_part_max_mix,
+                        mapo_residual_alpha=self.mapo_residual_alpha,
+                        mapo_dynamic_score_enabled=self.mapo_dynamic_score_enabled,
+                        mapo_dynamic_score_momentum=self.mapo_dynamic_score_momentum,
+                        mapo_dynamic_score_alpha=self.mapo_dynamic_score_alpha,
+                        use_motion_temporal_temperature=self.use_motion_temporal_temperature,
+                        motion_temperature_min=self.motion_temperature_min,
+                        motion_temperature_max=self.motion_temperature_max,
+                        motion_velocity_weight=self.motion_velocity_weight,
+                        motion_acceleration_weight=self.motion_acceleration_weight,
                         use_tri_part=self.use_tri_part,
                         use_tri_gate=self.use_tri_gate,
                         tri_gate_alpha=self.tri_gate_alpha,
@@ -401,6 +470,121 @@ class GaussianModel:
                 self.non_rigid_deformer.part_budget_target_mix = self.part_budget_target_mix
                 self.non_rigid_deformer.part_budget_target_sharpness = self.part_budget_target_sharpness
                 self.non_rigid_deformer.part_budget_router_sharpness = self.part_budget_router_sharpness
+
+    @torch.no_grad()
+    def prepare_smpl_motion_stats(self):
+        """Precompute sequence-level and pose-local SMPL/LBS motion statistics."""
+        if not self.use_motion_temporal_temperature or not self.smpl_params_dict:
+            return
+        entries = []
+        for pose_id, params in self.smpl_params_dict.items():
+            obs_xyz = params.get("obs_xyz") if isinstance(params, dict) else None
+            if obs_xyz is not None:
+                entries.append((int(pose_id), obs_xyz))
+        entries.sort(key=lambda item: item[0])
+        if len(entries) < 2:
+            raise RuntimeError("[MOTION_TEMP] Need at least two SMPL/LBS frames for velocity statistics.")
+        trajectory = torch.stack([
+            value.to(device=self.device, dtype=torch.float32).reshape(-1, 3)
+            for _, value in entries
+        ], dim=0)
+        if trajectory.shape[1] != self.canon_vertices.shape[1]:
+            raise RuntimeError(
+                f"[MOTION_TEMP] SMPL vertex count {trajectory.shape[1]} does not match "
+                f"canonical vertices {self.canon_vertices.shape[1]}."
+            )
+        velocity_vec = trajectory[1:] - trajectory[:-1]
+        frame_count = trajectory.shape[0]
+
+        # Use local finite differences so routing depends on the current pose.
+        frame_velocity = torch.empty((frame_count, trajectory.shape[1]), device=self.device)
+        frame_velocity[0] = velocity_vec[0].norm(dim=-1)
+        frame_velocity[-1] = velocity_vec[-1].norm(dim=-1)
+        if frame_count > 2:
+            frame_velocity[1:-1] = (
+                0.5 * (trajectory[2:] - trajectory[:-2])
+            ).norm(dim=-1)
+
+        frame_acceleration = torch.zeros_like(frame_velocity)
+        if frame_count >= 2:
+            endpoint_acceleration = (velocity_vec[1:] - velocity_vec[:-1]).norm(dim=-1)
+            frame_acceleration[0] = endpoint_acceleration[0]
+            frame_acceleration[-1] = endpoint_acceleration[-1]
+        if frame_count > 2:
+            frame_acceleration[1:-1] = (
+                trajectory[2:] - 2.0 * trajectory[1:-1] + trajectory[:-2]
+            ).norm(dim=-1)
+
+        velocity = frame_velocity.mean(dim=0)
+        acceleration = frame_acceleration.mean(dim=0)
+
+        def robust_normalize(value):
+            scale = torch.quantile(value.reshape(-1), 0.95).clamp_min(1e-6)
+            return (value / scale).clamp(0.0, 1.0)
+
+        # Keep aggregate fields for compatibility; routing uses the pose-local maps.
+        self.smpl_motion_velocity = robust_normalize(velocity).detach()
+        self.smpl_motion_acceleration = robust_normalize(acceleration).detach()
+        normalized_velocity = robust_normalize(frame_velocity).detach()
+        normalized_acceleration = robust_normalize(frame_acceleration).detach()
+        self.smpl_motion_velocity_by_pose = {
+            pose_id: normalized_velocity[index]
+            for index, (pose_id, _) in enumerate(entries)
+        }
+        self.smpl_motion_acceleration_by_pose = {
+            pose_id: normalized_acceleration[index]
+            for index, (pose_id, _) in enumerate(entries)
+        }
+        print(
+            "[MOTION_TEMP] SMPL/LBS stats ready: "
+            f"frames={len(entries)} "
+            f"velocity(mean/p50/p95)={velocity.mean().item():.6f}/"
+            f"{torch.quantile(velocity, 0.50).item():.6f}/"
+            f"{torch.quantile(velocity, 0.95).item():.6f} "
+            f"acceleration(mean/p50/p95)={acceleration.mean().item():.6f}/"
+            f"{torch.quantile(acceleration, 0.50).item():.6f}/"
+            f"{torch.quantile(acceleration, 0.95).item():.6f} "
+            f"local_velocity_p95={torch.quantile(frame_velocity.reshape(-1), 0.95).item():.6f} "
+            f"local_acceleration_p95={torch.quantile(frame_acceleration.reshape(-1), 0.95).item():.6f}"
+        )
+
+    def configure_mapo_training(self):
+        if self.use_mapo_all_dynamic:
+            self.non_rigid_deformer.mapo_set_training_level(0)
+            print(
+                "[MAPO_ALL_DYNAMIC] training configured: "
+                f"max_level={self.mapo_max_partition_level} "
+                f"branches={1 << self.mapo_max_partition_level} "
+                f"num_frames={self.mapo_num_frames}"
+            )
+
+    def update_mapo_partition(self, iteration):
+        if not self.use_mapo_all_dynamic:
+            return
+        target_level = 0
+        if (
+            self.mapo_max_partition_level >= 1
+            and iteration >= self.mapo_partition_level1_iter
+        ):
+            target_level = 1
+        if (
+            self.mapo_max_partition_level >= 2
+            and iteration >= self.mapo_partition_level2_iter
+        ):
+            target_level = 2
+        if (
+            self.mapo_max_partition_level >= 3
+            and iteration >= self.mapo_partition_level3_iter
+        ):
+            target_level = 3
+        activated_params = self.non_rigid_deformer.mapo_activate_level(target_level)
+        if activated_params and self.mlp_optimizer is not None:
+            for param in activated_params:
+                self.mlp_optimizer.state.pop(param, None)
+            print(
+                f"[MAPO_ALL_DYNAMIC] reset optimizer state for "
+                f"{len(activated_params)} activated branch parameters."
+            )
                             
     def capture(self):
         return (
@@ -512,6 +696,13 @@ class GaussianModel:
             for idx, group in enumerate(self.mlp_optimizer.param_groups):
                 print(f"  {idx}: {group.get('name', 'noname')} lr={group['lr']}")
         return True
+
+    def init_temporal_conditioned_part_moe(self):
+        if not (self.non_rigid_flag and self.use_temporal_conditioned_part_moe):
+            return False
+        created = self.non_rigid_deformer.init_temporal_conditioned_part_moe()
+        self.non_rigid_deformer.to(self.device)
+        return created
 
     @property
     def get_scaling(self):
@@ -974,6 +1165,122 @@ class GaussianModel:
         )
         self._ensure_point_value_buffers()
         return spawned
+
+    @torch.no_grad()
+    def spawn_from_explicit_candidates(
+        self,
+        candidate_xyz,
+        colors=None,
+        opacity=0.04,
+        scale_ratio=0.65,
+        min_distance=0.004,
+        max_points=120000,
+    ):
+        """Add precomputed canonical proposals while preserving learned parents."""
+        if candidate_xyz is None or candidate_xyz.numel() == 0:
+            return 0
+        available = int(max_points) - int(self.get_xyz.shape[0])
+        if available <= 0:
+            return 0
+        candidate_xyz = candidate_xyz.to(device=self.get_xyz.device, dtype=self.get_xyz.dtype).reshape(-1, 3)
+        if colors is not None:
+            colors = colors.to(device=self.get_xyz.device, dtype=self.get_xyz.dtype).reshape(-1, 3)
+            colors = colors[:candidate_xyz.shape[0]]
+        if candidate_xyz.shape[0] > available:
+            candidate_xyz = candidate_xyz[:available]
+            if colors is not None:
+                colors = colors[:available]
+        # Remove proposals that duplicate an existing canonical Gaussian.
+        nearest_dist = torch.cdist(candidate_xyz, self.get_xyz.detach()).min(dim=1).values
+        keep = nearest_dist >= float(min_distance)
+        candidate_xyz = candidate_xyz[keep]
+        if colors is not None:
+            colors = colors[keep]
+        if candidate_xyz.numel() == 0:
+            return 0
+        parent_ids = torch.cdist(candidate_xyz, self.get_xyz.detach()).argmin(dim=1)
+        parent_scaling = self.get_scaling[parent_ids]
+        new_scaling = self.scaling_inverse_activation(
+            torch.clamp(parent_scaling * float(scale_ratio), min=1e-6)
+        )
+        new_rotation = self._rotation[parent_ids]
+        new_features_dc = self._features_dc[parent_ids].clone()
+        new_features_rest = self._features_rest[parent_ids].clone()
+        if colors is not None and colors.shape[0] == candidate_xyz.shape[0]:
+            color_sh = RGB2SH(colors.clamp(0.0, 1.0))
+            new_features_dc[:, 0, 0] = color_sh[:, 0]
+            new_features_dc[:, 0, 1] = color_sh[:, 1]
+            new_features_dc[:, 0, 2] = color_sh[:, 2]
+        new_opacity = inverse_sigmoid(
+            torch.full(
+                (candidate_xyz.shape[0], 1),
+                float(opacity),
+                device=self.get_xyz.device,
+                dtype=self.get_xyz.dtype,
+            ).clamp(1e-4, 0.99)
+        )
+        optimizable_tensors = self.cat_tensors_to_optimizer({
+            "xyz": candidate_xyz,
+            "f_dc": new_features_dc,
+            "f_rest": new_features_rest,
+            "opacity": new_opacity,
+            "scaling": new_scaling,
+            "rotation": new_rotation,
+        })
+        self._xyz = optimizable_tensors["xyz"]
+        self._features_dc = optimizable_tensors["f_dc"]
+        self._features_rest = optimizable_tensors["f_rest"]
+        self._opacity = optimizable_tensors["opacity"]
+        self._scaling = optimizable_tensors["scaling"]
+        self._rotation = optimizable_tensors["rotation"]
+        spawned = int(candidate_xyz.shape[0])
+        self.xyz_gradient_accum = torch.cat([self.xyz_gradient_accum, torch.zeros((spawned, 1), device=self.get_xyz.device)], dim=0)
+        self.denom = torch.cat([self.denom, torch.zeros((spawned, 1), device=self.get_xyz.device)], dim=0)
+        self.max_radii2D = torch.cat([self.max_radii2D, torch.zeros((spawned,), device=self.get_xyz.device)], dim=0)
+        self._ensure_point_value_buffers()
+        return spawned
+
+    @torch.no_grad()
+    def append_cloned_points(self, count, source_ids=None):
+        """Append learned Gaussian copies for an isolated final budget correction."""
+        count = int(count)
+        if count <= 0 or self.get_xyz.shape[0] == 0:
+            return 0
+        total = int(self.get_xyz.shape[0])
+        if source_ids is None:
+            source_ids = torch.arange(total, device=self.get_xyz.device, dtype=torch.long)
+        else:
+            source_ids = source_ids.to(device=self.get_xyz.device, dtype=torch.long).flatten()
+            source_ids = source_ids[(source_ids >= 0) & (source_ids < total)]
+        if source_ids.numel() == 0:
+            return 0
+        source_ids = source_ids.repeat((count + source_ids.numel() - 1) // source_ids.numel())[:count]
+        self._ensure_point_value_buffers()
+        source_opacity_ema = self.point_value_opacity_ema[source_ids].detach().clone()
+        source_gradient_ema = self.point_value_gradient_ema[source_ids].detach().clone()
+        source_visibility_ema = self.point_value_visibility_ema[source_ids].detach().clone()
+        d = {
+            "xyz": self._xyz[source_ids].detach().clone(),
+            "f_dc": self._features_dc[source_ids].detach().clone(),
+            "f_rest": self._features_rest[source_ids].detach().clone(),
+            "opacity": self._opacity[source_ids].detach().clone(),
+            "scaling": self._scaling[source_ids].detach().clone(),
+            "rotation": self._rotation[source_ids].detach().clone(),
+        }
+        optimizable_tensors = self.cat_tensors_to_optimizer(d)
+        self._xyz = optimizable_tensors["xyz"]
+        self._features_dc = optimizable_tensors["f_dc"]
+        self._features_rest = optimizable_tensors["f_rest"]
+        self._opacity = optimizable_tensors["opacity"]
+        self._scaling = optimizable_tensors["scaling"]
+        self._rotation = optimizable_tensors["rotation"]
+        self.xyz_gradient_accum = torch.cat([self.xyz_gradient_accum, self.xyz_gradient_accum[source_ids].detach().clone()], dim=0)
+        self.denom = torch.cat([self.denom, self.denom[source_ids].detach().clone()], dim=0)
+        self.max_radii2D = torch.cat([self.max_radii2D, self.max_radii2D[source_ids].detach().clone()], dim=0)
+        self.point_value_opacity_ema = torch.cat([self.point_value_opacity_ema[:total], source_opacity_ema], dim=0)
+        self.point_value_gradient_ema = torch.cat([self.point_value_gradient_ema[:total], source_gradient_ema], dim=0)
+        self.point_value_visibility_ema = torch.cat([self.point_value_visibility_ema[:total], source_visibility_ema], dim=0)
+        return count
 
     @torch.no_grad()
     def spawn_from_cached_depth_anchors(
